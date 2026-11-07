@@ -10,6 +10,9 @@ enum TraktConfig {
     static let defaultRedirectURI = "http://localhost:5173/callback"
 
     static func redirectURI(in store: UserDefaults) -> String {
+        // Fork: the built-in Trakt app is registered with the localhost
+        // redirect only (Trakt development apps reject the oob URI).
+        if usesBuiltInClient(in: store) { return defaultRedirectURI }
         let stored = store.string(forKey: SettingsKey.traktRedirectURI)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return stored.isEmpty ? inferredRedirectURI(in: store) : stored
@@ -68,6 +71,13 @@ enum TraktConfig {
 
     /// True when the app ships its own Trakt app, so no setup is needed.
     static var hasBuiltInClient: Bool { !AppRepository.traktClientID.isEmpty }
+
+    /// True when this profile has no custom Client ID and uses the built-in app.
+    static func usesBuiltInClient(in store: UserDefaults) -> Bool {
+        let custom = store.string(forKey: SettingsKey.traktClientID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return custom.isEmpty && hasBuiltInClient
+    }
 
     static func clientSecret(in store: UserDefaults) -> String {
         // Fork: the built-in Trakt app has no secret; a leftover custom
