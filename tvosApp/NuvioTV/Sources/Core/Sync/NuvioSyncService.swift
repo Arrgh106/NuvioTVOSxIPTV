@@ -1426,10 +1426,11 @@ final class NuvioSyncManager: ObservableObject {
                     )
                 }
                 // Fork: API keys and Jellyfin servers (Core/AccountSync).
-                await AccountExtrasSync.pull(
+                try await AccountExtrasSync.pull(
                     session: session,
                     remoteProfileId: remoteProfileId,
-                    localProfileId: activeProfile.id
+                    localProfileId: activeProfile.id,
+                    ensureValid: { try self.ensureStillSyncing(profileId: activeProfile.id, accountId: session.userId) }
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -1922,10 +1923,11 @@ final class NuvioSyncManager: ObservableObject {
                 )
                 self.lastKnownSettingsSnapshot = self.snapshotSettingsKeys(for: activeProfile.id)
                 // Fork: API keys and Jellyfin servers (Core/AccountSync).
-                await AccountExtrasSync.pushIfChanged(
+                try await AccountExtrasSync.pushIfChanged(
                     session: session,
                     remoteProfileId: remoteProfileId,
-                    localProfileId: activeProfile.id
+                    localProfileId: activeProfile.id,
+                    ensureValid: { try self.ensureStillSyncing(profileId: activeProfile.id, accountId: session.userId) }
                 )
             }
 

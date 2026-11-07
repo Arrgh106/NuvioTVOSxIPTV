@@ -28,7 +28,13 @@ enum MediaServerSync {
 
     /// Pull, merge and push when needed. Local edits made since the last sync
     /// win; otherwise the account wins.
-    static func sync(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func sync(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         guard !isRunning, ProfileSettings.activeProfileID == localProfileId else { return }
         isRunning = true
         defer { isRunning = false }
@@ -42,6 +48,7 @@ enum MediaServerSync {
         let localChanged = state.baseline != nil && state.baseline != fingerprint(local, profileScope: localProfileId)
 
         let remoteAll = try await pull(session: session, remoteProfileId: remoteProfileId)
+        try ensureValid()
         let remoteOthers = (remoteAll ?? []).filter { providerID(of: $0) != provider }
         let remoteJellyfin = (remoteAll ?? []).filter { providerID(of: $0) == provider }
         let syncedKeys = state.syncedKeys.map(Set.init)
@@ -78,8 +85,12 @@ enum MediaServerSync {
             }
         }
 
+        // Converting local servers talks to the Jellyfin servers, so check
+        // again before uploading anything.
+        try ensureValid()
         if needsPush {
             try await push(remoteOthers + target, session: session, remoteProfileId: remoteProfileId)
+            try ensureValid()
         }
 
         let didChange = await apply(target, removeMissing: remoteAll != nil || localChanged, state: &state, profileScope: localProfileId)
@@ -94,13 +105,19 @@ enum MediaServerSync {
 
     /// Runs a sync only when the Jellyfin servers changed locally since the
     /// last sync. Called after a settings push.
-    static func pushIfChanged(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func pushIfChanged(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         guard ProfileSettings.activeProfileID == localProfileId else { return }
         let store = ProfileSettings.store(for: localProfileId)
         let state = loadState(store, key: "\(stateKeyPrefix).\(session.userId).\(remoteProfileId)")
         guard let baseline = state.baseline else { return }
         guard baseline != fingerprint(JellyfinServerStore.shared.servers, profileScope: localProfileId) else { return }
-        try await sync(session: session, remoteProfileId: remoteProfileId, localProfileId: localProfileId)
+        try await sync(session: session, remoteProfileId: remoteProfileId, localProfileId: localProfileId, ensureValid: ensureValid)
     }
 
     // MARK: - Apply remote → local

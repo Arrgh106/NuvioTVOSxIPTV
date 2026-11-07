@@ -31,7 +31,13 @@ enum ProviderCredentialSync {
     /// Pull, merge and (when needed) push. Local edits made since the last
     /// sync win; otherwise the account wins. Must run while the profile's
     /// settings store is the one being synced.
-    static func sync(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func sync(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         let store = ProfileSettings.store(for: localProfileId)
         let local = snapshot(in: store)
         let baselineFingerprint = store.string(forKey: baselineKey(for: session, remoteProfileId))
@@ -42,12 +48,14 @@ enum ProviderCredentialSync {
         }
 
         let rows = try await pull(session: session, remoteProfileId: remoteProfileId)
+        try ensureValid()
         let remoteProviders = Set(rows.keys)
 
         // First sync of this profile on the account: upload keys the account
         // does not have yet. The seed RPC never overwrites existing rows.
         if mappings.contains(where: { !remoteProviders.contains($0.provider) && !(local[$0.provider] ?? "").isEmpty }) {
             try await seed(local, session: session, remoteProfileId: remoteProfileId)
+            try ensureValid()
         }
 
         var merged = local
@@ -64,6 +72,7 @@ enum ProviderCredentialSync {
                 }
                 merged[mapping.provider] = value
             }
+            try ensureValid()
             apply(merged, previous: local, to: store)
             if keptLocal {
                 try await push(merged, session: session, remoteProfileId: remoteProfileId)
@@ -73,7 +82,13 @@ enum ProviderCredentialSync {
     }
 
     /// Pushes only when the keys changed locally since the last sync.
-    static func pushIfChanged(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func pushIfChanged(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         let store = ProfileSettings.store(for: localProfileId)
         guard let baseline = store.string(forKey: baselineKey(for: session, remoteProfileId)) else { return }
         let local = snapshot(in: store)

@@ -45,14 +45,20 @@ enum ProfileSettingsExtrasSync {
 
     // MARK: - Pull
 
-    static func pull(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func pull(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         guard ProfileSettings.activeProfileID == localProfileId else { return }
         let store = ProfileSettings.store(for: localProfileId)
         let baselineKey = "\(baselinePrefix).\(session.userId).\(remoteProfileId)"
 
         // Local edits since the last sync win: push them instead.
         if let baseline = store.string(forKey: baselineKey), baseline != fingerprint(store) {
-            try await push(session: session, remoteProfileId: remoteProfileId, store: store)
+            try await push(session: session, remoteProfileId: remoteProfileId, store: store, ensureValid: ensureValid)
             store.set(fingerprint(store), forKey: baselineKey)
             return
         }
@@ -61,6 +67,7 @@ enum ProfileSettingsExtrasSync {
         async let mobileRequest = pullBlob(session: session, remoteProfileId: remoteProfileId, platform: "mobile")
         let tvFeatures = (try await tvRequest)?["features"] as? [String: Any] ?? [:]
         let mobileFeatures = (try? await mobileRequest)?["features"] as? [String: Any] ?? [:]
+        try ensureValid()
 
         var values: [String: Any] = [:]
         if let payload = jsonObject(mobileFeatures["trakt_settings_payload"]) {
@@ -83,12 +90,18 @@ enum ProfileSettingsExtrasSync {
 
     /// After an upstream settings push: write local changes of these fields
     /// back to the account.
-    static func pushIfChanged(session: AuthSession, remoteProfileId: Int, localProfileId: String) async throws {
+    static func pushIfChanged(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String,
+        ensureValid: () throws -> Void
+    ) async throws {
+        try ensureValid()
         guard ProfileSettings.activeProfileID == localProfileId else { return }
         let store = ProfileSettings.store(for: localProfileId)
         let baselineKey = "\(baselinePrefix).\(session.userId).\(remoteProfileId)"
         guard let baseline = store.string(forKey: baselineKey), baseline != fingerprint(store) else { return }
-        try await push(session: session, remoteProfileId: remoteProfileId, store: store)
+        try await push(session: session, remoteProfileId: remoteProfileId, store: store, ensureValid: ensureValid)
         store.set(fingerprint(store), forKey: baselineKey)
     }
 
@@ -135,8 +148,14 @@ enum ProfileSettingsExtrasSync {
 
     // MARK: - Push
 
-    private static func push(session: AuthSession, remoteProfileId: Int, store: UserDefaults) async throws {
+    private static func push(
+        session: AuthSession,
+        remoteProfileId: Int,
+        store: UserDefaults,
+        ensureValid: () throws -> Void
+    ) async throws {
         var blob = try await pullBlob(session: session, remoteProfileId: remoteProfileId, platform: "tv") ?? [:]
+        try ensureValid()
         var features = blob["features"] as? [String: Any] ?? [:]
         for field in tvFields {
             guard let value = store.object(forKey: field.settingsKey) else { continue }
