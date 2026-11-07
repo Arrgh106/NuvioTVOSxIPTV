@@ -12,7 +12,7 @@ body:
         If we can reproduce it, we can usually fix it. Please describe the bug in enough detail that someone else can understand what failed without watching a video or guessing from the title.
         Please replace the default title with a short summary of the actual problem.
 
-        Bug reports left open for more than 30 days may be closed as stale.
+        Bug reports left open for more than 90 days may be closed as stale.
         If the app crashes or force closes, logs or crash reports help us investigate and fix it quickly.
 
         **Never post your IPTV server address, username, password or playlist link.**
