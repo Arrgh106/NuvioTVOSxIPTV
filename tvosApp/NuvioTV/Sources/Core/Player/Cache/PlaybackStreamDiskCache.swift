@@ -3,7 +3,7 @@ import OSLog
 import Darwin
 import AetherEngine
 
-let diskCacheLog = Logger(subsystem: "com.pyksel.nuviotvos", category: "diskcache")
+let diskCacheLog = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "diskcache")
 
 /// Metadata descriptor stored alongside cached video chunks to verify stream identity
 /// and enable safe chunk reuse across renewed URLs without cross-stream mixing.

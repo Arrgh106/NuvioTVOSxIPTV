@@ -12,8 +12,10 @@ body:
         If we can reproduce it, we can usually fix it. Please describe the bug in enough detail that someone else can understand what failed without watching a video or guessing from the title.
         Please replace the default title with a short summary of the actual problem.
 
-        Bug reports left open for more than 30 days may be closed as stale.
+        Bug reports left open for more than 90 days may be closed as stale.
         If the app crashes or force closes, logs or crash reports help us investigate and fix it quickly.
+
+        **Never post your IPTV server address, username, password or playlist link.**
 
   - type: markdown
     attributes:
@@ -31,8 +33,8 @@ body:
           required: false
         - label: This issue is limited to a single bug (not multiple unrelated problems).
           required: true
-        - label: This is not a source/stream-specific error (the issue happens regardless of which source is used).
-          required: true
+        - label: For streams / Live TV, it happens with more than one source or channel (not just one broken stream).
+          required: false
 
   - type: markdown
     attributes:
@@ -53,9 +55,9 @@ body:
     attributes:
       label: Install method
       options:
-        - GitHub Release / App Store / Play Store
-        - TestFlight
-        - CI build / Nightly
+        - GitHub Release
+        - AltStore / SideStore source
+        - CI build (Actions artifact)
         - Built from source
         - Other (please describe below)
     validations:
@@ -68,14 +70,6 @@ body:
       options:
         - Apple TV (tvOS)
         - tvOS simulator
-        - iOS (iPhone)
-        - iOS (iPad)
-        - iOS simulator
-        - macOS (desktop)
-        - Android (phone/tablet)
-        - Android emulator
-        - Windows (desktop)
-        - Linux (desktop)
         - Other (please describe below)
     validations:
       required: true
@@ -84,8 +78,8 @@ body:
     id: device_model
     attributes:
       label: Device model
-      description: "Example: iPhone 15 Pro, Pixel 8, MacBook Air M2, etc."
-      placeholder: "e.g. iPhone 15 Pro"
+      description: "Example: Apple TV 4K (3rd gen), Apple TV HD"
+      placeholder: "e.g. Apple TV 4K (3rd gen)"
     validations:
       required: true
 
@@ -93,7 +87,7 @@ body:
     id: os_version
     attributes:
       label: OS version
-      placeholder: "e.g. iOS 18.1, Android 14, macOS 15.2"
+      placeholder: "e.g. tvOS 26.1"
     validations:
       required: true
 
@@ -108,6 +102,11 @@ body:
       label: Area (tag)
       description: Pick the closest match. It helps triage.
       options:
+        - Live TV - login / account (Xtream, M3U)
+        - Live TV - channels / groups
+        - Live TV - playback / zapping
+        - Live TV - EPG / TV guide
+        - Live TV - catch-up / time-shift
         - Playback (start/stop/buffering)
         - Streams / Sources (selection, loading, errors)
         - Next Episode / Auto-play

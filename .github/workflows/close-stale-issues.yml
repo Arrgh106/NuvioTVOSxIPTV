@@ -18,8 +18,8 @@ jobs:
   close_stale:
     runs-on: ubuntu-latest
     steps:
-      - name: Close bug issues open longer than 30 days
-        uses: actions/github-script@v7
+      - name: Close bug issues open longer than 90 days
+        uses: actions/github-script@v8
         with:
           script: |
             const owner = context.repo.owner;
@@ -27,7 +27,7 @@ jobs:
             const inputs = context.payload.inputs || {};
 
             const dryRun = String(inputs.dry_run || "false").toLowerCase() === "true";
-            const CLOSE_AFTER_DAYS = 30;
+            const CLOSE_AFTER_DAYS = 90;
             const closeMarker = "<!-- nuvio-bot:close-stale-issue -->";
 
             const cutoff = new Date(Date.now() - CLOSE_AFTER_DAYS * 24 * 60 * 60 * 1000)
@@ -63,7 +63,7 @@ jobs:
               if (!alreadyCommented) {
                 const body =
                   `${closeMarker}\n` +
-                  `Closing this bug report because it has been open for more than 30 days.\n\n` +
+                  `Closing this bug report because it has been open for more than 90 days.\n\n` +
                   `If this is still relevant, please open a fresh issue with the latest details.`;
 
                 await github.rest.issues.createComment({

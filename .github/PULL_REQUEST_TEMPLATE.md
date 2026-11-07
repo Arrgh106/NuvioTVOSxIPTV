@@ -1,67 +1,33 @@
 ## Summary
 
-<!-- What changed in this PR? -->
+<!-- What does this PR change? One feature or fix per PR. -->
 
-## PR type
+## Type
 
-<!-- Check exactly one. PRs outside these types are not accepted. -->
-- [ ] Reproducible bug fix
-- [ ] UI glitch/bug fix
-- [ ] Behavior bug/regression fix
-- [ ] Small maintenance only, with no UI or behavior change
-- [ ] Docs accuracy fix
-- [ ] Translation/localization only
-- [ ] Approved larger or directional change
+<!-- Check exactly one. -->
+- [ ] Live TV / IPTV feature
+- [ ] Bug fix
+- [ ] Upstream sync (changes from NuvioTVOS)
+- [ ] Build / CI
+- [ ] Docs
+- [ ] Translation
+- [ ] Other
 
-## Why
+## Related issue
 
-<!-- Why this change is needed. Explain the user-visible bug, regression, maintenance need, docs error, or approved request. -->
-
-## Issue or approval
-
-<!-- Required. Link the bug issue or approved feature request. For docs/translation/maintenance with no issue, explain why no issue is needed. -->
-<!-- Examples: Fixes #123 / Approved in #456 / No linked issue: typo-only docs fix. -->
-
-## UI / behavior impact
-
-<!-- Check every box that applies. At least one must be checked. -->
-- [ ] No UI change
-- [ ] No behavior change
-- [ ] UI changed only to fix a documented glitch/bug
-- [ ] Behavior changed only to fix a documented bug/regression
-- [ ] UI change has explicit maintainer approval
-- [ ] Behavior change has explicit maintainer approval
-
-## Policy check
-
-<!-- ALL boxes must be checked or the PR will be closed without review. -->
-- [ ] I have read and understood `CONTRIBUTING.md`.
-- [ ] This PR is small, focused, and limited to one problem.
-- [ ] This PR is not cosmetic-only.
-- [ ] Any UI change fixes a linked glitch/bug and includes visual proof, or this PR has no UI change.
-- [ ] Any behavior change fixes a linked bug/regression or has explicit approval, or this PR has no behavior change.
-- [ ] This PR does not bundle unrelated refactors, cleanups, formatting, or drive-by changes.
-- [ ] This PR does not add dependencies, architecture changes, migrations, or product-direction changes without explicit approval.
-- [ ] I listed the testing performed below.
-
-> UI polish, cosmetic-only changes, minor behavior tweaks, and unapproved product changes will be closed without review.
-
-## Scope boundaries
-
-<!-- List anything intentionally not changed. If this is a bug fix, confirm it does not include extra UI polish or behavior tweaks. -->
+<!-- e.g. "Closes #12", or a short reason why there is none. -->
 
 ## Testing
 
-<!-- What you tested and how. Include devices/emulators, commands, and manual flows. Do not write only "not tested" unless this is docs/translation-only. -->
+<!-- How did you test it? e.g. "Apple TV 4K, tvOS 26.1, Xtream provider", or "Only built in CI, not tested on a device". -->
 
-## Screenshots / Video (UI changes only)
+## Screenshots / Video
 
-<!-- Required for any UI change. Write "Not a UI change" only if no UI changed. -->
+<!-- Required for UI changes. Otherwise write: Not a UI change. -->
 
-## Breaking changes
+## Checklist
 
-<!-- Any breaking behavior/config/schema changes? If none, write: None. -->
-
-## Linked issues
-
-<!-- Required for bug fixes, UI glitch fixes, behavior fixes, and approved changes. For docs/translation/maintenance with no issue, write: No linked issue - reason. -->
+- [ ] The `Build unsigned IPA` check passes.
+- [ ] No real playlist URLs, server addresses, usernames or passwords are in the code, commits or screenshots.
+- [ ] Upstream files are changed only where needed. Live TV code lives in `Core/LiveTV` / `UI/LiveTV`.
+- [ ] I read [CONTRIBUTING.md](../CONTRIBUTING.md).

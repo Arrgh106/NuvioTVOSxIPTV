@@ -459,8 +459,8 @@ final class StreamQualityTagsTests: XCTestCase {
 
     func testInfuseXCallbacksArePercentEncoded() {
         let stream = URL(string: "https://cdn.example/movie.mkv?token=a&b=c")!
-        let success = URL(string: "nuvio-tv://external-playback/ABC-123")!
-        let error = URL(string: "nuvio-tv://external-playback/error/ABC-123")!
+        let success = URL(string: "nuvio-iptv://external-playback/ABC-123")!
+        let error = URL(string: "nuvio-iptv://external-playback/error/ABC-123")!
         let launch = ExternalPlayer.infuse.launchURL(
             for: stream,
             successURL: success,
@@ -469,13 +469,13 @@ final class StreamQualityTagsTests: XCTestCase {
 
         XCTAssertTrue(launch.absoluteString.contains("x-success=nuvio-tv%3A%2F%2Fexternal-playback%2FABC-123"))
         XCTAssertTrue(launch.absoluteString.contains("x-error=nuvio-tv%3A%2F%2Fexternal-playback%2Ferror%2FABC-123"))
-        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-tv://"))
+        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-iptv://"))
     }
 
     func testSenPlayerXCallbacksArePercentEncoded() {
         let stream = URL(string: "https://cdn.example/movie.mkv?token=a&b=c")!
-        let success = URL(string: "nuvio-tv://external-playback/ABC-123")!
-        let error = URL(string: "nuvio-tv://external-playback/error/ABC-123")!
+        let success = URL(string: "nuvio-iptv://external-playback/ABC-123")!
+        let error = URL(string: "nuvio-iptv://external-playback/error/ABC-123")!
         let launch = ExternalPlayer.senplayer.launchURL(
             for: stream,
             successURL: success,
@@ -485,19 +485,19 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertTrue(launch.absoluteString.starts(with: "senplayer://x-callback-url/play?url="))
         XCTAssertTrue(launch.absoluteString.contains("x-success=nuvio-tv%3A%2F%2Fexternal-playback%2FABC-123"))
         XCTAssertTrue(launch.absoluteString.contains("x-error=nuvio-tv%3A%2F%2Fexternal-playback%2Ferror%2FABC-123"))
-        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-tv://"))
+        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-iptv://"))
     }
 
     func testExternalPlaybackCallbackParsingAndCompletionFraction() {
         let callback = ExternalPlaybackCallback.parse(
-            URL(string: "nuvio-tv://external-playback/ABC-123?progress=0.9")!
+            URL(string: "nuvio-iptv://external-playback/ABC-123?progress=0.9")!
         )
         XCTAssertEqual(callback?.id, "ABC-123")
         XCTAssertEqual(callback?.progress, 0.9)
         XCTAssertFalse(callback?.isError == true)
 
         let error = ExternalPlaybackCallback.parse(
-            URL(string: "nuvio-tv://external-playback/error/ABC-123?position=90")!
+            URL(string: "nuvio-iptv://external-playback/error/ABC-123?position=90")!
         )
         XCTAssertEqual(error?.id, "ABC-123")
         XCTAssertTrue(error?.isError == true)
@@ -507,14 +507,14 @@ final class StreamQualityTagsTests: XCTestCase {
 
     func testExternalPlaybackCallbackRejectsProgressOutsideDocumentedFractionBounds() {
         XCTAssertNil(ExternalPlaybackCallback.parse(
-            URL(string: "nuvio-tv://external-playback/id?progress=-0.01")!
+            URL(string: "nuvio-iptv://external-playback/id?progress=-0.01")!
         ))
         XCTAssertNil(ExternalPlaybackCallback.parse(
-            URL(string: "nuvio-tv://external-playback/id?progress=1.01")!
+            URL(string: "nuvio-iptv://external-playback/id?progress=1.01")!
         ))
         XCTAssertEqual(
             ExternalPlaybackCallback.parse(
-                URL(string: "nuvio-tv://external-playback/id?progress=1")!
+                URL(string: "nuvio-iptv://external-playback/id?progress=1")!
             )?.progress,
             1
         )

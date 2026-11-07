@@ -462,7 +462,7 @@ struct ExternalPlaybackCallback: Equatable {
     let duration: Double?
 
     static func parse(_ url: URL) -> ExternalPlaybackCallback? {
-        guard url.scheme?.lowercased() == "nuvio-tv",
+        guard [AppRepository.urlScheme, "nuvio-tv"].contains(url.scheme?.lowercased() ?? ""),
               url.host?.lowercased() == "external-playback" else { return nil }
         let parts = url.path.split(separator: "/").map(String.init)
         let isError = parts.first?.lowercased() == "error"

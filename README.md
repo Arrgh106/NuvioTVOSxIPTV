@@ -44,7 +44,7 @@
 
 > **AltStore / SideStore / Feather source:** `https://raw.githubusercontent.com/Arrgh106/NuvioTVOSxIPTV/main/apps.json`
 
-> **Note:** This build uses the same bundle ID as NuvioTVOS (`com.pyksel.nuviotvos`), so it **replaces** an installed NuvioTVOS instead of installing next to it.
+> **Standalone app:** It shows up as **Nuvio IPTV** with its own bundle ID (`io.github.arrgh106.nuvioiptv`), so it installs **next to** NuvioTVOS and keeps its own settings, logins and add-ons. Its URL scheme is `nuvio-iptv://`.
 
 <!-- BEGIN LATEST_BETA -->
 No release has been published yet. Grab the IPA from the latest [IPA build](https://github.com/Arrgh106/NuvioTVOSxIPTV/actions/workflows/build-ipa.yml).

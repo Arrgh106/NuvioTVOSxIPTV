@@ -3719,7 +3719,7 @@ private struct PlaybackLogsPage: View {
                 .buttonStyle(PosterCardButtonStyle())
             }
 
-            Text("Recent playback events are shown here. For crash details, collect the Apple TV unified log in Console (subsystem com.pyksel.nuviotvos, category playback-diagnostics).")
+            Text("Recent playback events are shown here. For crash details, collect the Apple TV unified log in Console (subsystem io.github.arrgh106.nuvioiptv, category playback-diagnostics).")
                 .font(.system(size: 20))
                 .foregroundColor(.white.opacity(0.55))
 

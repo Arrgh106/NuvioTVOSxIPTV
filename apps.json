@@ -4,7 +4,7 @@
   "apps": [
     {
       "name": "NuvioTVOS x IPTV",
-      "bundleIdentifier": "com.pyksel.nuviotvos",
+      "bundleIdentifier": "io.github.arrgh106.nuvioiptv",
       "developerName": "Arrgh106",
       "subtitle": "Nuvio TV for tvOS with Live TV / IPTV",
       "localizedDescription": "Fork of NuvioTVOS (Apple TV) that adds Live TV / IPTV from NuvioPlusIPTV: Xtream Codes login, channel groups and live playback. EPG, TV guide, catch-up and more are in progress.",

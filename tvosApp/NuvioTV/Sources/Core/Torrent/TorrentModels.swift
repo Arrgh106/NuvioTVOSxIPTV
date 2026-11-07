@@ -2,7 +2,7 @@ import Foundation
 import Network
 import OSLog
 
-let torrentLog = Logger(subsystem: "com.pyksel.nuviotvos", category: "torrent")
+let torrentLog = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "torrent")
 
 struct ParsedTorrentSource: Equatable, Sendable {
     let directURL: String?

@@ -65,7 +65,7 @@ struct NuvioTVApp: App {
 enum TVHomeDebugTrace {
     static var enabled = false
     private static let logger = Logger(
-        subsystem: "com.pyksel.nuviotvos",
+        subsystem: "io.github.arrgh106.nuvioiptv",
         category: "TVTrace"
     )
 
@@ -1225,7 +1225,7 @@ struct ContentView: View {
 
         // nuvio://meta?type=&id=  |  nuvio-tv://details?…  |  nuvio-tv://continue-watching?…
         // Also accepts com.nuvio.app.tv and path-style /meta/… /details/…
-        guard ["nuvio", "nuvio-tv", "com.nuvio.app.tv"].contains(scheme) else { return }
+        guard [AppRepository.urlScheme, "nuvio", "nuvio-tv", "com.nuvio.app.tv"].contains(scheme) else { return }
 
         // Infuse returns here after its player closes. Keep this before the
         // generic id guard: callback URLs intentionally carry only a session
@@ -1964,8 +1964,8 @@ struct ContentView: View {
                 profileID: profileID,
                 collectionContext: provenance
             )
-            successCallback = URL(string: "nuvio-tv://external-playback/\(id)")
-            errorCallback = URL(string: "nuvio-tv://external-playback/error/\(id)")
+            successCallback = URL(string: "\(AppRepository.urlScheme)://external-playback/\(id)")
+            errorCallback = URL(string: "\(AppRepository.urlScheme)://external-playback/error/\(id)")
         } else {
             externalSession = nil
             successCallback = nil

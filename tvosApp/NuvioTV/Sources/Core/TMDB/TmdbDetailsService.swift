@@ -2120,7 +2120,7 @@ enum MdbListDetailsService {
     }
 }
 
-private let mdbListLog = Logger(subsystem: "com.pyksel.nuviotvos", category: "mdblist")
+private let mdbListLog = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "mdblist")
 
 /// MDBList ratings by title, shared by the hero and Details:
 /// - one request per title for every provider;

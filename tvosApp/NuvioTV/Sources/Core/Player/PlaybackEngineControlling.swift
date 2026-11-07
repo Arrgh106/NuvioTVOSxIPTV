@@ -446,7 +446,7 @@ enum PlaybackSystemMonitor {
 /// Comprehensive memory inspection and telemetry sampler for NuvioTVOS.
 public enum TVMemoryDiagnostic {
     private static let logger = Logger(
-        subsystem: "com.pyksel.nuviotvos",
+        subsystem: "io.github.arrgh106.nuvioiptv",
         category: "TVMemory"
     )
 

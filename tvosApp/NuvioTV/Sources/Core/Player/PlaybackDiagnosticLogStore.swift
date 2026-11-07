@@ -19,7 +19,7 @@ struct PlaybackDiagnosticLogEntry: Identifiable, Equatable, Sendable {
 /// Recent playback diagnostics kept in memory; selected entries are also retained by unified logging.
 final class PlaybackDiagnosticLogStore: @unchecked Sendable {
     static let shared = PlaybackDiagnosticLogStore()
-    private static let systemLogger = Logger(subsystem: "com.pyksel.nuviotvos", category: "playback-diagnostics")
+    private static let systemLogger = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "playback-diagnostics")
 
     private let lock = NSLock()
     private let maxEntries: Int
