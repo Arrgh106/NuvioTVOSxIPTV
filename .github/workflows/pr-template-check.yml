@@ -1,5 +1,8 @@
 name: PR Template Check
 
+# Checks that a PR fills in .github/PULL_REQUEST_TEMPLATE.md (see CONTRIBUTING.md).
+# It only reports a failing check; it never closes or blocks a PR by itself.
+
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
@@ -47,23 +50,7 @@ jobs:
               return (content || "").match(/^\s*-\s+\[\s\]\s+.+$/gm) || [];
             }
 
-            function hasIssueReference(content) {
-              return /(?:^|[\s(\[<])(?:#\d+|https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/(?:issues|pull)\/\d+)/i.test(content || "");
-            }
-
-            const required = [
-              "Summary",
-              "PR type",
-              "Why",
-              "Issue or approval",
-              "UI / behavior impact",
-              "Policy check",
-              "Scope boundaries",
-              "Testing",
-              "Screenshots / Video",
-              "Breaking changes",
-              "Linked issues",
-            ];
+            const required = ["Summary", "Type", "Related issue", "Testing", "Screenshots / Video", "Checklist"];
             const missing = [];
             const empty = [];
             const failedRules = [];
@@ -74,80 +61,31 @@ jobs:
                 missing.push(name);
                 continue;
               }
-
+              if (name === "Type" || name === "Checklist") continue;
               const cleaned = cleanedContent(name);
-              const normalized = cleaned.toLowerCase();
-              const allowsNone =
-                name === "Breaking changes" ||
-                name === "Screenshots / Video" ||
-                name === "Linked issues";
-              const isAllowedNoneValue =
-                allowsNone &&
-                ["none", "n/a", "na", "no", "not applicable", "not a ui change", "no linked issue", "none."].includes(normalized);
-
-              if (
-                (!isAllowedNoneValue && cleaned.length < 4) ||
-                (!allowsNone && ["none", "n/a", "na", "not applicable"].includes(normalized)) ||
-                normalized.includes("what changed in this pr") ||
-                normalized.includes("why this change is needed") ||
-                normalized.includes("what you tested") ||
-                normalized.includes("example: fixes #123")
-              ) {
+              const allowsShort = name === "Screenshots / Video" || name === "Related issue";
+              if (cleaned.length < (allowsShort ? 2 : 4)) {
                 empty.push(name);
               }
             }
 
-            const prTypeContent = sectionContent("PR type") || "";
-            const prTypeChecked = checkedLines(prTypeContent);
-            if (sectionContent("PR type") !== null && prTypeChecked.length !== 1) {
-              failedRules.push("Check exactly one PR type.");
+            const typeContent = sectionContent("Type");
+            if (typeContent !== null && checkedLines(typeContent).length !== 1) {
+              failedRules.push("Check exactly one Type.");
             }
 
-            const impactContent = sectionContent("UI / behavior impact") || "";
-            const impactChecked = checkedLines(impactContent);
-            if (sectionContent("UI / behavior impact") !== null && impactChecked.length === 0) {
-              failedRules.push("Check at least one UI / behavior impact box.");
-            }
-
-            const policyContent = sectionContent("Policy check") || "";
-            const policyChecked = checkedLines(policyContent);
-            const policyUnchecked = uncheckedLines(policyContent);
-            if (sectionContent("Policy check") !== null && policyChecked.length === 0) {
-              failedRules.push("Policy check must include checked boxes.");
-            }
-            if (policyUnchecked.length) {
-              failedRules.push("Every Policy check box must be checked.");
-            }
-
-            const checkedTypeText = prTypeChecked.join(" ");
-            const issueRequired =
-              /bug fix|ui glitch|behavior bug|approved larger|approved directional/i.test(checkedTypeText);
-            const issueText = [
-              cleanedContent("Issue or approval") || "",
-              cleanedContent("Linked issues") || "",
-            ].join(" ");
-            if (issueRequired && !hasIssueReference(issueText)) {
-              failedRules.push("Bug fixes, UI glitch fixes, behavior fixes, and approved changes must link an issue or approved request.");
-            }
-
-            const uiChanged = checkedLines(impactContent).some((line) =>
-              /UI changed only to fix a documented glitch\/bug|UI change has explicit maintainer approval/i.test(line)
-            );
-            const screenshotText = (cleanedContent("Screenshots / Video") || "").toLowerCase();
-            if (uiChanged && ["none", "n/a", "na", "not a ui change", "not applicable"].includes(screenshotText)) {
-              failedRules.push("UI changes must include before/after screenshots or video.");
+            const checklistContent = sectionContent("Checklist");
+            if (checklistContent !== null && uncheckedLines(checklistContent).length) {
+              failedRules.push("Check every box in the Checklist (or explain in the PR why one doesn't apply and check it).");
             }
 
             if (missing.length || empty.length || failedRules.length) {
-              const lines = [
-                "PR description is missing required detail.",
-                "",
-              ];
+              const lines = ["The PR description doesn't follow the PR template yet.", ""];
               if (missing.length) lines.push(`Missing sections: ${missing.join(", ")}`);
-              if (empty.length) lines.push(`Incomplete sections: ${empty.join(", ")}`);
-              if (failedRules.length) lines.push(`Failed policy rules: ${failedRules.join(" ")}`);
+              if (empty.length) lines.push(`Empty sections: ${empty.join(", ")}`);
+              if (failedRules.length) lines.push(`Rules: ${failedRules.join(" ")}`);
               lines.push("");
-              lines.push("Please complete the PR template and make sure the PR fits CONTRIBUTING.md before review.");
+              lines.push("Edit the PR description to fill in .github/PULL_REQUEST_TEMPLATE.md; the check re-runs automatically.");
               core.setFailed(lines.join("\n"));
             } else {
               core.info("PR template check passed.");
