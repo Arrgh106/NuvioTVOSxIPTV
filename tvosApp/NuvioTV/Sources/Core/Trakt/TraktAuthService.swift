@@ -60,12 +60,22 @@ enum TraktConfig {
     }
 
     static func clientID(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.traktClientID)?
+        let custom = store.string(forKey: SettingsKey.traktClientID)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Fork: fall back to the app's built-in Trakt app (AppRepository).
+        return custom.isEmpty ? AppRepository.traktClientID : custom
     }
 
+    /// True when the app ships its own Trakt app, so no setup is needed.
+    static var hasBuiltInClient: Bool { !AppRepository.traktClientID.isEmpty }
+
     static func clientSecret(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.traktClientSecret)?
+        // Fork: the built-in Trakt app has no secret; a leftover custom
+        // secret must not be sent with its client ID.
+        let customID = store.string(forKey: SettingsKey.traktClientID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !customID.isEmpty else { return "" }
+        return store.string(forKey: SettingsKey.traktClientSecret)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 

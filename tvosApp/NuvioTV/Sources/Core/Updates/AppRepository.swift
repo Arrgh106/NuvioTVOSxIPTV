@@ -11,4 +11,17 @@ enum AppRepository {
     /// This app's own URL scheme (Top Shelf links, external player callbacks).
     /// Upstream's `nuvio-tv` would be ambiguous with NuvioTVOS installed too.
     static let urlScheme = "nuvio-iptv"
+
+    /// Client ID of this app's own Trakt API app, so users only tap
+    /// "Connect" and approve on their phone, like on Android. A Trakt client
+    /// ID is public (it ships in every Android APK too); new Trakt apps need
+    /// no secret. Registered redirect URIs: `urn:ietf:wg:oauth:2.0:oob` and
+    /// `http://localhost:5173/callback`. Forks should use their own app.
+    /// Empty = users have to enter their own Client ID (upstream behaviour).
+    static let traktClientID = ""
+
+    /// Client ID of this app's own Simkl app (PIN login, no secret needed).
+    /// Registered redirect URI: `urn:ietf:wg:oauth:2.0:oob`. Empty = users
+    /// have to enter their own Client ID (upstream behaviour).
+    static let simklClientID = ""
 }
