@@ -3,7 +3,7 @@ name: Build unsigned IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
     paths-ignore:
       - '**.md'
@@ -16,6 +16,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -24,10 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select latest stable Xcode
+      - name: List installed Xcode versions
+        run: ls -d /Applications/Xcode*.app
+
+      # The app uses tvOS 27 SDK APIs (e.g. tabViewSidebarHeader), so it needs
+      # Xcode 27; "latest" also picks a beta when no stable 27 is installed.
+      - name: Select Xcode 27
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: ${{ vars.XCODE_VERSION || 'latest' }}
 
       - name: Install Tuist (pinned in mise.toml)
         uses: jdx/mise-action@v2
@@ -60,3 +66,8 @@ jobs:
             "${{ runner.temp }}/ipa/NuvioTV-unsigned.ipa#NuvioTVOSxIPTV-${GITHUB_REF_NAME}-unsigned.ipa" \
             --title "NuvioTVOSxIPTV $GITHUB_REF_NAME" \
             --notes "Unsigned tvOS IPA – sideload and re-sign with your own Apple ID."
+
+          # Releases created with GITHUB_TOKEN don't fire `release` events, so
+          # start the AltStore source and README updates explicitly.
+          gh workflow run altstore.yml --ref main
+          gh workflow run update-latest-beta.yml --ref main -f tag="$GITHUB_REF_NAME"
