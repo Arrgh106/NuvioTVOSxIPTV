@@ -1425,6 +1425,12 @@ final class NuvioSyncManager: ObservableObject {
                         localProfileId: activeProfile.id
                     )
                 }
+                // Fork: API keys and Jellyfin servers (Core/AccountSync).
+                await AccountExtrasSync.pull(
+                    session: session,
+                    remoteProfileId: remoteProfileId,
+                    localProfileId: activeProfile.id
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1915,6 +1921,12 @@ final class NuvioSyncManager: ObservableObject {
                     localProfileId: activeProfile.id
                 )
                 self.lastKnownSettingsSnapshot = self.snapshotSettingsKeys(for: activeProfile.id)
+                // Fork: API keys and Jellyfin servers (Core/AccountSync).
+                await AccountExtrasSync.pushIfChanged(
+                    session: session,
+                    remoteProfileId: remoteProfileId,
+                    localProfileId: activeProfile.id
+                )
             }
 
             guard Self.watchStateSyncEnabled(for: activeProfile.id) else { return }
