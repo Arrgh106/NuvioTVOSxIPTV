@@ -4937,7 +4937,12 @@ private struct IntegrationSettingsView: View {
                 } else {
                     SettingsActionRow(
                         title: L10n.string("livetv_trakt_custom_app_title", fallback: "Use your own Trakt app"),
-                        subtitle: L10n.string("livetv_trakt_custom_app_subtitle", fallback: "Optional. Not needed: Connect works without any setup."),
+                        subtitle: AppRepository.traktBuiltInAppIsRestricted
+                            ? L10n.string(
+                                "livetv_trakt_custom_app_restricted_subtitle",
+                                fallback: "Connect is limited to invited users for now; Trakt is reviewing the app. If trakt.tv rejects the code, create a free API app at trakt.tv/oauth/applications and enter its Client ID here."
+                            )
+                            : L10n.string("livetv_trakt_custom_app_subtitle", fallback: "Optional. Not needed: Connect works without any setup."),
                         value: L10n.string("settings_open", fallback: "Open"),
                         accentColor: accentColor,
                         action: { showingTraktCustomApp = true }

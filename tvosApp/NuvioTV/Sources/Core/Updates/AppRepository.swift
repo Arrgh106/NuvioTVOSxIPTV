@@ -21,6 +21,11 @@ enum AppRepository {
     /// Empty = users have to enter their own Client ID (upstream behaviour).
     static let traktClientID = "3maPPLzo48UbH6kAPS2bGyxEAoScNgdRdKHmzzouxpc"
 
+    /// The built-in Trakt app is still a Trakt "development" app: only the
+    /// owner and users added on developer.trakt.tv can sign in with it.
+    /// Production access is requested; set to false once Trakt grants it.
+    static let traktBuiltInAppIsRestricted = true
+
     /// Client ID of this app's own Simkl app (PIN login, no secret needed).
     /// Registered redirect URI: `urn:ietf:wg:oauth:2.0:oob`. Empty = users
     /// have to enter their own Client ID (upstream behaviour).
