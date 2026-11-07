@@ -48,7 +48,9 @@ let signingXCConfig: Path = .relativeToManifest("Configurations/Signing.xcconfig
 
 // MARK: - Shared values
 
-let bundleID = "com.pyksel.nuviotvos"
+// Own bundle ID so this fork installs next to NuvioTVOS instead of replacing it.
+// The App Group (group.<bundleID>) follows automatically.
+let bundleID = "io.github.arrgh106.nuvioiptv"
 let marketingVersion = "3.5.0"
 let projectVersion = "81"
 // LibTrueHD 3.0.0 requires tvOS 18; APAC rendering itself is gated to tvOS 26+.
@@ -202,6 +204,7 @@ let topShelfTarget: Target = .target(
         "NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift",
         "NuvioTV/Sources/Core/TopShelf/TopShelfLayout.swift",
         "NuvioTV/Sources/Core/TopShelf/TopShelfTrailers.swift",
+        "NuvioTV/Sources/Core/Updates/AppRepository.swift",
     ],
     entitlements: .file(path: "TopShelf/TopShelf.entitlements"),
     settings: .settings(

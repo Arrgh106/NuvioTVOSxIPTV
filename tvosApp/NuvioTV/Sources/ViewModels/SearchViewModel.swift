@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import OSLog
 
-private let searchViewLogger = Logger(subsystem: "com.pyksel.nuviotvos", category: "search")
+private let searchViewLogger = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "search")
 
 /// Content-type filter for the search screen.
 enum SearchContentType: String, CaseIterable, Identifiable {

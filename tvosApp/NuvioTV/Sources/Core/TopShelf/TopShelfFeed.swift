@@ -237,7 +237,7 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
 
     private func link(host: String) -> URL? {
         var components = URLComponents()
-        components.scheme = "nuvio-tv"
+        components.scheme = AppRepository.urlScheme
         components.host = host
         components.queryItems = [
             URLQueryItem(name: "id", value: contentId),

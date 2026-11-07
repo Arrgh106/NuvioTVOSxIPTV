@@ -55,8 +55,8 @@ final class NativePlayerExternalTests: XCTestCase {
 
     func testNativePlayerUsesXCallbackFormWhenCallbacksPresent() {
         let stream = URL(string: "https://cdn.example/movie.mkv")!
-        let success = URL(string: "nuvio-tv://external-playback/ABC-123")!
-        let error = URL(string: "nuvio-tv://external-playback/error/ABC-123")!
+        let success = URL(string: "nuvio-iptv://external-playback/ABC-123")!
+        let error = URL(string: "nuvio-iptv://external-playback/error/ABC-123")!
 
         let plain = ExternalPlayer.nativePlayer.launchURL(for: stream, title: "Movie")!
         XCTAssertTrue(plain.absoluteString.starts(with: "nativeplayer://play?url="))
@@ -71,7 +71,7 @@ final class NativePlayerExternalTests: XCTestCase {
         XCTAssertTrue(cb.absoluteString.starts(with: "nativeplayer://x-callback-url/play?url="))
         XCTAssertTrue(cb.absoluteString.contains("x-success=nuvio-tv%3A%2F%2Fexternal-playback%2FABC-123"))
         XCTAssertTrue(cb.absoluteString.contains("x-error=nuvio-tv%3A%2F%2Fexternal-playback%2Ferror%2FABC-123"))
-        XCTAssertFalse(cb.absoluteString.contains("x-success=nuvio-tv://"))
+        XCTAssertFalse(cb.absoluteString.contains("x-success=nuvio-iptv://"))
     }
 
     func testBestCompleteSubtitleFirstSinksForcedAndPrefersLanguage() {

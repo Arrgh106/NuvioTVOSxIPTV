@@ -84,7 +84,7 @@ struct CatalogSearchOutcome {
     }
 }
 
-private let catalogSearchLogger = Logger(subsystem: "com.pyksel.nuviotvos", category: "search")
+private let catalogSearchLogger = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "search")
 
 private func logCatalogSearchOutcome(
     configuredManifests: Int,

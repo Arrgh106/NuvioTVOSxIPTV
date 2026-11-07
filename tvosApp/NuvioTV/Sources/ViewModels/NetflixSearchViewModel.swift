@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import OSLog
 
-private let netflixSearchLogger = Logger(subsystem: "com.pyksel.nuviotvos", category: "search")
+private let netflixSearchLogger = Logger(subsystem: "io.github.arrgh106.nuvioiptv", category: "search")
 
 /// Netflix-style alternative to `SearchViewModel`. Same catalog search use
 /// case (`CatalogRepository.search(query:)`) and the same debounce/cache/
