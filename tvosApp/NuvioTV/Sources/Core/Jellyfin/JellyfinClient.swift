@@ -379,6 +379,35 @@ struct JellyfinClient {
                     case ItemType = "Type"
                 }
                 let ItemType: String
+
+                /// Fork: only Id and Type are required. Every other field
+                /// that's missing or shaped differently is left empty, so
+                /// one odd field (e.g. a cast entry without a name, common on
+                /// series) no longer drops the whole series and with it all
+                /// its episodes.
+                init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    Id = try c.decode(String.self, forKey: .Id)
+                    ItemType = try c.decode(String.self, forKey: .ItemType)
+                    Name = (try? c.decodeIfPresent(String.self, forKey: .Name)) ?? ""
+                    Overview = try? c.decodeIfPresent(String.self, forKey: .Overview)
+                    ProductionYear = try? c.decodeIfPresent(Int.self, forKey: .ProductionYear)
+                    PremiereDate = try? c.decodeIfPresent(String.self, forKey: .PremiereDate)
+                    CommunityRating = try? c.decodeIfPresent(Double.self, forKey: .CommunityRating)
+                    OfficialRating = try? c.decodeIfPresent(String.self, forKey: .OfficialRating)
+                    Genres = try? c.decodeIfPresent([String].self, forKey: .Genres)
+                    RunTimeTicks = try? c.decodeIfPresent(Int64.self, forKey: .RunTimeTicks)
+                    ProviderIds = try? c.decodeIfPresent(Payload.ProviderIds.self, forKey: .ProviderIds)
+                    MediaSources = (try? c.decodeIfPresent([LossyDecodable<MediaSource>].self, forKey: .MediaSources))?
+                        .compactMap(\.value)
+                    ParentIndexNumber = try? c.decodeIfPresent(Int.self, forKey: .ParentIndexNumber)
+                    IndexNumber = try? c.decodeIfPresent(Int.self, forKey: .IndexNumber)
+                    SeriesId = try? c.decodeIfPresent(String.self, forKey: .SeriesId)
+                    People = (try? c.decodeIfPresent([LossyDecodable<Person>].self, forKey: .People))?
+                        .compactMap(\.value)
+                    ImageTags = try? c.decodeIfPresent(Payload.ImageTags.self, forKey: .ImageTags)
+                    BackdropImageTags = try? c.decodeIfPresent([String].self, forKey: .BackdropImageTags)
+                }
             }
             // Fork: one item missing a field skips that item instead of
             // failing the whole page ("The data couldn't be read because

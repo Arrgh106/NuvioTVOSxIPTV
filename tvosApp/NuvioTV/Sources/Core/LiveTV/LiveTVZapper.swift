@@ -2,8 +2,7 @@ import Foundation
 
 /// Channel up/down while a live channel plays. Holds the list the channel
 /// was started from (the group shown in Live TV, as on Android) and turns a
-/// step into the next channel's playback item. Up = next in the list,
-/// down = previous, wrapping around at the ends.
+/// step into the next channel's playback item, wrapping around at the ends.
 @MainActor
 final class LiveTVZapper {
     static let shared = LiveTVZapper()

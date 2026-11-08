@@ -533,9 +533,10 @@ extension PlayerView {
                     return
                 }
                 guard !viewModel.showControls else { return }
-                // Fork (Live TV): up/down switches channels, as on Android.
-                if direction == .up, viewModel.zapLiveChannel(by: 1) { return }
-                if direction == .down, viewModel.zapLiveChannel(by: -1) { return }
+                // Fork (Live TV): up/down switches channels. Up = previous
+                // row in the list, down = next row (as the list reads).
+                if direction == .up, viewModel.zapLiveChannel(by: -1) { return }
+                if direction == .down, viewModel.zapLiveChannel(by: 1) { return }
                 switch direction {
                 case .left, .right:
                     // Swipes on the remote touchpad trigger onMoveCommand (.left / .right).

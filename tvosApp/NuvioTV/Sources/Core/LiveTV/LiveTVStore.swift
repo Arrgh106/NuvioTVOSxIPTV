@@ -383,7 +383,10 @@ extension NuvioMeta {
     /// (`PlayerViewModel.isLiveStream`), which skips resume/scrobbling.
     static func liveChannel(_ channel: XtreamLiveChannel) -> NuvioMeta {
         NuvioMeta(
-            id: "iptv:xtream:\(channel.streamID)", name: channel.name, description: nil,
+            id: "iptv:xtream:\(channel.streamID)",
+            // The player shows the channel number with the name.
+            name: channel.number.map { "\($0)  \(channel.name)" } ?? channel.name,
+            description: nil,
             posterUrl: channel.logoURL, backgroundUrl: nil, logoUrl: channel.logoURL,
             imdbId: nil, tmdbId: nil, type: "channel", year: nil, genres: nil,
             rating: nil, releaseInfo: nil, runtime: nil, cast: nil, director: nil,

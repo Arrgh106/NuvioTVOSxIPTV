@@ -1606,6 +1606,8 @@ class PlayerViewModel: ObservableObject {
         self.title = meta.name
         self.subtitle = subtitle
         self.isLiveStream = Self.isLiveStream(meta: meta, url: url)
+        // Fork (Live TV): show what's on under the channel name.
+        refreshLiveProgramLine(meta: meta)
         self.livePlaybackHasStarted = false
         self.liveBufferingBeganAt = nil
         self.status = .buffering
@@ -2994,6 +2996,32 @@ class PlayerViewModel: ObservableObject {
         videoNaturalSize = .zero
         if pollTimer == nil { startPolling() }
         startLoadWatchdog()
+    }
+
+    /// Fork (Live TV): what's on now and next, as the line under the channel
+    /// name; refreshed when the programme ends.
+    private var liveProgramTask: Task<Void, Never>?
+
+    private func refreshLiveProgramLine(meta: NuvioMeta) {
+        liveProgramTask?.cancel()
+        liveProgramTask = nil
+        guard isLiveStream, meta.type == "channel",
+              let streamID = meta.id.split(separator: ":").last.flatMap({ Int($0) }) else { return }
+        liveProgramTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let info = await LiveTVEPG.shared.nowNext(for: streamID)
+                guard !Task.isCancelled, let self, self.activeMeta?.id == meta.id || self.title == meta.name else { return }
+                var parts: [String] = []
+                if let now = info?.now { parts.append("\(now.title)  ·  \(now.timeRange)") }
+                if let next = info?.next {
+                    let style = Date.FormatStyle(date: .omitted, time: .shortened)
+                    parts.append(L10n.string("livetv_next_up", fallback: "Next") + ": \(next.title) \(next.start.formatted(style))")
+                }
+                self.subtitle = parts.joined(separator: "     ")
+                let wait = info?.now?.end.timeIntervalSinceNow ?? 600
+                try? await Task.sleep(nanoseconds: UInt64(max(30, wait + 5) * 1_000_000_000))
+            }
+        }
     }
 
     /// Fork (Live TV): switches to the channel `delta` steps away in the
