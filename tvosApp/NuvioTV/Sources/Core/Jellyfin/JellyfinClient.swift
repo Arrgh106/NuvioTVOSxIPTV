@@ -178,19 +178,41 @@ struct JellyfinClient {
 
     /// Every movie, series, and episode under one library, with every field
     /// `JellyfinLibraryResolver` needs to build display metadata and a
-    /// playable file locally — no second request per title. Jellyfin
-    /// returns the whole recursive listing in one response — no paging loop
-    /// needed for libraries in the size a home NAS/server realistically hosts.
+    /// playable file locally — no second request per title.
+    ///
+    /// Fork: fetched in pages. One request for a whole large library (or a
+    /// server reached over the internet) ran past the request timeout
+    /// ("The request timed out"), so nothing was indexed.
     func items(userId: String, libraryId: String) async throws -> [JellyfinMediaItem] {
-        let (data, response) = try await get("Users/\(userId)/Items", query: [
-            "ParentId": libraryId,
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Series,Episode",
-            "Fields": Self.itemFields,
-            "EnableImages": "true"
-        ])
-        try Self.validate(response, data: data)
+        let pageSize = 250
+        var result: [JellyfinMediaItem] = []
+        var startIndex = 0
+        while true {
+            try Task.checkCancellation()
+            let (data, response) = try await get("Users/\(userId)/Items", query: [
+                "ParentId": libraryId,
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series,Episode",
+                "Fields": Self.itemFields,
+                "EnableImages": "true",
+                "SortBy": "SortName",
+                "SortOrder": "Ascending",
+                "StartIndex": String(startIndex),
+                "Limit": String(pageSize),
+                "EnableTotalRecordCount": "true",
+            ], timeout: 120)
+            try Self.validate(response, data: data)
+            let page = try Self.decodeItems(data)
+            result += page.items
+            startIndex += page.items.count
+            if page.items.isEmpty || page.items.count < pageSize
+                || page.total.map({ startIndex >= $0 }) == true {
+                return result
+            }
+        }
+    }
 
+    private static func decodeItems(_ data: Data) throws -> (items: [JellyfinMediaItem], total: Int?) {
         struct Payload: Decodable {
             struct ProviderIds: Decodable {
                 let Imdb: String?
@@ -235,9 +257,10 @@ struct JellyfinClient {
                 let ItemType: String
             }
             let Items: [Item]
+            let TotalRecordCount: Int?
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return payload.Items.map { item in
+        return (payload.Items.map { item in
             JellyfinMediaItem(
                 id: item.Id,
                 name: item.Name,
@@ -261,7 +284,7 @@ struct JellyfinClient {
                 container: item.MediaSources?.first?.Container,
                 sizeBytes: item.MediaSources?.first?.Size
             )
-        }
+        }, payload.TotalRecordCount)
     }
 
     // MARK: - Media URLs
@@ -279,13 +302,14 @@ struct JellyfinClient {
 
     // MARK: - Plumbing
 
-    private func get(_ path: String, query: [String: String] = [:]) async throws -> (Data, URLResponse) {
+    private func get(_ path: String, query: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> (Data, URLResponse) {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let url = components?.url else {
             throw ClientError(message: "Invalid request URL")
         }
         var request = URLRequest(url: url)
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.authorizationHeader(token: accessToken), forHTTPHeaderField: "Authorization")
         return try await session.data(for: request)
     }
