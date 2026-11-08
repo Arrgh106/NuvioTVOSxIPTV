@@ -96,6 +96,10 @@ final class LiveTVChannelCell: UICollectionViewCell {
     private let logoView = UIImageView()
     private let placeholder = UIImageView(image: UIImage(systemName: "tv"))
     private let nameLabel = UILabel()
+    /// "Now: Title · 20:15–21:00" from the short EPG, filled in when it arrives.
+    private let epgLabel = UILabel()
+    private var epgTask: Task<Void, Never>?
+    private var streamID: Int?
     private let archiveIcon = UIImageView(image: UIImage(systemName: "clock.arrow.circlepath"))
     private var logoTask: Task<Void, Never>?
     private var logoURL: URL?
@@ -137,7 +141,15 @@ final class LiveTVChannelCell: UICollectionViewCell {
         archiveIcon.setContentHuggingPriority(.required, for: .horizontal)
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stack = UIStackView(arrangedSubviews: [numberLabel, logoBox, nameLabel, archiveIcon])
+        epgLabel.font = .systemFont(ofSize: 20, weight: .regular)
+        epgLabel.lineBreakMode = .byTruncatingTail
+        epgLabel.isHidden = true
+        let textStack = UIStackView(arrangedSubviews: [nameLabel, epgLabel])
+        textStack.axis = .vertical
+        textStack.spacing = 2
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [numberLabel, logoBox, textStack, archiveIcon])
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 24
@@ -166,12 +178,44 @@ final class LiveTVChannelCell: UICollectionViewCell {
         nameLabel.text = channel.name
         archiveIcon.isHidden = channel.archiveDays == 0
         loadLogo(channel.logoURL.flatMap(URL.init(string:)))
+        loadEPG(channel.streamID)
+    }
+
+    private func loadEPG(_ id: Int) {
+        streamID = id
+        if let cached = LiveTVEPG.shared.cached(id) {
+            showEPG(cached)
+            return
+        }
+        epgTask = Task { [weak self] in
+            // Skip rows that only fly past while scrolling fast.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let info = await LiveTVEPG.shared.nowNext(for: id)
+            guard !Task.isCancelled, let self, self.streamID == id else { return }
+            self.showEPG(info)
+        }
+    }
+
+    private func showEPG(_ info: LiveTVEPG.NowNext?) {
+        guard let now = info?.now else {
+            epgLabel.text = nil
+            epgLabel.isHidden = true
+            return
+        }
+        epgLabel.text = "\(now.title)  ·  \(now.timeRange)"
+        epgLabel.isHidden = false
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         logoTask?.cancel()
         logoTask = nil
+        epgTask?.cancel()
+        epgTask = nil
+        streamID = nil
+        epgLabel.text = nil
+        epgLabel.isHidden = true
         logoURL = nil
         logoView.image = nil
         placeholder.isHidden = false
@@ -207,6 +251,7 @@ final class LiveTVChannelCell: UICollectionViewCell {
         let text: UIColor = focused ? .black : .white
         background.backgroundColor = focused ? .white : .clear
         nameLabel.textColor = text
+        epgLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.65) : UIColor.white.withAlphaComponent(0.55)
         numberLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
         archiveIcon.tintColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
         transform = focused ? CGAffineTransform(scaleX: 1.02, y: 1.02) : .identity

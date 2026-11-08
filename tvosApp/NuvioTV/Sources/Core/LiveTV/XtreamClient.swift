@@ -63,6 +63,19 @@ struct XtreamClient: Sendable {
         return channels.filter { $0.streamID >= 0 }
     }
 
+    /// What's on now and next on one channel (`get_short_epg`). Titles and
+    /// descriptions come base64-encoded from most panels.
+    func shortEPG(streamID: Int, limit: Int = 2) async throws -> [XtreamProgram] {
+        let data = try await get(action: "get_short_epg", extra: [
+            URLQueryItem(name: "stream_id", value: String(streamID)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ], timeout: 8)
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let listings = root["epg_listings"] as? [[String: Any]] else { return [] }
+        return listings.compactMap(XtreamProgram.init(listing:))
+            .sorted { $0.start < $1.start }
+    }
+
     // MARK: Links
 
     /// `{server}/live/{user}/{pass}/{id}.{ext}`
@@ -87,7 +100,7 @@ struct XtreamClient: Sendable {
 
     // MARK: Transport
 
-    private func get(action: String?) async throws -> Data {
+    private func get(action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil) async throws -> Data {
         guard var components = URLComponents(string: "\(server)/player_api.php"),
               components.host?.isEmpty == false else {
             throw XtreamError.invalidServer
@@ -97,6 +110,7 @@ struct XtreamClient: Sendable {
             URLQueryItem(name: "password", value: password),
         ]
         if let action { items.append(URLQueryItem(name: "action", value: action)) }
+        items += extra
         components.queryItems = items
         // URLComponents leaves "+" unescaped, which servers read as a space.
         components.percentEncodedQuery = components.percentEncodedQuery?
@@ -104,6 +118,7 @@ struct XtreamClient: Sendable {
         guard let url = components.url else { throw XtreamError.invalidServer }
 
         var request = URLRequest(url: url)
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await Self.session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

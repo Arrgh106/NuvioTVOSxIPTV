@@ -233,3 +233,47 @@ enum XtreamError: LocalizedError, Equatable {
         }
     }
 }
+
+/// One programme from the provider's short EPG.
+struct XtreamProgram: Hashable, Sendable {
+    let title: String
+    let description: String?
+    let start: Date
+    let end: Date
+
+    init?(listing: [String: Any]) {
+        func number(_ key: String) -> Double? {
+            if let value = listing[key] as? Double { return value }
+            if let value = listing[key] as? Int { return Double(value) }
+            return (listing[key] as? String).flatMap(Double.init)
+        }
+        guard let start = number("start_timestamp"), let end = number("stop_timestamp") ?? number("end_timestamp"),
+              start.isFinite, end.isFinite, end > start,
+              // Unix seconds between 2000 and 2100; anything else is garbage.
+              (946_684_800...4_102_444_800).contains(start),
+              (946_684_800...4_102_444_800).contains(end),
+              let rawTitle = listing["title"] as? String else { return nil }
+        let title = Self.decode(rawTitle)
+        guard !title.isEmpty else { return nil }
+        self.title = title
+        self.description = (listing["description"] as? String).map(Self.decode).flatMap { $0.isEmpty ? nil : $0 }
+        self.start = Date(timeIntervalSince1970: start)
+        self.end = Date(timeIntervalSince1970: end)
+    }
+
+    /// Panels send base64; a few send plain text.
+    private static func decode(_ value: String) -> String {
+        if let data = Data(base64Encoded: value), let text = String(data: data, encoding: .utf8) {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func isOn(at date: Date = Date()) -> Bool { start <= date && date < end }
+
+    /// "20:15–21:00"
+    var timeRange: String {
+        let style = Date.FormatStyle(date: .omitted, time: .shortened)
+        return "\(start.formatted(style))–\(end.formatted(style))"
+    }
+}
