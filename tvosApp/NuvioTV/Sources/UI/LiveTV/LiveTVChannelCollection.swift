@@ -10,7 +10,10 @@ struct LiveTVChannelCollection: UIViewRepresentable {
     /// the view reloads and scrolls back to the top.
     let listID: String
     let channels: [XtreamLiveChannel]
+    var favoriteIDs: Set<Int> = []
     let onSelect: (XtreamLiveChannel) -> Void
+    /// Long press (context menu): add to / remove from Favorites.
+    var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -23,11 +26,13 @@ struct LiveTVChannelCollection: UIViewRepresentable {
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect, in: view)
+        context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite, in: view)
         return view
     }
 
     func updateUIView(_ view: UICollectionView, context: Context) {
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect, in: view)
+        context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite, in: view)
     }
 
     private static func layout() -> UICollectionViewLayout {
@@ -47,6 +52,36 @@ struct LiveTVChannelCollection: UIViewRepresentable {
         private var listID: String?
         private var channels: [XtreamLiveChannel] = []
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
+        private var favoriteIDs: Set<Int> = []
+        private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
+
+        func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void, in view: UICollectionView) {
+            onToggleFavorite = onToggle
+            guard ids != favoriteIDs else { return }
+            favoriteIDs = ids
+            for case let cell as LiveTVChannelCell in view.visibleCells {
+                cell.setFavorite(cell.streamIDValue.map(ids.contains) ?? false)
+            }
+        }
+
+        func collectionView(
+            _ collectionView: UICollectionView,
+            contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+            point: CGPoint
+        ) -> UIContextMenuConfiguration? {
+            guard let indexPath = indexPaths.first, indexPath.item < channels.count else { return nil }
+            let channel = channels[indexPath.item]
+            let isFavorite = favoriteIDs.contains(channel.streamID)
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                let title = isFavorite
+                    ? L10n.string("livetv_remove_favorite", fallback: "Remove from Favorites")
+                    : L10n.string("livetv_add_favorite", fallback: "Add to Favorites")
+                let action = UIAction(title: title, image: UIImage(systemName: isFavorite ? "star.slash" : "star")) { _ in
+                    self?.onToggleFavorite(channel)
+                }
+                return UIMenu(title: channel.name, children: [action])
+            }
+        }
 
         func update(
             listID: String,
@@ -73,7 +108,9 @@ struct LiveTVChannelCollection: UIViewRepresentable {
             let cell = collectionView.dequeueReusableCell(
                 withReuseIdentifier: LiveTVChannelCell.reuseID, for: indexPath) as! LiveTVChannelCell
             if indexPath.item < channels.count {
-                cell.configure(with: channels[indexPath.item])
+                let channel = channels[indexPath.item]
+                cell.configure(with: channel)
+                cell.setFavorite(favoriteIDs.contains(channel.streamID))
             }
             return cell
         }
@@ -101,6 +138,8 @@ final class LiveTVChannelCell: UICollectionViewCell {
     private var epgTask: Task<Void, Never>?
     private var streamID: Int?
     private let archiveIcon = UIImageView(image: UIImage(systemName: "clock.arrow.circlepath"))
+    private let favoriteIcon = UIImageView(image: UIImage(systemName: "star.fill"))
+    var streamIDValue: Int? { streamID }
     private var logoTask: Task<Void, Never>?
     private var logoURL: URL?
 
@@ -149,7 +188,11 @@ final class LiveTVChannelCell: UICollectionViewCell {
         textStack.spacing = 2
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stack = UIStackView(arrangedSubviews: [numberLabel, logoBox, textStack, archiveIcon])
+        favoriteIcon.contentMode = .scaleAspectFit
+        favoriteIcon.tintColor = .systemYellow
+        favoriteIcon.isHidden = true
+        favoriteIcon.setContentHuggingPriority(.required, for: .horizontal)
+        let stack = UIStackView(arrangedSubviews: [numberLabel, logoBox, textStack, favoriteIcon, archiveIcon])
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 24
@@ -179,6 +222,10 @@ final class LiveTVChannelCell: UICollectionViewCell {
         archiveIcon.isHidden = channel.archiveDays == 0
         loadLogo(channel.logoURL.flatMap(URL.init(string:)))
         loadEPG(channel.streamID)
+    }
+
+    func setFavorite(_ favorite: Bool) {
+        favoriteIcon.isHidden = !favorite
     }
 
     private func loadEPG(_ id: Int) {

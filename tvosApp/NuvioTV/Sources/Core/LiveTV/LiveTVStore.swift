@@ -106,9 +106,16 @@ private struct LiveTVCache: Codable {
 /// A channel group in the sidebar. `all` shows every channel.
 struct LiveTVGroup: Identifiable, Hashable {
     static let allID = "__all__"
+    static let favoritesID = "__favorites__"
+    static let recentID = "__recent__"
+    static let searchID = "__search__"
     let id: String
     let name: String
     let count: Int
+
+    /// Favorites, Recently watched, Search and All: built by the app, not
+    /// provider categories (can't be hidden).
+    var isSpecial: Bool { id.hasPrefix("__") && id != LiveTVGroup.otherID }
 }
 
 @MainActor
@@ -136,10 +143,27 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var listRevision = 0
 
     private static let lastGroupKey = "nuvio.tv.livetv.lastGroup"
+    private static let hiddenGroupsKey = "nuvio.tv.livetv.hiddenGroups"
+    private static let favoritesKey = "nuvio.tv.livetv.favorites"
+    private static let recentKey = "nuvio.tv.livetv.recent"
+    private static let recentLimit = 30
+
+    /// Provider categories (and "Other"), hidden ones included: what the
+    /// group manager lists.
+    @Published private(set) var categoryGroups: [LiveTVGroup] = []
+    @Published private(set) var hiddenGroupIDs: Set<String> = []
+    @Published private(set) var favoriteIDs: [Int] = []
+    @Published private(set) var recentIDs: [Int] = []
+    @Published private(set) var searchQuery = ""
 
     private var allowedFormats: [String] = []
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
+    private var channelsByID: [Int: XtreamLiveChannel] = [:]
+    private var knownCategoryIDs: Set<String> = []
+    /// "All channels" without hidden groups; rebuilt when they change.
+    private var allVisible: [XtreamLiveChannel] = []
+    private var searchResults: [XtreamLiveChannel] = []
     private var loadTask: Task<Void, Never>?
 
     init() {
@@ -149,8 +173,107 @@ final class LiveTVStore: ObservableObject {
     var hasAccount: Bool { account != nil }
 
     var visibleChannels: [XtreamLiveChannel] {
-        if selectedGroupID == LiveTVGroup.allID { return channels }
-        return channelsByGroup[selectedGroupID] ?? []
+        switch selectedGroupID {
+        case LiveTVGroup.allID: return allVisible
+        case LiveTVGroup.favoritesID: return favoriteIDs.compactMap { channelsByID[$0] }
+        case LiveTVGroup.recentID: return recentIDs.compactMap { channelsByID[$0] }
+        case LiveTVGroup.searchID: return searchResults
+        default: return channelsByGroup[selectedGroupID] ?? []
+        }
+    }
+
+    // MARK: Groups, favorites, recent, search
+
+    func isFavorite(_ channel: XtreamLiveChannel) -> Bool {
+        favoriteIDs.contains(channel.streamID)
+    }
+
+    func toggleFavorite(_ channel: XtreamLiveChannel) {
+        if let index = favoriteIDs.firstIndex(of: channel.streamID) {
+            favoriteIDs.remove(at: index)
+        } else {
+            favoriteIDs.append(channel.streamID)
+        }
+        ProfileSettings.current.set(favoriteIDs, forKey: Self.favoritesKey)
+        rebuildGroups()
+    }
+
+    /// Called when a channel starts playing.
+    func recordWatched(_ channel: XtreamLiveChannel) {
+        var ids = recentIDs.filter { $0 != channel.streamID }
+        ids.insert(channel.streamID, at: 0)
+        recentIDs = Array(ids.prefix(Self.recentLimit))
+        ProfileSettings.current.set(recentIDs, forKey: Self.recentKey)
+        // Don't reorder the list under the user while they browse it.
+        if selectedGroupID != LiveTVGroup.recentID { rebuildGroups() }
+    }
+
+    func setHidden(_ ids: Set<String>, hidden: Bool) {
+        if hidden { hiddenGroupIDs.formUnion(ids) } else { hiddenGroupIDs.subtract(ids) }
+        ProfileSettings.current.set(Array(hiddenGroupIDs), forKey: Self.hiddenGroupsKey)
+        rebuildGroups()
+    }
+
+    /// Searches channel names in the visible groups; an empty query ends the
+    /// search.
+    func search(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchQuery = trimmed
+        if trimmed.isEmpty {
+            searchResults = []
+            if selectedGroupID == LiveTVGroup.searchID { selectedGroupID = LiveTVGroup.allID }
+        } else {
+            searchResults = allVisible.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        }
+        rebuildGroups()
+        if !trimmed.isEmpty { selectedGroupID = LiveTVGroup.searchID }
+    }
+
+    private func loadPreferences() {
+        let store = ProfileSettings.current
+        hiddenGroupIDs = Set(store.stringArray(forKey: Self.hiddenGroupsKey) ?? [])
+        favoriteIDs = (store.array(forKey: Self.favoritesKey) as? [Int]) ?? []
+        recentIDs = (store.array(forKey: Self.recentKey) as? [Int]) ?? []
+    }
+
+    /// Sidebar: Search (while searching), Favorites, Recently watched, All,
+    /// then the provider's groups that aren't hidden.
+    private func rebuildGroups() {
+        allVisible = hiddenGroupIDs.isEmpty ? channels : channels.filter { channel in
+            let category = channel.categoryID ?? ""
+            let group = knownCategoryIDs.contains(category) ? category : LiveTVGroup.otherID
+            return !hiddenGroupIDs.contains(group)
+        }
+        if !searchQuery.isEmpty {
+            searchResults = allVisible.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
+        }
+        var result: [LiveTVGroup] = []
+        if !searchQuery.isEmpty {
+            result.append(LiveTVGroup(
+                id: LiveTVGroup.searchID,
+                name: L10n.string("livetv_search_group", fallback: "Search") + ": " + searchQuery,
+                count: searchResults.count))
+        }
+        let favorites = favoriteIDs.filter { channelsByID[$0] != nil }.count
+        if favorites > 0 {
+            result.append(LiveTVGroup(
+                id: LiveTVGroup.favoritesID,
+                name: L10n.string("livetv_favorites", fallback: "Favorites"), count: favorites))
+        }
+        let recent = recentIDs.filter { channelsByID[$0] != nil }.count
+        if recent > 0 {
+            result.append(LiveTVGroup(
+                id: LiveTVGroup.recentID,
+                name: L10n.string("livetv_recent", fallback: "Recently watched"), count: recent))
+        }
+        if !channels.isEmpty {
+            result.append(LiveTVGroup(id: LiveTVGroup.allID, name: groupNames.all, count: allVisible.count))
+        }
+        result += categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }
+        groups = result
+        if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) {
+            selectedGroupID = LiveTVGroup.allID
+        }
     }
 
     /// Picks up the account of the active profile (profiles can switch while
@@ -162,6 +285,11 @@ final class LiveTVStore: ObservableObject {
         userInfo = nil
         channels = []
         channelsByGroup = [:]
+        channelsByID = [:]
+        categoryGroups = []
+        searchQuery = ""
+        searchResults = []
+        loadPreferences()
         groups = []
         selectedGroupID = LiveTVGroup.allID
         guard let stored else { return }
@@ -224,6 +352,11 @@ final class LiveTVStore: ObservableObject {
         userInfo = nil
         channels = []
         channelsByGroup = [:]
+        channelsByID = [:]
+        categoryGroups = []
+        allVisible = []
+        searchResults = []
+        searchQuery = ""
         groups = []
         state = .idle
         lastUpdated = nil
@@ -293,7 +426,19 @@ final class LiveTVStore: ObservableObject {
     struct Prepared: Sendable {
         let channels: [XtreamLiveChannel]
         let channelsByGroup: [String: [XtreamLiveChannel]]
+        let channelsByID: [Int: XtreamLiveChannel]
+        /// Provider categories in panel order (+ "Other"), without "All".
         let groups: [LiveTVGroup]
+        let knownCategoryIDs: Set<String>
+    }
+
+    /// Rows like "##### AT&T #####" that providers put between channels as
+    /// headings; they aren't channels.
+    nonisolated static func isSeparator(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.hasPrefix("###")
+            || (trimmed.hasPrefix("--") && trimmed.hasSuffix("--"))
+            || (trimmed.hasPrefix("==") && trimmed.hasSuffix("=="))
     }
 
     private var groupNames: GroupNames { Self.groupNamesValue() }
@@ -319,9 +464,11 @@ final class LiveTVStore: ObservableObject {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
+            .filter { !isSeparator($0.name) }
         var byGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
+        let byID = Dictionary(sorted.map { ($0.streamID, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var result = [LiveTVGroup(id: LiveTVGroup.allID, name: names.all, count: sorted.count)]
+        var result: [LiveTVGroup] = []
         var known = Set<String>()
         for category in categories {
             let count = byGroup[category.id]?.count ?? 0
@@ -336,15 +483,20 @@ final class LiveTVStore: ObservableObject {
             byGroup[LiveTVGroup.otherID] = orphans
             result.append(LiveTVGroup(id: LiveTVGroup.otherID, name: names.other, count: orphans.count))
         }
-        return Prepared(channels: sorted, channelsByGroup: byGroup, groups: result)
+        return Prepared(
+            channels: sorted, channelsByGroup: byGroup, channelsByID: byID,
+            groups: result, knownCategoryIDs: known)
     }
 
     private func apply(_ prepared: Prepared) {
         channels = prepared.channels
         channelsByGroup = prepared.channelsByGroup
+        channelsByID = prepared.channelsByID
+        knownCategoryIDs = prepared.knownCategoryIDs
         let restoring = groups.isEmpty
-        groups = prepared.groups
+        categoryGroups = prepared.groups
         listRevision &+= 1
+        rebuildGroups()
         if restoring, let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
            groups.contains(where: { $0.id == last }) {
             selectedGroupID = last

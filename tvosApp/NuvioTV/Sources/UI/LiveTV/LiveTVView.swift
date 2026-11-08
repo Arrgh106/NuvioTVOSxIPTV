@@ -4,6 +4,8 @@ import SwiftUI
 struct LiveTVView: View {
     @StateObject private var store = LiveTVStore()
     @State private var isEditingAccount = false
+    @State private var isManagingGroups = false
+    @State private var searchText = ""
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -14,6 +16,8 @@ struct LiveTVView: View {
                     isEditing: store.hasAccount,
                     onDone: { isEditingAccount = false }
                 )
+            } else if isManagingGroups {
+                LiveTVGroupManager(store: store, onDone: { isManagingGroups = false })
             } else {
                 channelBrowser
             }
@@ -49,6 +53,17 @@ struct LiveTVView: View {
             Spacer()
             if store.state == .loading {
                 ProgressView()
+            }
+            // Search channel names; submitting an empty field ends the search.
+            TextField(L10n.string("livetv_search_channels", fallback: "Search channels"), text: $searchText)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .frame(width: 380)
+                .onSubmit { store.search(searchText) }
+            Button {
+                isManagingGroups = true
+            } label: {
+                Label(L10n.string("livetv_groups_button", fallback: "Groups"), systemImage: "eye.slash")
             }
             Button {
                 store.refresh()
@@ -112,15 +127,20 @@ struct LiveTVView: View {
             // UIKit list with cell reuse: stays fast with tens of thousands
             // of channels ("All channels" can hold 50k+).
             LiveTVChannelCollection(
-                listID: "\(store.selectedGroupID)|\(store.listRevision)",
+                // Search text and hidden groups change the content of a
+                // group without changing its id or always its size.
+                listID: "\(store.selectedGroupID)|\(store.listRevision)|\(store.searchQuery)|\(store.hiddenGroupIDs.count)",
                 channels: channels,
-                onSelect: play
+                favoriteIDs: Set(store.favoriteIDs),
+                onSelect: play,
+                onToggleFavorite: { store.toggleFavorite($0) }
             )
         }
     }
 
     private func play(_ channel: XtreamLiveChannel) {
         guard let item = store.playbackItem(for: channel) else { return }
+        store.recordWatched(channel)
         // Up/down in the player switches through this group.
         let liveStore = store
         LiveTVZapper.shared.begin(channel: channel, in: liveStore.visibleChannels) { [weak liveStore] in
