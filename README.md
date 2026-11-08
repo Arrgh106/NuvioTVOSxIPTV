@@ -1,6 +1,9 @@
 <div align="center">
 
-  <img src="https://github.com/tapframe/NuvioTV/blob/main/assets/brand/app_logo_wordmark.png" alt="Nuvio" width="300" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/nuvio-iptv-tvos-logo-dark.png" />
+    <img src="assets/brand/nuvio-iptv-tvos-logo.png" alt="Nuvio × IPTV for tvOS" width="420" />
+  </picture>
   <br />
   <br />
 
