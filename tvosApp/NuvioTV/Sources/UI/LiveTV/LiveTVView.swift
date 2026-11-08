@@ -84,28 +84,12 @@ struct LiveTVView: View {
     }
 
     private var groupList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(store.groups) { group in
-                    Button {
-                        store.selectedGroupID = group.id
-                    } label: {
-                        HStack {
-                            Text(group.name)
-                                .lineLimit(1)
-                            Spacer()
-                            Text("\(group.count)")
-                                .foregroundColor(.secondary)
-                        }
-                        .font(.system(size: 24, weight: store.selectedGroupID == group.id ? .bold : .regular))
-                        .padding(.vertical, 4)
-                    }
-                    .buttonStyle(LiveTVRowButtonStyle(isSelected: store.selectedGroupID == group.id))
-                }
-            }
-            .padding(.vertical, 20)
-            .padding(.horizontal, 10)
-        }
+        // UIKit list with cell reuse, like the channel list.
+        LiveTVGroupCollection(
+            groups: store.groups,
+            selectedID: store.selectedGroupID,
+            onSelect: { store.selectedGroupID = $0 }
+        )
     }
 
     @ViewBuilder
@@ -159,34 +143,6 @@ struct LiveTVLogo: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-private struct LiveTVRowButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        LiveTVRowBody(configuration: configuration, isSelected: isSelected)
-    }
-
-    private struct LiveTVRowBody: View {
-        let configuration: ButtonStyle.Configuration
-        let isSelected: Bool
-        @Environment(\.isFocused) private var isFocused
-
-        var body: some View {
-            configuration.label
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundColor(isFocused ? .black : .white)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(isFocused ? Color.white : (isSelected ? Color.white.opacity(0.14) : Color.clear))
-                )
-                .scaleEffect(isFocused ? 1.02 : 1)
-                .animation(.easeOut(duration: 0.12), value: isFocused)
-        }
     }
 }
 
