@@ -3018,8 +3018,11 @@ class PlayerViewModel: ObservableObject {
                     parts.append(L10n.string("livetv_next_up", fallback: "Next") + ": \(next.title) \(next.start.formatted(style))")
                 }
                 self.subtitle = parts.joined(separator: "     ")
+                // Provider data: clamp before converting (a bogus end time
+                // must not overflow the UInt64 conversion).
                 let wait = info?.now?.end.timeIntervalSinceNow ?? 600
-                try? await Task.sleep(nanoseconds: UInt64(max(30, wait + 5) * 1_000_000_000))
+                let seconds = min(max(30, (wait.isFinite ? wait : 600) + 5), 6 * 3600)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             }
         }
     }

@@ -248,6 +248,10 @@ struct XtreamProgram: Hashable, Sendable {
             return (listing[key] as? String).flatMap(Double.init)
         }
         guard let start = number("start_timestamp"), let end = number("stop_timestamp") ?? number("end_timestamp"),
+              start.isFinite, end.isFinite, end > start,
+              // Unix seconds between 2000 and 2100; anything else is garbage.
+              (946_684_800...4_102_444_800).contains(start),
+              (946_684_800...4_102_444_800).contains(end),
               let rawTitle = listing["title"] as? String else { return nil }
         let title = Self.decode(rawTitle)
         guard !title.isEmpty else { return nil }
