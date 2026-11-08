@@ -222,6 +222,35 @@ struct JellyfinClient {
         return result
     }
 
+    /// Fork (live lookup): titles matching a name, across all libraries.
+    /// Only movies/series; the caller checks the provider ids.
+    func search(userId: String, term: String, types: String, limit: Int = 25) async throws -> [JellyfinMediaItem] {
+        let (data, response) = try await get("Users/\(userId)/Items", query: [
+            "SearchTerm": term,
+            "Recursive": "true",
+            "IncludeItemTypes": types,
+            "Fields": "ProviderIds,MediaSources,ProductionYear",
+            "EnableImages": "false",
+            "EnableUserData": "false",
+            "Limit": String(limit),
+        ], timeout: 8)
+        try Self.validate(response, data: data)
+        return try Self.decodeItems(data).items
+    }
+
+    /// Fork (live lookup): the episodes of one season of a series.
+    func episodes(userId: String, seriesId: String, season: Int) async throws -> [JellyfinMediaItem] {
+        let (data, response) = try await get("Shows/\(seriesId)/Episodes", query: [
+            "UserId": userId,
+            "Season": String(season),
+            "Fields": "MediaSources",
+            "EnableImages": "false",
+            "EnableUserData": "false",
+        ], timeout: 8)
+        try Self.validate(response, data: data)
+        return try Self.decodeItems(data).items
+    }
+
     /// One library's item ids only (no metadata, no images): a few bytes per
     /// item, so comparing against the local index stays cheap even for tens
     /// of thousands of episodes.

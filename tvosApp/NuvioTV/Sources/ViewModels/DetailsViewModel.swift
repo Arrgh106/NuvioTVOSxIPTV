@@ -547,6 +547,8 @@ class DetailsViewModel: ObservableObject {
                 let resolvedMeta = self.seedingCachedRatings(
                     into: meta.preservingEnrichment(from: self.uiState.meta)
                 )
+                // Fork: lets the Jellyfin live lookup search by this title.
+                JellyfinLiveLookup.remember(resolvedMeta, alias: id)
                 var primaryState = self.uiState
                 primaryState.meta = resolvedMeta
                 primaryState.isInWatchlist = LibraryStore.contains(metaId: resolvedMeta.id, type: resolvedMeta.type)

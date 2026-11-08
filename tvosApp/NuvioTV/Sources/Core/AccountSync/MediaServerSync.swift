@@ -101,35 +101,6 @@ enum MediaServerSync {
         if didChange {
             await JellyfinSessionManager.shared.connectAll(autoSync: true)
         }
-        await selectDefaultLibraries(linkedIDs: Set(state.links.keys))
-    }
-
-    /// Imported servers whose account entry selects no library would never
-    /// be indexed, so none of their titles would show up anywhere. Select
-    /// every video library once connected, then index it. The changed
-    /// selection goes back to the account with the next push.
-    private static func selectDefaultLibraries(linkedIDs: Set<String>) async {
-        let manager = JellyfinSessionManager.shared
-        let pending = JellyfinServerStore.shared.servers.filter {
-            linkedIDs.contains($0.id) && $0.selectedLibraryIDs.isEmpty
-        }
-        guard !pending.isEmpty else { return }
-        await manager.connectAll(autoSync: false)
-        let videoTypes: Set<String> = ["movies", "tvshows", "mixed", "homevideos"]
-        for server in pending {
-            guard case let .connected(libraries) = manager.connectionState(for: server.id) else { continue }
-            let ids = libraries
-                .filter { library in
-                    guard let type = library.collectionType?.lowercased() else { return true }
-                    return videoTypes.contains(type)
-                }
-                .map(\.id)
-            guard !ids.isEmpty else { continue }
-            var updated = JellyfinServerStore.shared.server(id: server.id) ?? server
-            updated.selectedLibraryIDs = ids
-            JellyfinServerStore.shared.upsert(updated)
-            manager.sync(updated)
-        }
     }
 
     /// Runs a sync only when the Jellyfin servers changed locally since the
