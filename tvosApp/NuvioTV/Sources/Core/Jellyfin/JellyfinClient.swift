@@ -293,11 +293,11 @@ struct JellyfinClient {
                         case ItemType = "Type"
                     }
                 }
-                let Items: [Item]
+                let Items: [LossyDecodable<Item>]
                 let TotalRecordCount: Int?
             }
             let page = try JSONDecoder().decode(Payload.self, from: data)
-            result += page.Items.map { ItemStub(id: $0.Id, type: $0.ItemType, seriesId: $0.SeriesId) }
+            result += page.Items.compactMap(\.value).map { ItemStub(id: $0.Id, type: $0.ItemType, seriesId: $0.SeriesId) }
             startIndex += page.Items.count
             await onProgress(startIndex, page.TotalRecordCount)
             if page.Items.isEmpty || page.Items.count < pageSize
@@ -380,11 +380,14 @@ struct JellyfinClient {
                 }
                 let ItemType: String
             }
-            let Items: [Item]
+            // Fork: one item missing a field skips that item instead of
+            // failing the whole page ("The data couldn't be read because
+            // it is missing").
+            let Items: [LossyDecodable<Item>]
             let TotalRecordCount: Int?
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return (payload.Items.map { item in
+        return (payload.Items.compactMap(\.value).map { item in
             JellyfinMediaItem(
                 id: item.Id,
                 name: item.Name,
@@ -448,5 +451,15 @@ struct JellyfinClient {
             }
             throw ClientError(message: L10n.format("jellyfin_error_status", fallback: "Server returned status %d", http.statusCode))
         }
+    }
+}
+
+/// Fork: decodes to nil instead of throwing, so one malformed element
+/// doesn't fail a whole array.
+struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }

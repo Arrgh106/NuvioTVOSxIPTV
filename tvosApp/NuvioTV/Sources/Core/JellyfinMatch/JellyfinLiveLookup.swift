@@ -42,10 +42,17 @@ enum JellyfinLiveLookup {
         let ids = JellyfinCatalogMatch.catalogIDs(fromVideoId: videoId)
         let parts = videoId.split(separator: ":")
         let baseKey = ids.tmdbID != nil ? "tmdb:\(ids.tmdbID!)" : String(parts.first ?? "")
-        guard let hint = hints[baseKey] else { return [] }
+        let episode = StreamsRepository.seasonEpisode(fromVideoId: videoId)
+        // Streams can be searched before Details has loaded the title (e.g.
+        // from Continue Watching): then look the name up ourselves.
+        var found = hints[baseKey]
+        if found == nil, let imdb = ids.imdbID {
+            found = await cinemetaHint(imdbID: imdb, isSeries: episode.season != nil)
+            if let found { hints[baseKey] = found }
+        }
+        guard let hint = found else { return [] }
         let imdb = ids.imdbID ?? hint.imdbID
         let tmdb = ids.tmdbID ?? hint.tmdbID
-        let episode = StreamsRepository.seasonEpisode(fromVideoId: videoId)
 
         let targets: [(server: JellyfinServerConfig, baseURL: URL, token: String)] =
             JellyfinServerStore.shared.servers.compactMap { server in
@@ -76,6 +83,22 @@ enum JellyfinLiveLookup {
             for await streams in group { all += streams }
             return all
         }
+    }
+
+    /// Name and year from Cinemeta's public meta endpoint.
+    nonisolated private static func cinemetaHint(imdbID: String, isSeries: Bool) async -> Hint? {
+        let type = isSeries ? "series" : "movie"
+        guard let url = URL(string: "https://v3-cinemeta.strem.io/meta/\(type)/\(imdbID).json") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 6
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let meta = root["meta"] as? [String: Any],
+              let name = meta["name"] as? String, !name.isEmpty else { return nil }
+        let yearText = (meta["year"] as? String) ?? (meta["releaseInfo"] as? String) ?? ""
+        let year = Int(yearText.prefix(4)) ?? (meta["year"] as? Int)
+        let tmdb = (meta["moviedb_id"] as? Int) ?? (meta["tmdb_id"] as? Int)
+        return Hint(name: name, year: year, imdbID: imdbID, tmdbID: tmdb)
     }
 
     nonisolated private static func lookup(
