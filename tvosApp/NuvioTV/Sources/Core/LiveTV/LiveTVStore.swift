@@ -124,7 +124,18 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var groups: [LiveTVGroup] = []
     @Published private(set) var state: LoadState = .idle
     @Published private(set) var lastUpdated: Date?
-    @Published var selectedGroupID: String = LiveTVGroup.allID
+    @Published var selectedGroupID: String = LiveTVGroup.allID {
+        didSet {
+            // Live TV reopens in the group you were last browsing (as on Android).
+            if selectedGroupID != oldValue, !groups.isEmpty {
+                ProfileSettings.current.set(selectedGroupID, forKey: Self.lastGroupKey)
+            }
+        }
+    }
+    /// Bumped whenever the channel lists are replaced, so views reload.
+    @Published private(set) var listRevision = 0
+
+    private static let lastGroupKey = "nuvio.tv.livetv.lastGroup"
 
     private var allowedFormats: [String] = []
     private var channels: [XtreamLiveChannel] = []
@@ -331,8 +342,13 @@ final class LiveTVStore: ObservableObject {
     private func apply(_ prepared: Prepared) {
         channels = prepared.channels
         channelsByGroup = prepared.channelsByGroup
+        let restoring = groups.isEmpty
         groups = prepared.groups
-        if !groups.contains(where: { $0.id == selectedGroupID }) {
+        listRevision &+= 1
+        if restoring, let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
+           groups.contains(where: { $0.id == last }) {
+            selectedGroupID = last
+        } else if !groups.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID
         }
     }

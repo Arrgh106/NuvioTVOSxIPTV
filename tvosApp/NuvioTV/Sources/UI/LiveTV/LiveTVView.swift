@@ -4,11 +4,6 @@ import SwiftUI
 struct LiveTVView: View {
     @StateObject private var store = LiveTVStore()
     @State private var isEditingAccount = false
-    /// Rows shown in the channel list. SwiftUI's lazy stack and the focus
-    /// engine hang with tens of thousands of rows (seen with ~56k), so the
-    /// list grows in pages instead.
-    @State private var visibleLimit = LiveTVView.pageSize
-    private static let pageSize = 300
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -94,7 +89,6 @@ struct LiveTVView: View {
                 ForEach(store.groups) { group in
                     Button {
                         store.selectedGroupID = group.id
-                        visibleLimit = Self.pageSize
                     } label: {
                         HStack {
                             Text(group.name)
@@ -131,31 +125,13 @@ struct LiveTVView: View {
             .foregroundColor(.white.opacity(0.7))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(channels.prefix(visibleLimit)) { channel in
-                        Button {
-                            play(channel)
-                        } label: {
-                            LiveTVChannelRow(channel: channel)
-                        }
-                        .buttonStyle(LiveTVRowButtonStyle(isSelected: false))
-                    }
-                    if channels.count > visibleLimit {
-                        Button {
-                            visibleLimit += Self.pageSize
-                        } label: {
-                            Text(L10n.string("livetv_show_more", fallback: "Show more")
-                                + " (\(channels.count - visibleLimit))")
-                                .font(.system(size: 24, weight: .semibold))
-                        }
-                        .buttonStyle(LiveTVRowButtonStyle(isSelected: false))
-                    }
-                }
-                .padding(.vertical, 20)
-                .padding(.horizontal, 10)
-            }
-            .id(store.selectedGroupID)
+            // UIKit list with cell reuse: stays fast with tens of thousands
+            // of channels ("All channels" can hold 50k+).
+            LiveTVChannelCollection(
+                listID: "\(store.selectedGroupID)|\(store.listRevision)",
+                channels: channels,
+                onSelect: play
+            )
         }
     }
 
@@ -166,30 +142,6 @@ struct LiveTVView: View {
 }
 
 // MARK: - Rows
-
-private struct LiveTVChannelRow: View {
-    let channel: XtreamLiveChannel
-
-    var body: some View {
-        HStack(spacing: 24) {
-            Text(channel.number.map(String.init) ?? "")
-                .font(.system(size: 22, weight: .semibold).monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 80, alignment: .trailing)
-            LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
-                .frame(width: 120, height: 68)
-            Text(channel.name)
-                .font(.system(size: 26, weight: .medium))
-                .lineLimit(1)
-            Spacer()
-            if channel.archiveDays > 0 {
-                Image(systemName: "clock.arrow.circlepath")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.vertical, 6)
-    }
-}
 
 struct LiveTVLogo: View {
     let url: URL?
