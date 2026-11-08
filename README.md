@@ -35,11 +35,16 @@
 
 **This fork brings those Live TV features to the Apple TV.** Everything from NuvioTVOS stays as it is. Live TV is added as its own sidebar tab and uses the app's built-in player in live mode.
 
+On top of that, the fork syncs more of your [nuvio.tv](https://nuvio.tv) account than upstream does, offers a one-tap Trakt login and plays films and episodes straight from your Jellyfin server.
+
+**Progress and plans:** see [ROADMAP.md](./ROADMAP.md).
+
 ## Install
 
 1. Download the newest `.ipa`:
    - from [Releases](https://github.com/Arrgh106/NuvioTVOSxIPTV/releases), or
    - from the latest successful [IPA build](https://github.com/Arrgh106/NuvioTVOSxIPTV/actions/workflows/build-ipa.yml) (**Artifacts** at the bottom of the run, GitHub login required).
+     If your sideloading tool fails with *"An Application Group with Identifier … is not available"*, use the `…-no-appgroup` artifact instead: everything works except the Top Shelf rows.
 2. Sideload it to your Apple TV with Sideloadly, AltStore/SideStore, atvloadly, Xcode or Apple Configurator. The IPA is unsigned and gets signed with your own Apple ID when you install it.
 
 > **AltStore / SideStore / Feather source:** `https://raw.githubusercontent.com/Arrgh106/NuvioTVOSxIPTV/main/apps.json`
@@ -61,6 +66,37 @@ No release has been published yet. Grab the IPA from the latest [IPA build](http
 
 The password is stored in the Apple TV Keychain. Each Nuvio profile has its own Live TV login. The channel list is cached on the device and refreshes every 12 hours, or when you press **Refresh**.
 
+### Using Live TV
+
+- **Groups** (header button): hide the provider's groups you don't need. Type e.g. `DE` in the filter and press **Only these** to keep just those groups. Hidden groups also leave *All channels* and the search.
+- **Favorites:** long press a channel and choose *Add to Favorites*. Favorites and *Recently watched* appear at the top of the group list.
+- **Search:** type a channel name in the header field and confirm.
+- **In the player:** up/down switches to the channel above/below in the group you started from (e.g. within Favorites). The top line shows the channel number and name, the line below what's on now and next.
+- Channel rows show what's on now, from your provider's EPG.
+
+## nuvio.tv account sync
+
+Sign in with your Nuvio account and pick a profile. Besides what upstream syncs (library, progress, add-ons, profile settings), the fork also syncs, in both directions:
+
+| What | Notes |
+| --- | --- |
+| API keys: TMDB, MDBList, TorBox, Premiumize, Real-Debrid | Stored in the Keychain on the Apple TV |
+| Jellyfin servers | Address, user and access token; servers you add on the Apple TV go to your account too |
+| Trakt options | Progress source, library source, "More like this", Continue Watching days, comments, unaired Next Up |
+| Trailer options | Trailers on/off and delay |
+
+The last change wins. Trakt and Simkl logins themselves can't be synced (nuvio.tv doesn't store them): connect once per device.
+
+## Trakt
+
+**Settings → Integrations → Trakt → Connect**, scan the QR code with your phone and approve. No Client ID or secret to enter. Scrobbling is on by default once connected. You can still use your own Trakt API app via *Use your own Trakt app*.
+
+## Jellyfin
+
+You don't need to import your library. When you open a film or an episode (from Cinemeta, TMDB, …), the app asks your Jellyfin server(s) live whether they have it, matched by IMDb/TMDB id, and lists the file as a **Jellyfin** stream next to your add-ons.
+
+Reading a library into the app (for upstream's Jellyfin Home rows) is optional. After the first full read, background syncs only fetch what changed, and the sync screen shows its progress.
+
 ## Feature status
 
 What is done and what is planned, compared with Nuvio + IPTV:
@@ -68,12 +104,14 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Feature | Status |
 | --- | --- |
 | Xtream Codes login, account expiry & connections | ✅ Done |
-| Channel groups, channel list with numbers & logos | ✅ Done |
+| Channel groups, channel list with numbers & logos (fast with 50k+ channels) | ✅ Done |
 | Live playback in the built-in player (live mode) | ✅ Done |
-| Channel zapping in the player (up/down, channel list overlay) | 🚧 Next |
-| EPG from the provider (`xmltv.php`) + extra XMLTV guides, merging, "Assign EPG" | 🗓 Planned |
+| Channel zapping in the player (up/down within the group) | ✅ Done |
+| Now / next from the provider's EPG (channel list and player) | ✅ Done |
+| Hide groups, favorites, recently watched, channel search | ✅ Done |
+| Full EPG (`xmltv.php`) + extra XMLTV guides, merging, "Assign EPG" | 🗓 Planned |
 | TiviMate-style TV guide grid, info panel, overlay mode | 🗓 Planned |
-| Favorites, hide / reorder / rename channels, custom groups, name cleaner | 🗓 Planned |
+| Reorder / rename channels, custom groups, name cleaner | 🗓 Planned |
 | Parental controls (PIN lock for groups) | 🗓 Planned |
 | Catch-up, restart live shows, time-shift | 🗓 Planned |
 | On Demand (provider movies & series, matched to Nuvio details) | 🗓 Planned |
@@ -110,8 +148,11 @@ mise install
 
 | Path | Contents |
 | --- | --- |
-| [`tvosApp/NuvioTV/Sources/Core/LiveTV/`](tvosApp/NuvioTV/Sources/Core/LiveTV) | Xtream API client, models, account and Keychain storage, channel cache, `LiveTVStore` |
-| [`tvosApp/NuvioTV/Sources/UI/LiveTV/`](tvosApp/NuvioTV/Sources/UI/LiveTV) | Live TV tab: login form, groups, channel list |
+| [`tvosApp/NuvioTV/Sources/Core/LiveTV/`](tvosApp/NuvioTV/Sources/Core/LiveTV) | Xtream API client, models, account and Keychain storage, channel cache, `LiveTVStore` (groups, favorites, search), EPG cache, zapping |
+| [`tvosApp/NuvioTV/Sources/UI/LiveTV/`](tvosApp/NuvioTV/Sources/UI/LiveTV) | Live TV tab: login form, group and channel lists (`UICollectionView`), group manager |
+| [`tvosApp/NuvioTV/Sources/Core/AccountSync/`](tvosApp/NuvioTV/Sources/Core/AccountSync) | Extra nuvio.tv sync: API keys, Jellyfin servers, Trakt/trailer options |
+| [`tvosApp/NuvioTV/Sources/Core/JellyfinMatch/`](tvosApp/NuvioTV/Sources/Core/JellyfinMatch) | Jellyfin live lookup, catalog matching, incremental library sync |
+| [`tvosApp/NuvioTV/Sources/Core/Updates/AppRepository.swift`](tvosApp/NuvioTV/Sources/Core/Updates/AppRepository.swift) | Fork identity: repo, URL scheme, built-in Trakt/Simkl client IDs |
 | [`tvosApp/NuvioTV/Sources/NuvioTVApp.swift`](tvosApp/NuvioTV/Sources/NuvioTVApp.swift) | `TVTab.liveTV` and the hand-off to the built-in player |
 
 Channels are passed to the player with an `iptv:` id and the `channel` type, which switches the player into its live mode (fast zapping start, no resume or scrobbling).
