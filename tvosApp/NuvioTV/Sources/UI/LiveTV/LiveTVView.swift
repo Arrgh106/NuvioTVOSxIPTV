@@ -4,6 +4,11 @@ import SwiftUI
 struct LiveTVView: View {
     @StateObject private var store = LiveTVStore()
     @State private var isEditingAccount = false
+    /// Rows shown in the channel list. SwiftUI's lazy stack and the focus
+    /// engine hang with tens of thousands of rows (seen with ~56k), so the
+    /// list grows in pages instead.
+    @State private var visibleLimit = LiveTVView.pageSize
+    private static let pageSize = 300
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -89,6 +94,7 @@ struct LiveTVView: View {
                 ForEach(store.groups) { group in
                     Button {
                         store.selectedGroupID = group.id
+                        visibleLimit = Self.pageSize
                     } label: {
                         HStack {
                             Text(group.name)
@@ -127,11 +133,21 @@ struct LiveTVView: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(channels) { channel in
+                    ForEach(channels.prefix(visibleLimit)) { channel in
                         Button {
                             play(channel)
                         } label: {
                             LiveTVChannelRow(channel: channel)
+                        }
+                        .buttonStyle(LiveTVRowButtonStyle(isSelected: false))
+                    }
+                    if channels.count > visibleLimit {
+                        Button {
+                            visibleLimit += Self.pageSize
+                        } label: {
+                            Text(L10n.string("livetv_show_more", fallback: "Show more")
+                                + " (\(channels.count - visibleLimit))")
+                                .font(.system(size: 24, weight: .semibold))
                         }
                         .buttonStyle(LiveTVRowButtonStyle(isSelected: false))
                     }
