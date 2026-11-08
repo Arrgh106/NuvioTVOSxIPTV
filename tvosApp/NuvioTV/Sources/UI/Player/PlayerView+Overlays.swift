@@ -114,9 +114,11 @@ extension PlayerView {
             case .buffering, .idle:
                 if isLoadingOverlayVisible {
                     PlayerLoadingOverlay(
-                        backdropUrl: meta.backgroundUrl ?? meta.landscapePosterUrl ?? meta.posterUrl,
-                        logoUrl: meta.logoUrl,
-                        title: meta.name,
+                        backdropUrl: liveChannelLoadingMeta == nil
+                            ? meta.backgroundUrl ?? meta.landscapePosterUrl ?? meta.posterUrl
+                            : nil,
+                        logoUrl: liveChannelLoadingMeta?.logoUrl ?? meta.logoUrl,
+                        title: liveChannelLoadingMeta?.name ?? meta.name,
                         message: viewModel.loadingStepMessage,
                         startTime: PlaybackStartupTiming.requestDate(for: viewModel.startupBenchmarkToken),
                         onDismiss: onRemoteBack,
@@ -136,9 +138,11 @@ extension PlayerView {
             case .playing, .paused:
                 if isLoadingOverlayVisible {
                     PlayerLoadingOverlay(
-                        backdropUrl: meta.backgroundUrl ?? meta.landscapePosterUrl ?? meta.posterUrl,
-                        logoUrl: meta.logoUrl,
-                        title: meta.name,
+                        backdropUrl: liveChannelLoadingMeta == nil
+                            ? meta.backgroundUrl ?? meta.landscapePosterUrl ?? meta.posterUrl
+                            : nil,
+                        logoUrl: liveChannelLoadingMeta?.logoUrl ?? meta.logoUrl,
+                        title: liveChannelLoadingMeta?.name ?? meta.name,
                         message: viewModel.loadingStepMessage,
                         startTime: PlaybackStartupTiming.requestDate(for: viewModel.startupBenchmarkToken),
                         onDismiss: onRemoteBack,
@@ -433,5 +437,17 @@ private struct ContentWarningsOverlayView: View {
             .transition(.opacity.combined(with: .move(edge: .trailing)))
             .zIndex(1)
         }
+    }
+}
+
+// MARK: - Fork (Live TV)
+
+extension PlayerView {
+    /// The channel currently loading when switching channels in the player:
+    /// `meta` stays the first channel's, so its logo stayed up. Channels get
+    /// no blurred backdrop either (a small logo stretched full screen).
+    var liveChannelLoadingMeta: NuvioMeta? {
+        guard let active = viewModel.activeMeta, active.type == "channel" else { return nil }
+        return active
     }
 }
