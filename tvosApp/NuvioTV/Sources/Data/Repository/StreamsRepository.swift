@@ -97,13 +97,20 @@ final class StreamsRepository: ObservableObject {
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
-        guard let title = JellyfinLibraryIndex.shared.titles().first(where: { $0.contentId == contentId }),
-              let server = JellyfinServerStore.shared.server(id: title.serverID),
-              let baseURL = server.baseURL else {
-            return nil
+        // Fork: also match catalog titles (IMDb/TMDB ids) to Jellyfin copies.
+        let titles: [JellyfinIndexedTitle]
+        if let own = JellyfinLibraryIndex.shared.titles().first(where: { $0.contentId == contentId }) {
+            titles = [own]
+        } else {
+            titles = JellyfinCatalogMatch.titles(forVideoId: videoId)
         }
-        let token = JellyfinCredentialStore.token(forServerID: server.id)
-        let streams = title.items
+        let streams = titles.flatMap { title -> [NuvioStream] in
+            guard let server = JellyfinServerStore.shared.server(id: title.serverID),
+                  let baseURL = server.baseURL else {
+                return []
+            }
+            let token = JellyfinCredentialStore.token(forServerID: server.id)
+            return title.items
             .filter { $0.season == episode.season && $0.episode == episode.episode }
             .compactMap { item -> NuvioStream? in
                 guard let url = item.streamURL(baseURL: baseURL, accessToken: token) else { return nil }
@@ -117,6 +124,7 @@ final class StreamsRepository: ObservableObject {
                     videoSize: item.size
                 )
             }
+        }
         guard !streams.isEmpty else { return nil }
         return AddonStreamGroup(
             addonId: "local.jellyfin",
@@ -287,8 +295,15 @@ final class StreamsRepository: ObservableObject {
     private func runDiscovery(requestKey: String, type: String, videoId: String,
                               addonManifestURLs: [URL]) async {
         guard !Task.isCancelled else { return }
-        let ownedGroups = [localStreamGroup(videoId: videoId), jellyfinStreamGroup(videoId: videoId)]
+        let indexedJellyfin = jellyfinStreamGroup(videoId: videoId)
+        var ownedGroups = [localStreamGroup(videoId: videoId), indexedJellyfin]
             .compactMap { $0 }
+        // Fork: ask the Jellyfin servers live (no library index needed).
+        let liveJellyfin: Task<[NuvioStream], Never>? = indexedJellyfin == nil
+            && !JellyfinServerStore.shared.servers.isEmpty
+            ? Task { await JellyfinLiveLookup.streams(videoId: videoId) }
+            : nil
+        if liveJellyfin != nil { ownedGroups.append(Self.jellyfinLiveGroup(streams: [], isLoading: true)) }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -299,6 +314,10 @@ final class StreamsRepository: ObservableObject {
         let enabledURLs = addonManifestURLs
 
         guard !enabledURLs.isEmpty else {
+            if let liveJellyfin {
+                ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
+                guard !Task.isCancelled, activeRequestKey == requestKey else { return }
+            }
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -334,6 +353,10 @@ final class StreamsRepository: ObservableObject {
         }
 
         guard !targets.isEmpty else {
+            if let liveJellyfin {
+                ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
+                guard !Task.isCancelled, activeRequestKey == requestKey else { return }
+            }
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -370,10 +393,28 @@ final class StreamsRepository: ObservableObject {
                     await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
                 }
             }
+            if let liveJellyfin {
+                group.addTask {
+                    let streams = await liveJellyfin.value
+                    return GroupUpdate(
+                        addonId: Self.jellyfinLiveID,
+                        group: Self.jellyfinLiveGroup(streams: streams, isLoading: false)
+                    )
+                }
+            }
 
             for await update in group {
                 guard !Task.isCancelled else { break }
                 guard self.activeRequestKey == requestKey else { break }
+                if update.addonId == Self.jellyfinLiveID, update.group.streams.isEmpty {
+                    // Nothing on the servers: drop the placeholder chip.
+                    publish(
+                        groups: state.groups.filter { $0.addonId != Self.jellyfinLiveID },
+                        requestKey: requestKey,
+                        forceLoading: true
+                    )
+                    continue
+                }
                 // Keep isAnyLoading true for the whole stream phase so the last
                 // group completing cannot drop observers before external subtitles.
                 apply(update: update, requestKey: requestKey, forceLoading: true)
@@ -437,6 +478,33 @@ final class StreamsRepository: ObservableObject {
         let displayName: String
         let manifestURL: URL
         let logo: String?
+    }
+
+    // MARK: Fork: Jellyfin live lookup
+
+    nonisolated static let jellyfinLiveID = "local.jellyfin"
+
+    nonisolated static func jellyfinLiveGroup(streams: [NuvioStream], isLoading: Bool) -> AddonStreamGroup {
+        AddonStreamGroup(
+            addonId: jellyfinLiveID,
+            displayName: "Jellyfin",
+            streams: streams,
+            isLoading: isLoading,
+            error: nil
+        )
+    }
+
+    /// Waits for the live lookup and swaps the placeholder for its result
+    /// (removed when the servers have nothing).
+    private static func resolvingLiveJellyfin(
+        _ groups: [AddonStreamGroup],
+        _ task: Task<[NuvioStream], Never>
+    ) async -> [AddonStreamGroup] {
+        let streams = await task.value
+        return groups.compactMap { group in
+            guard group.addonId == jellyfinLiveID else { return group }
+            return streams.isEmpty ? nil : jellyfinLiveGroup(streams: streams, isLoading: false)
+        }
     }
 
     private struct GroupUpdate {

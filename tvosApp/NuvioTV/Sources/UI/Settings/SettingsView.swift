@@ -4608,6 +4608,8 @@ private struct IntegrationSettingsView: View {
     @State private var currentCacheSizeText: String = TorrentSettings.cacheSizeFormatted()
     @State private var debridAccountToConnect: DebridAccountProvider?
     @State private var showingTraktLogin = false
+    @State private var showingTraktCustomApp = false
+    @State private var showingSimklCustomApp = false
     @State private var showingTraktSettings = false
     @State private var showingSimklLogin = false
     @State private var showingSimklSettings = false
@@ -4802,21 +4804,8 @@ private struct IntegrationSettingsView: View {
 
             SettingsGroup(
                 title: L10n.string("settings_simkl_title", fallback: "Simkl"),
-                subtitle: L10n.string("tvos_settings_simkl_integration_subtitle", fallback: "Connect a Simkl account with a Client ID and PIN login")
+                subtitle: L10n.string("tvos_settings_simkl_integration_subtitle", fallback: "Connect a Simkl account with a PIN login")
             ) {
-                SettingsTextFieldRow(
-                    title: L10n.string("tvos_settings_simkl_client_id_title", fallback: "Simkl Client ID"),
-                    subtitle: L10n.string("tvos_settings_simkl_client_id_subtitle", fallback: "Create an API app at simkl.com/settings/developer — stored only on this Apple TV"),
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $simklClientIDDraft,
-                    onCommit: {
-                        simklClientID = simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        simklViewModel.credentialsDidChange()
-                    }
-                )
-
-                SettingsInfoRow(title: L10n.string("tvos_settings_simkl_redirect_uri", fallback: "Simkl Redirect URI"), value: SimklConfig.redirectURI)
-
                 SimklConnectionSettingsCard(
                     viewModel: simklViewModel,
                     accentColor: accentColor,
@@ -4824,6 +4813,30 @@ private struct IntegrationSettingsView: View {
                     onStartLogin: connectSimkl,
                     onOpenSettings: { showingSimklSettings = true }
                 )
+
+                // Fork: with a built-in Simkl app the Client ID is optional.
+                if !SimklConfig.hasBuiltInClient || showingSimklCustomApp || !simklClientIDDraft.isEmpty {
+                    SettingsTextFieldRow(
+                        title: L10n.string("tvos_settings_simkl_client_id_title", fallback: "Simkl Client ID"),
+                        subtitle: L10n.string("tvos_settings_simkl_client_id_subtitle", fallback: "Create an API app at simkl.com/settings/developer — stored only on this Apple TV"),
+                        placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                        text: $simklClientIDDraft,
+                        onCommit: {
+                            simklClientID = simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            simklViewModel.credentialsDidChange()
+                        }
+                    )
+
+                    SettingsInfoRow(title: L10n.string("tvos_settings_simkl_redirect_uri", fallback: "Simkl Redirect URI"), value: SimklConfig.redirectURI)
+                } else {
+                    SettingsActionRow(
+                        title: L10n.string("livetv_simkl_custom_app_title", fallback: "Use your own Simkl app"),
+                        subtitle: L10n.string("livetv_trakt_custom_app_subtitle", fallback: "Optional. Not needed: Connect works without any setup."),
+                        value: L10n.string("settings_open", fallback: "Open"),
+                        accentColor: accentColor,
+                        action: { showingSimklCustomApp = true }
+                    )
+                }
             }
 
             SettingsGroup(
@@ -4874,42 +4887,6 @@ private struct IntegrationSettingsView: View {
                     fallback: "Watchlist, progress, history, comments, and recommendations"
                 )
             ) {
-                SettingsTextFieldRow(
-                    title: "Trakt Client ID",
-                    subtitle: "Create an API app at trakt.tv/oauth/applications",
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $traktClientIDDraft,
-                    onCommit: {
-                        commitTraktRedirectURI()
-                        traktClientID = traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        traktViewModel.credentialsDidChange()
-                    }
-                )
-
-                SettingsTextFieldRow(
-                    title: "Trakt Client Secret (optional)",
-                    subtitle: L10n.string(
-                        "tvos_settings_trakt_secret_optional",
-                        fallback: "Leave blank for new (PKCE) Trakt apps — only legacy apps still use a secret"
-                    ),
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $traktClientSecretDraft,
-                    isSecure: true,
-                    onCommit: {
-                        traktClientSecret = traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        traktViewModel.credentialsDidChange()
-                    }
-                )
-
-                SettingsTextFieldRow(
-                    title: "Trakt Redirect URI",
-                    subtitle: "Must exactly match this app's registered Trakt redirect URI; used when refreshing tokens",
-                    placeholder: TraktConfig.defaultRedirectURI,
-                    text: $traktRedirectURIDraft,
-                    fieldWidth: 460,
-                    onCommit: commitTraktRedirectURI
-                )
-
                 TraktConnectionSettingsCard(
                     viewModel: traktViewModel,
                     accentColor: accentColor,
@@ -4917,6 +4894,60 @@ private struct IntegrationSettingsView: View {
                     onStartLogin: connectTrakt,
                     onOpenSettings: { showingTraktSettings = true }
                 )
+
+                // Fork: with a built-in Trakt app the Client ID fields are
+                // only needed by people who want to use their own app.
+                if !TraktConfig.hasBuiltInClient || showingTraktCustomApp || !traktClientIDDraft.isEmpty {
+                    SettingsTextFieldRow(
+                        title: "Trakt Client ID",
+                        subtitle: "Create an API app at trakt.tv/oauth/applications",
+                        placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                        text: $traktClientIDDraft,
+                        onCommit: {
+                            commitTraktRedirectURI()
+                            traktClientID = traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            traktViewModel.credentialsDidChange()
+                        }
+                    )
+
+                    SettingsTextFieldRow(
+                        title: "Trakt Client Secret (optional)",
+                        subtitle: L10n.string(
+                            "tvos_settings_trakt_secret_optional",
+                            fallback: "Leave blank for new (PKCE) Trakt apps — only legacy apps still use a secret"
+                        ),
+                        placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                        text: $traktClientSecretDraft,
+                        isSecure: true,
+                        onCommit: {
+                            traktClientSecret = traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            traktViewModel.credentialsDidChange()
+                        }
+                    )
+
+                    SettingsTextFieldRow(
+                        title: "Trakt Redirect URI",
+                        subtitle: "Must exactly match this app's registered Trakt redirect URI; used when refreshing tokens",
+                        placeholder: TraktConfig.defaultRedirectURI,
+                        text: $traktRedirectURIDraft,
+                        fieldWidth: 460,
+                        onCommit: commitTraktRedirectURI
+                    )
+
+                } else {
+                    SettingsActionRow(
+                        title: L10n.string("livetv_trakt_custom_app_title", fallback: "Use your own Trakt app"),
+                        subtitle: AppRepository.traktBuiltInAppIsRestricted
+                            ? L10n.string(
+                                "livetv_trakt_custom_app_restricted_subtitle",
+                                fallback: "Connect is limited to invited users for now; Trakt is reviewing the app. If trakt.tv rejects the code, create a free API app at trakt.tv/oauth/applications and enter its Client ID here."
+                            )
+                            : L10n.string("livetv_trakt_custom_app_subtitle", fallback: "Optional. Not needed: Connect works without any setup."),
+                        value: L10n.string("settings_open", fallback: "Open"),
+                        accentColor: accentColor,
+                        action: { showingTraktCustomApp = true }
+                    )
+                }
             }
 
             SettingsGroup(
@@ -5366,11 +5397,13 @@ private struct IntegrationSettingsView: View {
 
     private var traktCredentialsReady: Bool {
         // Trakt deprecated the client secret (PKCE-only apps): a Client ID is enough.
-        !traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        TraktConfig.hasBuiltInClient
+            || !traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var simklCredentialsReady: Bool {
-        !simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        SimklConfig.hasBuiltInClient
+            || !simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var globalWatchProgressSelection: Binding<String> {
@@ -12638,6 +12671,12 @@ private struct JellyfinLibrarySelectionSheet: View {
                 SettingsInfoRow(title: L10n.string("smb_matched_titles", fallback: "Matched Titles"), value: "\(report.matchedTitles)")
                 SettingsInfoRow(title: L10n.string("smb_matched_episodes", fallback: "Matched Episodes"), value: "\(report.matchedEpisodes)")
                 SettingsInfoRow(title: L10n.string("smb_unmatched", fallback: "Unmatched"), value: "\(report.unmatched.count)")
+                // Fork: what the last (incremental) run changed.
+                if report.incremental {
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_added", fallback: "New items"), value: "\(report.added)")
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_updated", fallback: "Updated items"), value: "\(report.updated)")
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_removed", fallback: "Removed items"), value: "\(report.removed)")
+                }
                 if !report.unmatched.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(report.unmatched.prefix(20), id: \.self) { name in

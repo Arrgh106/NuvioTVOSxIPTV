@@ -16,9 +16,14 @@ enum SimklConfig {
     }
 
     static func clientID(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.simklClientID)?
+        let custom = store.string(forKey: SettingsKey.simklClientID)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Fork: fall back to the app's built-in Simkl app (AppRepository).
+        return custom.isEmpty ? AppRepository.simklClientID : custom
     }
+
+    /// True when the app ships its own Simkl app, so no setup is needed.
+    static var hasBuiltInClient: Bool { !AppRepository.simklClientID.isEmpty }
 
     static func isConfigured(in store: UserDefaults) -> Bool {
         !clientID(in: store).isEmpty

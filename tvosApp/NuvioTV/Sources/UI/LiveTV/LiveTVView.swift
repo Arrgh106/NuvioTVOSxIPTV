@@ -84,28 +84,12 @@ struct LiveTVView: View {
     }
 
     private var groupList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(store.groups) { group in
-                    Button {
-                        store.selectedGroupID = group.id
-                    } label: {
-                        HStack {
-                            Text(group.name)
-                                .lineLimit(1)
-                            Spacer()
-                            Text("\(group.count)")
-                                .foregroundColor(.secondary)
-                        }
-                        .font(.system(size: 24, weight: store.selectedGroupID == group.id ? .bold : .regular))
-                        .padding(.vertical, 4)
-                    }
-                    .buttonStyle(LiveTVRowButtonStyle(isSelected: store.selectedGroupID == group.id))
-                }
-            }
-            .padding(.vertical, 20)
-            .padding(.horizontal, 10)
-        }
+        // UIKit list with cell reuse, like the channel list.
+        LiveTVGroupCollection(
+            groups: store.groups,
+            selectedID: store.selectedGroupID,
+            onSelect: { store.selectedGroupID = $0 }
+        )
     }
 
     @ViewBuilder
@@ -125,21 +109,13 @@ struct LiveTVView: View {
             .foregroundColor(.white.opacity(0.7))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(channels) { channel in
-                        Button {
-                            play(channel)
-                        } label: {
-                            LiveTVChannelRow(channel: channel)
-                        }
-                        .buttonStyle(LiveTVRowButtonStyle(isSelected: false))
-                    }
-                }
-                .padding(.vertical, 20)
-                .padding(.horizontal, 10)
-            }
-            .id(store.selectedGroupID)
+            // UIKit list with cell reuse: stays fast with tens of thousands
+            // of channels ("All channels" can hold 50k+).
+            LiveTVChannelCollection(
+                listID: "\(store.selectedGroupID)|\(store.listRevision)",
+                channels: channels,
+                onSelect: play
+            )
         }
     }
 
@@ -150,30 +126,6 @@ struct LiveTVView: View {
 }
 
 // MARK: - Rows
-
-private struct LiveTVChannelRow: View {
-    let channel: XtreamLiveChannel
-
-    var body: some View {
-        HStack(spacing: 24) {
-            Text(channel.number.map(String.init) ?? "")
-                .font(.system(size: 22, weight: .semibold).monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 80, alignment: .trailing)
-            LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
-                .frame(width: 120, height: 68)
-            Text(channel.name)
-                .font(.system(size: 26, weight: .medium))
-                .lineLimit(1)
-            Spacer()
-            if channel.archiveDays > 0 {
-                Image(systemName: "clock.arrow.circlepath")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.vertical, 6)
-    }
-}
 
 struct LiveTVLogo: View {
     let url: URL?
@@ -191,34 +143,6 @@ struct LiveTVLogo: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-private struct LiveTVRowButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        LiveTVRowBody(configuration: configuration, isSelected: isSelected)
-    }
-
-    private struct LiveTVRowBody: View {
-        let configuration: ButtonStyle.Configuration
-        let isSelected: Bool
-        @Environment(\.isFocused) private var isFocused
-
-        var body: some View {
-            configuration.label
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundColor(isFocused ? .black : .white)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(isFocused ? Color.white : (isSelected ? Color.white.opacity(0.14) : Color.clear))
-                )
-                .scaleEffect(isFocused ? 1.02 : 1)
-                .animation(.easeOut(duration: 0.12), value: isFocused)
-        }
     }
 }
 
@@ -277,6 +201,10 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            // Full-width focus sections: otherwise moving down from a format
+            // button finds nothing below it (Sign in sits further left).
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
 
             if let errorMessage {
                 Text(errorMessage)
@@ -304,6 +232,8 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
         }
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

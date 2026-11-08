@@ -178,19 +178,165 @@ struct JellyfinClient {
 
     /// Every movie, series, and episode under one library, with every field
     /// `JellyfinLibraryResolver` needs to build display metadata and a
-    /// playable file locally — no second request per title. Jellyfin
-    /// returns the whole recursive listing in one response — no paging loop
-    /// needed for libraries in the size a home NAS/server realistically hosts.
-    func items(userId: String, libraryId: String) async throws -> [JellyfinMediaItem] {
-        let (data, response) = try await get("Users/\(userId)/Items", query: [
+    /// playable file locally — no second request per title.
+    ///
+    /// Fork: fetched in pages. One request for a whole large library (or a
+    /// server reached over the internet) ran past the request timeout
+    /// ("The request timed out"), so nothing was indexed.
+    func items(
+        userId: String,
+        libraryId: String,
+        changedSince: Date? = nil,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
+    ) async throws -> [JellyfinMediaItem] {
+        var query = [
             "ParentId": libraryId,
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Series,Episode",
             "Fields": Self.itemFields,
-            "EnableImages": "true"
-        ])
-        try Self.validate(response, data: data)
+            "EnableImages": "true",
+        ]
+        if let changedSince {
+            query["MinDateLastSaved"] = ISO8601DateFormatter().string(from: changedSince)
+        }
+        return try await pagedItems(userId: userId, query: query, pageSize: 250, onProgress: onProgress)
+    }
 
+    /// Full details for specific items (new ones found by `itemStubs`),
+    /// 100 ids per request.
+    func items(userId: String, ids: [String]) async throws -> [JellyfinMediaItem] {
+        var result: [JellyfinMediaItem] = []
+        var start = 0
+        while start < ids.count {
+            try Task.checkCancellation()
+            let batch = ids[start..<min(start + 100, ids.count)]
+            let (data, response) = try await get("Users/\(userId)/Items", query: [
+                "Ids": batch.joined(separator: ","),
+                "Fields": Self.itemFields,
+                "EnableImages": "true",
+            ], timeout: 120)
+            try Self.validate(response, data: data)
+            result += try Self.decodeItems(data).items
+            start += batch.count
+        }
+        return result
+    }
+
+    /// Fork (live lookup): titles matching a name, across all libraries.
+    /// Only movies/series; the caller checks the provider ids.
+    func search(userId: String, term: String, types: String, limit: Int = 25) async throws -> [JellyfinMediaItem] {
+        let (data, response) = try await get("Users/\(userId)/Items", query: [
+            "SearchTerm": term,
+            "Recursive": "true",
+            "IncludeItemTypes": types,
+            "Fields": "ProviderIds,MediaSources,ProductionYear",
+            "EnableImages": "false",
+            "EnableUserData": "false",
+            "Limit": String(limit),
+        ], timeout: 8)
+        try Self.validate(response, data: data)
+        return try Self.decodeItems(data).items
+    }
+
+    /// Fork (live lookup): the episodes of one season of a series.
+    func episodes(userId: String, seriesId: String, season: Int) async throws -> [JellyfinMediaItem] {
+        let (data, response) = try await get("Shows/\(seriesId)/Episodes", query: [
+            "UserId": userId,
+            "Season": String(season),
+            "Fields": "MediaSources",
+            "EnableImages": "false",
+            "EnableUserData": "false",
+        ], timeout: 8)
+        try Self.validate(response, data: data)
+        return try Self.decodeItems(data).items
+    }
+
+    /// One library's item ids only (no metadata, no images): a few bytes per
+    /// item, so comparing against the local index stays cheap even for tens
+    /// of thousands of episodes.
+    struct ItemStub: Hashable {
+        let id: String
+        let type: String
+        let seriesId: String?
+    }
+
+    func itemStubs(
+        userId: String,
+        libraryId: String,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
+    ) async throws -> [ItemStub] {
+        var result: [ItemStub] = []
+        var startIndex = 0
+        let pageSize = 2000
+        while true {
+            try Task.checkCancellation()
+            let (data, response) = try await get("Users/\(userId)/Items", query: [
+                "ParentId": libraryId,
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series,Episode",
+                "EnableImages": "false",
+                "EnableUserData": "false",
+                "SortBy": "SortName",
+                "SortOrder": "Ascending",
+                "StartIndex": String(startIndex),
+                "Limit": String(pageSize),
+                "EnableTotalRecordCount": "true",
+            ], timeout: 120)
+            try Self.validate(response, data: data)
+            struct Payload: Decodable {
+                struct Item: Decodable {
+                    let Id: String
+                    let ItemType: String
+                    let SeriesId: String?
+                    enum CodingKeys: String, CodingKey {
+                        case Id, SeriesId
+                        case ItemType = "Type"
+                    }
+                }
+                let Items: [LossyDecodable<Item>]
+                let TotalRecordCount: Int?
+            }
+            let page = try JSONDecoder().decode(Payload.self, from: data)
+            result += page.Items.compactMap(\.value).map { ItemStub(id: $0.Id, type: $0.ItemType, seriesId: $0.SeriesId) }
+            startIndex += page.Items.count
+            await onProgress(startIndex, page.TotalRecordCount)
+            if page.Items.isEmpty || page.Items.count < pageSize
+                || page.TotalRecordCount.map({ startIndex >= $0 }) == true {
+                return result
+            }
+        }
+    }
+
+    private func pagedItems(
+        userId: String,
+        query: [String: String],
+        pageSize: Int,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void
+    ) async throws -> [JellyfinMediaItem] {
+        var result: [JellyfinMediaItem] = []
+        var startIndex = 0
+        while true {
+            try Task.checkCancellation()
+            var pageQuery = query
+            pageQuery["SortBy"] = "SortName"
+            pageQuery["SortOrder"] = "Ascending"
+            pageQuery["StartIndex"] = String(startIndex)
+            pageQuery["Limit"] = String(pageSize)
+            pageQuery["EnableTotalRecordCount"] = "true"
+            let (data, response) = try await get("Users/\(userId)/Items", query: pageQuery, timeout: 120)
+            try Self.validate(response, data: data)
+            let page = try Self.decodeItems(data)
+            result += page.items
+            startIndex += page.items.count
+            await onProgress(startIndex, page.total)
+            if page.items.isEmpty || page.items.count < pageSize
+                || page.total.map({ startIndex >= $0 }) == true {
+                return result
+            }
+        }
+    }
+
+    private static func decodeItems(_ data: Data) throws -> (items: [JellyfinMediaItem], total: Int?) {
         struct Payload: Decodable {
             struct ProviderIds: Decodable {
                 let Imdb: String?
@@ -234,10 +380,14 @@ struct JellyfinClient {
                 }
                 let ItemType: String
             }
-            let Items: [Item]
+            // Fork: one item missing a field skips that item instead of
+            // failing the whole page ("The data couldn't be read because
+            // it is missing").
+            let Items: [LossyDecodable<Item>]
+            let TotalRecordCount: Int?
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return payload.Items.map { item in
+        return (payload.Items.compactMap(\.value).map { item in
             JellyfinMediaItem(
                 id: item.Id,
                 name: item.Name,
@@ -261,7 +411,7 @@ struct JellyfinClient {
                 container: item.MediaSources?.first?.Container,
                 sizeBytes: item.MediaSources?.first?.Size
             )
-        }
+        }, payload.TotalRecordCount)
     }
 
     // MARK: - Media URLs
@@ -279,13 +429,14 @@ struct JellyfinClient {
 
     // MARK: - Plumbing
 
-    private func get(_ path: String, query: [String: String] = [:]) async throws -> (Data, URLResponse) {
+    private func get(_ path: String, query: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> (Data, URLResponse) {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let url = components?.url else {
             throw ClientError(message: "Invalid request URL")
         }
         var request = URLRequest(url: url)
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.authorizationHeader(token: accessToken), forHTTPHeaderField: "Authorization")
         return try await session.data(for: request)
     }
@@ -300,5 +451,15 @@ struct JellyfinClient {
             }
             throw ClientError(message: L10n.format("jellyfin_error_status", fallback: "Server returned status %d", http.statusCode))
         }
+    }
+}
+
+/// Fork: decodes to nil instead of throwing, so one malformed element
+/// doesn't fail a whole array.
+struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }

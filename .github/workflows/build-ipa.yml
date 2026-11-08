@@ -57,6 +57,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # Same app without the App Group, for sideloaders that can't register
+      # it with Apple. Artifact only: releases keep a single .ipa asset, which
+      # the AltStore source and README links pick up.
+      - name: Upload IPA artifact without App Group
+        uses: actions/upload-artifact@v6
+        with:
+          name: NuvioTVOSxIPTV-unsigned-ipa-no-appgroup
+          path: ${{ runner.temp }}/ipa/NuvioTV-unsigned-no-appgroup.ipa
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
