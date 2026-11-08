@@ -183,18 +183,70 @@ struct JellyfinClient {
     /// Fork: fetched in pages. One request for a whole large library (or a
     /// server reached over the internet) ran past the request timeout
     /// ("The request timed out"), so nothing was indexed.
-    func items(userId: String, libraryId: String) async throws -> [JellyfinMediaItem] {
-        let pageSize = 250
+    func items(
+        userId: String,
+        libraryId: String,
+        changedSince: Date? = nil,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
+    ) async throws -> [JellyfinMediaItem] {
+        var query = [
+            "ParentId": libraryId,
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Series,Episode",
+            "Fields": Self.itemFields,
+            "EnableImages": "true",
+        ]
+        if let changedSince {
+            query["MinDateLastSaved"] = ISO8601DateFormatter().string(from: changedSince)
+        }
+        return try await pagedItems(userId: userId, query: query, pageSize: 250, onProgress: onProgress)
+    }
+
+    /// Full details for specific items (new ones found by `itemStubs`),
+    /// 100 ids per request.
+    func items(userId: String, ids: [String]) async throws -> [JellyfinMediaItem] {
         var result: [JellyfinMediaItem] = []
+        var start = 0
+        while start < ids.count {
+            try Task.checkCancellation()
+            let batch = ids[start..<min(start + 100, ids.count)]
+            let (data, response) = try await get("Users/\(userId)/Items", query: [
+                "Ids": batch.joined(separator: ","),
+                "Fields": Self.itemFields,
+                "EnableImages": "true",
+            ], timeout: 120)
+            try Self.validate(response, data: data)
+            result += try Self.decodeItems(data).items
+            start += batch.count
+        }
+        return result
+    }
+
+    /// One library's item ids only (no metadata, no images): a few bytes per
+    /// item, so comparing against the local index stays cheap even for tens
+    /// of thousands of episodes.
+    struct ItemStub: Hashable {
+        let id: String
+        let type: String
+        let seriesId: String?
+    }
+
+    func itemStubs(
+        userId: String,
+        libraryId: String,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
+    ) async throws -> [ItemStub] {
+        var result: [ItemStub] = []
         var startIndex = 0
+        let pageSize = 2000
         while true {
             try Task.checkCancellation()
             let (data, response) = try await get("Users/\(userId)/Items", query: [
                 "ParentId": libraryId,
                 "Recursive": "true",
                 "IncludeItemTypes": "Movie,Series,Episode",
-                "Fields": Self.itemFields,
-                "EnableImages": "true",
+                "EnableImages": "false",
+                "EnableUserData": "false",
                 "SortBy": "SortName",
                 "SortOrder": "Ascending",
                 "StartIndex": String(startIndex),
@@ -202,9 +254,52 @@ struct JellyfinClient {
                 "EnableTotalRecordCount": "true",
             ], timeout: 120)
             try Self.validate(response, data: data)
+            struct Payload: Decodable {
+                struct Item: Decodable {
+                    let Id: String
+                    let ItemType: String
+                    let SeriesId: String?
+                    enum CodingKeys: String, CodingKey {
+                        case Id, SeriesId
+                        case ItemType = "Type"
+                    }
+                }
+                let Items: [Item]
+                let TotalRecordCount: Int?
+            }
+            let page = try JSONDecoder().decode(Payload.self, from: data)
+            result += page.Items.map { ItemStub(id: $0.Id, type: $0.ItemType, seriesId: $0.SeriesId) }
+            startIndex += page.Items.count
+            await onProgress(startIndex, page.TotalRecordCount)
+            if page.Items.isEmpty || page.Items.count < pageSize
+                || page.TotalRecordCount.map({ startIndex >= $0 }) == true {
+                return result
+            }
+        }
+    }
+
+    private func pagedItems(
+        userId: String,
+        query: [String: String],
+        pageSize: Int,
+        onProgress: (_ loaded: Int, _ total: Int?) async -> Void
+    ) async throws -> [JellyfinMediaItem] {
+        var result: [JellyfinMediaItem] = []
+        var startIndex = 0
+        while true {
+            try Task.checkCancellation()
+            var pageQuery = query
+            pageQuery["SortBy"] = "SortName"
+            pageQuery["SortOrder"] = "Ascending"
+            pageQuery["StartIndex"] = String(startIndex)
+            pageQuery["Limit"] = String(pageSize)
+            pageQuery["EnableTotalRecordCount"] = "true"
+            let (data, response) = try await get("Users/\(userId)/Items", query: pageQuery, timeout: 120)
+            try Self.validate(response, data: data)
             let page = try Self.decodeItems(data)
             result += page.items
             startIndex += page.items.count
+            await onProgress(startIndex, page.total)
             if page.items.isEmpty || page.items.count < pageSize
                 || page.total.map({ startIndex >= $0 }) == true {
                 return result

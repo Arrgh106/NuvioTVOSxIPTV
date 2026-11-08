@@ -12671,6 +12671,12 @@ private struct JellyfinLibrarySelectionSheet: View {
                 SettingsInfoRow(title: L10n.string("smb_matched_titles", fallback: "Matched Titles"), value: "\(report.matchedTitles)")
                 SettingsInfoRow(title: L10n.string("smb_matched_episodes", fallback: "Matched Episodes"), value: "\(report.matchedEpisodes)")
                 SettingsInfoRow(title: L10n.string("smb_unmatched", fallback: "Unmatched"), value: "\(report.unmatched.count)")
+                // Fork: what the last (incremental) run changed.
+                if report.incremental {
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_added", fallback: "New items"), value: "\(report.added)")
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_updated", fallback: "Updated items"), value: "\(report.updated)")
+                    SettingsInfoRow(title: L10n.string("jellyfin_sync_removed", fallback: "Removed items"), value: "\(report.removed)")
+                }
                 if !report.unmatched.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(report.unmatched.prefix(20), id: \.self) { name in

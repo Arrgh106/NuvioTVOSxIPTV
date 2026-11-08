@@ -28,6 +28,11 @@ struct JellyfinSyncReport: Equatable {
     var matchedTitles: Int
     var matchedEpisodes: Int
     var unmatched: [String]
+    // Fork: what the last run changed (incremental syncs).
+    var added: Int = 0
+    var updated: Int = 0
+    var removed: Int = 0
+    var incremental: Bool = false
 }
 
 /// Owns the live connection for each configured Jellyfin server and drives
@@ -112,7 +117,8 @@ final class JellyfinSessionManager: ObservableObject {
                     continue
                 }
             }
-            sync(server)
+            // Fork: background syncs only fetch what changed.
+            sync(server, full: false)
         }
     }
 
@@ -166,7 +172,9 @@ final class JellyfinSessionManager: ObservableObject {
     /// all metadata comes from Jellyfin's own response, nothing is looked up
     /// elsewhere. Only meaningful once connected. Cancels a prior in-flight
     /// sync for the same server.
-    func sync(_ server: JellyfinServerConfig) {
+    /// Fork: `full: false` updates incrementally (`JellyfinIncrementalSync`);
+    /// a sync started by hand reads everything.
+    func sync(_ server: JellyfinServerConfig, full: Bool = true) {
         guard !server.selectedLibraryIDs.isEmpty else { return }
         guard let client = clients[server.id] else { return }
         syncTasks[server.id]?.cancel()
@@ -194,22 +202,39 @@ final class JellyfinSessionManager: ObservableObject {
                 var indexedTitles: [JellyfinIndexedTitle] = []
                 var unmatched: [String] = []
                 var fetchedItemCount = 0
+                var added = 0, updated = 0, removed = 0
+                var allIncremental = true
+                let forceFull = full || JellyfinIncrementalSync.needsFullSync(serverID: server.id)
+                let existingByLibrary = Dictionary(
+                    grouping: JellyfinLibraryIndex.shared.titlesByServerID[server.id] ?? [],
+                    by: { $0.libraryID ?? "" }
+                )
                 for library in selectedLibraries {
                     try Task.checkCancellation()
-                    let foundCount = fetchedItemCount
-                    await MainActor.run {
-                        self.syncStates[server.id] = .syncing(found: foundCount, currentLibrary: library.name)
-                    }
-                    let items = try await client.items(userId: server.userId, libraryId: library.id)
-                    fetchedItemCount += items.count
-                    let resolution = JellyfinLibraryResolver.resolve(
-                        items,
+                    let base = fetchedItemCount
+                    let outcome = try await JellyfinIncrementalSync.syncLibrary(
+                        client: client,
+                        userId: server.userId,
                         serverID: server.id,
-                        libraryID: library.id,
-                        libraryName: library.name
-                    )
-                    indexedTitles.append(contentsOf: resolution.titles)
-                    unmatched.append(contentsOf: resolution.unmatched)
+                        library: library,
+                        existing: existingByLibrary[library.id] ?? [],
+                        lastSync: server.lastSyncDate,
+                        forceFull: forceFull
+                    ) { text, count in
+                        await MainActor.run {
+                            self.syncStates[server.id] = .syncing(found: base + count, currentLibrary: text)
+                        }
+                    }
+                    fetchedItemCount += outcome.titles.count
+                    indexedTitles.append(contentsOf: outcome.titles)
+                    unmatched.append(contentsOf: outcome.unmatched)
+                    added += outcome.added
+                    updated += outcome.updated
+                    removed += outcome.removed
+                    allIncremental = allIncremental && outcome.incremental
+                }
+                if forceFull {
+                    JellyfinIncrementalSync.recordFullSync(serverID: server.id)
                 }
                 try Task.checkCancellation()
 
@@ -230,7 +255,11 @@ final class JellyfinSessionManager: ObservableObject {
                     JellyfinSyncReport(
                         matchedTitles: resolution.titles.count,
                         matchedEpisodes: resolution.titles.reduce(0) { $0 + $1.items.count },
-                        unmatched: resolution.unmatched
+                        unmatched: resolution.unmatched,
+                        added: added,
+                        updated: updated,
+                        removed: removed,
+                        incremental: allIncremental
                     )
                 )
             } catch is CancellationError {
