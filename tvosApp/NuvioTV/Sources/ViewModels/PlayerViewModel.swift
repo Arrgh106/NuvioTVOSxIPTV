@@ -2996,6 +2996,39 @@ class PlayerViewModel: ObservableObject {
         startLoadWatchdog()
     }
 
+    /// Fork (Live TV): switches to the channel `delta` steps away in the
+    /// group the channel was started from, in place. Returns false when this
+    /// isn't a live channel or there's nothing to switch to.
+    @discardableResult
+    func zapLiveChannel(by delta: Int) -> Bool {
+        guard isLiveStream, activeMeta?.type == "channel",
+              let next = LiveTVZapper.shared.step(by: delta) else { return false }
+        activeMeta = next.item.meta
+        replaceStream(
+            prepared: PreparedNextStream(
+                url: next.item.url,
+                httpHeaders: next.item.headers,
+                subtitleLine: "",
+                subtitles: [],
+                streamName: next.channel.name,
+                filename: next.channel.name
+            ),
+            episode: nil,
+            resumeFrom: nil
+        )
+        let number = next.channel.number.map { "\($0)  " } ?? ""
+        let label = number + next.channel.name
+        showPlayerToast(label)
+        // Add what's on once the provider's EPG answers.
+        let streamID = next.channel.streamID
+        Task { @MainActor [weak self] in
+            guard let now = await LiveTVEPG.shared.nowNext(for: streamID)?.now,
+                  LiveTVZapper.shared.currentChannel?.streamID == streamID else { return }
+            self?.showPlayerToast("\(label)  ·  \(now.title)  \(now.timeRange)", durationSeconds: 4)
+        }
+        return true
+    }
+
     /// Silently recovers from an expired link / dead source: fetches another
     /// stream for the current title (excluding URLs already tried) and reloads
     /// at the last known position.

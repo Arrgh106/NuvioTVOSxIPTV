@@ -121,6 +121,11 @@ struct LiveTVView: View {
 
     private func play(_ channel: XtreamLiveChannel) {
         guard let item = store.playbackItem(for: channel) else { return }
+        // Up/down in the player switches through this group.
+        let liveStore = store
+        LiveTVZapper.shared.begin(channel: channel, in: liveStore.visibleChannels) { [weak liveStore] in
+            liveStore?.playbackItem(for: $0)
+        }
         onPlayChannel(item.url, item.meta, item.headers)
     }
 }
