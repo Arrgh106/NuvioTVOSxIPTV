@@ -182,6 +182,26 @@ final class LiveTVStore: ObservableObject {
         }
     }
 
+    // MARK: Full guide
+
+    /// Loads the provider's XMLTV guide for the channels in visible groups
+    /// (in the background; the set is built off the main thread).
+    func refreshGuide(force: Bool) {
+        guard let account else { return }
+        let password = XtreamAccountStore.password(for: account)
+        let visible = allVisible
+        Task { [weak self] in
+            let ids = await Task.detached(priority: .utility) {
+                Set(visible.compactMap { channel -> String? in
+                    guard let id = channel.epgChannelID, !id.isEmpty else { return nil }
+                    return id.lowercased()
+                })
+            }.value
+            guard let self, self.account == account else { return }
+            LiveTVGuide.shared.refreshIfNeeded(account: account, password: password, epgIDs: ids, force: force)
+        }
+    }
+
     // MARK: Groups, favorites, recent, search
 
     func isFavorite(_ channel: XtreamLiveChannel) -> Bool {
@@ -427,6 +447,8 @@ final class LiveTVStore: ObservableObject {
         let channels: [XtreamLiveChannel]
         let channelsByGroup: [String: [XtreamLiveChannel]]
         let channelsByID: [Int: XtreamLiveChannel]
+        /// stream id → XMLTV channel id (for the full guide).
+        let epgIDs: [Int: String]
         /// Provider categories in panel order (+ "Other"), without "All".
         let groups: [LiveTVGroup]
         let knownCategoryIDs: Set<String>
@@ -483,8 +505,12 @@ final class LiveTVStore: ObservableObject {
             byGroup[LiveTVGroup.otherID] = orphans
             result.append(LiveTVGroup(id: LiveTVGroup.otherID, name: names.other, count: orphans.count))
         }
+        var epgIDs: [Int: String] = [:]
+        for channel in sorted {
+            if let id = channel.epgChannelID, !id.isEmpty { epgIDs[channel.streamID] = id }
+        }
         return Prepared(
-            channels: sorted, channelsByGroup: byGroup, channelsByID: byID,
+            channels: sorted, channelsByGroup: byGroup, channelsByID: byID, epgIDs: epgIDs,
             groups: result, knownCategoryIDs: known)
     }
 
@@ -496,7 +522,9 @@ final class LiveTVStore: ObservableObject {
         let restoring = groups.isEmpty
         categoryGroups = prepared.groups
         listRevision &+= 1
+        LiveTVEPG.shared.register(epgIDs: prepared.epgIDs)
         rebuildGroups()
+        refreshGuide(force: false)
         if restoring, let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
            groups.contains(where: { $0.id == last }) {
             selectedGroupID = last

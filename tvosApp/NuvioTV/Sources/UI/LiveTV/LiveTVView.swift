@@ -49,6 +49,7 @@ struct LiveTVView: View {
                 accountSummary
                     .font(.system(size: 22))
                     .foregroundColor(.white.opacity(0.6))
+                LiveTVGuideStatusView()
             }
             Spacer()
             if store.state == .loading {
@@ -67,6 +68,7 @@ struct LiveTVView: View {
             }
             Button {
                 store.refresh()
+                store.refreshGuide(force: true)
             } label: {
                 Label(L10n.string("livetv_refresh", fallback: "Refresh"), systemImage: "arrow.clockwise")
             }

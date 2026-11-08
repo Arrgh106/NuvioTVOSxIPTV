@@ -18,6 +18,22 @@ final class LiveTVEPG {
     }
 
     private var entries: [Int: Entry] = [:]
+    /// stream id → XMLTV channel id, for the stored full guide.
+    private var epgIDs: [Int: String] = [:]
+    private var guideObserver: NSObjectProtocol?
+
+    private init() {
+        // A new full guide replaces what was cached from the short EPG.
+        guideObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVGuide.updatedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.entries.removeAll() }
+        }
+    }
+
+    func register(epgIDs: [Int: String]) {
+        self.epgIDs = epgIDs
+    }
     private var inFlight: [Int: Task<[XtreamProgram], Never>] = [:]
     private var accountID: String?
     private var client: XtreamClient?
@@ -30,6 +46,17 @@ final class LiveTVEPG {
 
     func nowNext(for streamID: Int) async -> NowNext? {
         if let cached = cached(streamID) { return cached }
+        // The stored full guide first, queried off the main thread.
+        if let epgID = epgIDs[streamID], let reader = LiveTVGuide.shared.reader() {
+            let now = Date()
+            let programs = await Task.detached(priority: .userInitiated) {
+                reader.programmes(channel: epgID, from: now, to: now.addingTimeInterval(12 * 3600))
+            }.value
+            if !programs.isEmpty {
+                entries[streamID] = Entry(programs: programs, fetchedAt: Date())
+                return Self.nowNext(programs)
+            }
+        }
         guard let client = currentClient() else { return nil }
         let task: Task<[XtreamProgram], Never>
         if let running = inFlight[streamID] {
