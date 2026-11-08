@@ -73,26 +73,30 @@ private struct LiveTVCache: Codable {
 
     static let maxAge: TimeInterval = 12 * 60 * 60
 
-    static func fileURL() -> URL? {
+    /// One file per profile. `scope` is resolved on the main actor and handed
+    /// in, so loading and saving can run off the main thread.
+    static func fileURL(scope: String) -> URL? {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("LiveTV", isDirectory: true)
         guard let dir else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("xtream-\(ProfileSettings.activeProfileScope).json")
+        return dir.appendingPathComponent("xtream-\(scope).json")
     }
 
-    static func load() -> LiveTVCache? {
-        guard let url = fileURL(), let data = try? Data(contentsOf: url) else { return nil }
+    /// Tens of thousands of channels take seconds to decode: never call this
+    /// on the main thread.
+    static func load(from url: URL?) -> LiveTVCache? {
+        guard let url, let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(LiveTVCache.self, from: data)
     }
 
-    func save() {
-        guard let url = Self.fileURL(), let data = try? JSONEncoder().encode(self) else { return }
+    func save(to url: URL?) {
+        guard let url, let data = try? JSONEncoder().encode(self) else { return }
         try? data.write(to: url, options: .atomic)
     }
 
-    static func clear() {
-        guard let url = fileURL() else { return }
+    static func clear(scope: String) {
+        guard let url = fileURL(scope: scope) else { return }
         try? FileManager.default.removeItem(at: url)
     }
 }
@@ -150,17 +154,32 @@ final class LiveTVStore: ObservableObject {
         groups = []
         selectedGroupID = LiveTVGroup.allID
         guard let stored else { return }
-        if let cache = LiveTVCache.load(), cache.accountID == stored.id {
-            apply(categories: cache.categories, channels: cache.channels)
-            allowedFormats = cache.userInfoAllowedFormats
-            lastUpdated = cache.savedAt
-            if Date().timeIntervalSince(cache.savedAt) > LiveTVCache.maxAge {
-                refresh()
-            } else {
-                refreshAccountInfo()
+        // Decoding and sorting a large list blocks for seconds; on the main
+        // thread tvOS kills the app (seen with ~56k channels).
+        let url = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope)
+        let names = groupNames
+        state = .loading
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
+            let prepared = await Task.detached(priority: .userInitiated) { () -> (LiveTVCache, Prepared)? in
+                guard let cache = LiveTVCache.load(from: url), cache.accountID == stored.id else { return nil }
+                return (cache, LiveTVStore.prepare(categories: cache.categories, channels: cache.channels, names: names))
+            }.value
+            guard !Task.isCancelled, let self, self.account == stored else { return }
+            self.state = .idle
+            guard let prepared else {
+                self.refresh()
+                return
             }
-        } else {
-            refresh()
+            let (cache, result) = prepared
+            self.apply(result)
+            self.allowedFormats = cache.userInfoAllowedFormats
+            self.lastUpdated = cache.savedAt
+            if Date().timeIntervalSince(cache.savedAt) > LiveTVCache.maxAge {
+                self.refresh()
+            } else {
+                self.refreshAccountInfo()
+            }
         }
     }
 
@@ -179,7 +198,7 @@ final class LiveTVStore: ObservableObject {
             streamFormat: format
         )
         XtreamAccountStore.save(account, password: password)
-        LiveTVCache.clear()
+        LiveTVCache.clear(scope: ProfileSettings.activeProfileScope)
         self.account = account
         self.userInfo = info
         self.allowedFormats = info.allowedOutputFormats
@@ -189,7 +208,7 @@ final class LiveTVStore: ObservableObject {
     func signOut() {
         loadTask?.cancel()
         XtreamAccountStore.remove()
-        LiveTVCache.clear()
+        LiveTVCache.clear(scope: ProfileSettings.activeProfileScope)
         account = nil
         userInfo = nil
         channels = []
@@ -218,20 +237,26 @@ final class LiveTVStore: ObservableObject {
                 async let categoriesResult = client.liveCategories()
                 async let channelsResult = client.liveChannels()
                 let (info, categories, channels) = try await (infoResult, categoriesResult, channelsResult)
+                let scopeURL = await MainActor.run { LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope) }
+                let names = await MainActor.run { LiveTVStore.groupNamesValue() }
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    LiveTVStore.prepare(categories: categories, channels: channels, names: names)
+                }.value
                 guard !Task.isCancelled, let self else { return }
                 self.userInfo = info
                 self.allowedFormats = info.allowedOutputFormats
-                self.apply(categories: categories, channels: channels)
+                self.apply(prepared)
                 let now = Date()
                 self.lastUpdated = now
                 self.state = .idle
-                LiveTVCache(
+                let cache = LiveTVCache(
                     accountID: account.id,
                     savedAt: now,
                     userInfoAllowedFormats: info.allowedOutputFormats,
                     categories: categories,
                     channels: channels
-                ).save()
+                )
+                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 self.state = .failed(error.localizedDescription)
@@ -249,7 +274,32 @@ final class LiveTVStore: ObservableObject {
         }
     }
 
-    private func apply(categories: [XtreamCategory], channels: [XtreamLiveChannel]) {
+    struct GroupNames: Sendable {
+        let all: String
+        let other: String
+    }
+
+    struct Prepared: Sendable {
+        let channels: [XtreamLiveChannel]
+        let channelsByGroup: [String: [XtreamLiveChannel]]
+        let groups: [LiveTVGroup]
+    }
+
+    private var groupNames: GroupNames { Self.groupNamesValue() }
+
+    static func groupNamesValue() -> GroupNames {
+        GroupNames(
+            all: L10n.string("livetv_all_channels", fallback: "All channels"),
+            other: L10n.string("livetv_other_group", fallback: "Other")
+        )
+    }
+
+    /// Sorting and grouping; pure, so it runs off the main thread.
+    nonisolated static func prepare(
+        categories: [XtreamCategory],
+        channels: [XtreamLiveChannel],
+        names: GroupNames
+    ) -> Prepared {
         let sorted = channels.enumerated().sorted { lhs, rhs in
             switch (lhs.element.number, rhs.element.number) {
             case let (l?, r?) where l != r: return l < r
@@ -258,34 +308,31 @@ final class LiveTVStore: ObservableObject {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
-        self.channels = sorted
-        channelsByGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
+        var byGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
 
-        var result = [LiveTVGroup(
-            id: LiveTVGroup.allID,
-            name: L10n.string("livetv_all_channels", fallback: "All channels"),
-            count: sorted.count
-        )]
+        var result = [LiveTVGroup(id: LiveTVGroup.allID, name: names.all, count: sorted.count)]
         var known = Set<String>()
         for category in categories {
-            let count = channelsByGroup[category.id]?.count ?? 0
+            let count = byGroup[category.id]?.count ?? 0
             guard count > 0, known.insert(category.id).inserted else { continue }
             result.append(LiveTVGroup(id: category.id, name: category.name, count: count))
         }
         // Channels whose category the panel didn't list.
-        let orphans = channelsByGroup.filter { !known.contains($0.key) }.values.reduce(0) { $0 + $1.count }
-        if orphans > 0 {
-            for key in channelsByGroup.keys where !known.contains(key) {
-                channelsByGroup[LiveTVGroup.otherID, default: []] += channelsByGroup[key] ?? []
-            }
-            result.append(LiveTVGroup(
-                id: LiveTVGroup.otherID,
-                name: L10n.string("livetv_other_group", fallback: "Other"),
-                count: orphans
-            ))
+        let orphanKeys = byGroup.keys.filter { !known.contains($0) }
+        if !orphanKeys.isEmpty {
+            var orphans: [XtreamLiveChannel] = []
+            for key in orphanKeys { orphans += byGroup[key] ?? [] }
+            byGroup[LiveTVGroup.otherID] = orphans
+            result.append(LiveTVGroup(id: LiveTVGroup.otherID, name: names.other, count: orphans.count))
         }
-        groups = result
-        if !result.contains(where: { $0.id == selectedGroupID }) {
+        return Prepared(channels: sorted, channelsByGroup: byGroup, groups: result)
+    }
+
+    private func apply(_ prepared: Prepared) {
+        channels = prepared.channels
+        channelsByGroup = prepared.channelsByGroup
+        groups = prepared.groups
+        if !groups.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID
         }
     }
