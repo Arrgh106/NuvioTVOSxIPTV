@@ -97,13 +97,20 @@ final class StreamsRepository: ObservableObject {
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
-        guard let title = JellyfinLibraryIndex.shared.titles().first(where: { $0.contentId == contentId }),
-              let server = JellyfinServerStore.shared.server(id: title.serverID),
-              let baseURL = server.baseURL else {
-            return nil
+        // Fork: also match catalog titles (IMDb/TMDB ids) to Jellyfin copies.
+        let titles: [JellyfinIndexedTitle]
+        if let own = JellyfinLibraryIndex.shared.titles().first(where: { $0.contentId == contentId }) {
+            titles = [own]
+        } else {
+            titles = JellyfinCatalogMatch.titles(forVideoId: videoId)
         }
-        let token = JellyfinCredentialStore.token(forServerID: server.id)
-        let streams = title.items
+        let streams = titles.flatMap { title -> [NuvioStream] in
+            guard let server = JellyfinServerStore.shared.server(id: title.serverID),
+                  let baseURL = server.baseURL else {
+                return []
+            }
+            let token = JellyfinCredentialStore.token(forServerID: server.id)
+            return title.items
             .filter { $0.season == episode.season && $0.episode == episode.episode }
             .compactMap { item -> NuvioStream? in
                 guard let url = item.streamURL(baseURL: baseURL, accessToken: token) else { return nil }
@@ -117,6 +124,7 @@ final class StreamsRepository: ObservableObject {
                     videoSize: item.size
                 )
             }
+        }
         guard !streams.isEmpty else { return nil }
         return AddonStreamGroup(
             addonId: "local.jellyfin",

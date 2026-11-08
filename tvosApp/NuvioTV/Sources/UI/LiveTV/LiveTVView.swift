@@ -277,6 +277,10 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            // Full-width focus sections: otherwise moving down from a format
+            // button finds nothing below it (Sign in sits further left).
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
 
             if let errorMessage {
                 Text(errorMessage)
@@ -304,6 +308,8 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
         }
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
