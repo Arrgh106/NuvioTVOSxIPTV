@@ -8,7 +8,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 - 🚧 **Live TV: groups, favorites, recently watched, search** ([#6](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/6))
   - Group manager with filter ("Only these"), favorites via long press, recently watched, channel search, separator rows hidden.
-  - Device test: favorites, zapping within favorites, search and hiding groups work. Group manager list and the loading overlay when switching channels were fixed afterwards and still need a re-test.
+  - Tested on device: all of it, including the smooth group manager list and the right channel logo when switching channels. Ready to merge.
 
 ## Next (in this order)
 
