@@ -639,7 +639,9 @@ enum RemoteTrackingState {
         case .wetrakr: key = SettingsKey.wetrakrScrobbleEnabled
         case .nuvioSync: return false
         }
-        return store.bool(forKey: key)
+        // Fork: scrobbling is on by default once a tracker is connected;
+        // only an explicit "off" disables it.
+        return store.object(forKey: key) as? Bool ?? true
     }
 
     static func isNuvioSyncScrobbleEnabled(
