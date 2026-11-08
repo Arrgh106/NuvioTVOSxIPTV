@@ -55,29 +55,13 @@ struct LiveTVGroupManager: View {
             }
             .focusSection()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(groups) { group in
-                        let hidden = store.hiddenGroupIDs.contains(group.id)
-                        Button {
-                            store.setHidden([group.id], hidden: !hidden)
-                        } label: {
-                            HStack(spacing: 18) {
-                                Image(systemName: hidden ? "eye.slash" : "eye")
-                                    .frame(width: 36)
-                                Text(group.name).lineLimit(1)
-                                Spacer()
-                                Text(group.count.formatted())
-                                    .foregroundColor(.secondary)
-                            }
-                            .font(.system(size: 24))
-                            .opacity(hidden ? 0.5 : 1)
-                        }
-                        .buttonStyle(.plain)
-                    }
+            LiveTVGroupToggleCollection(
+                groups: groups,
+                hiddenIDs: store.hiddenGroupIDs,
+                onToggle: { group in
+                    store.setHidden([group.id], hidden: !store.hiddenGroupIDs.contains(group.id))
                 }
-                .padding(.vertical, 10)
-            }
+            )
             .focusSection()
         }
         .padding(60)
