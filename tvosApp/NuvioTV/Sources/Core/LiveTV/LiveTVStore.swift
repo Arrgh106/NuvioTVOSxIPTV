@@ -129,7 +129,19 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var account: XtreamAccount?
     @Published private(set) var userInfo: XtreamUserInfo?
     @Published private(set) var groups: [LiveTVGroup] = []
-    @Published private(set) var state: LoadState = .idle
+    @Published private(set) var state: LoadState = .idle {
+        didSet {
+            let id = "livetv.channels"
+            switch state {
+            case .loading:
+                ActivityCenter.shared.update(id, label: L10n.string("livetv_loading_label", fallback: "Loading channels"))
+            case .idle:
+                ActivityCenter.shared.finish(id)
+            case .failed(let message):
+                ActivityCenter.shared.fail(id, message: message)
+            }
+        }
+    }
     @Published private(set) var lastUpdated: Date?
     @Published var selectedGroupID: String = LiveTVGroup.allID {
         didSet {

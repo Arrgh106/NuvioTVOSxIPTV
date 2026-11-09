@@ -146,7 +146,7 @@ final class LiveTVChannelCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        background.layer.cornerRadius = 14
+        background.layer.cornerRadius = LiveTVTheme.Metric.cornerRadius
         background.layer.cornerCurve = .continuous
         background.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(background)

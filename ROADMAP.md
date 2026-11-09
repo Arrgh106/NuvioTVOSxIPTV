@@ -6,14 +6,13 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data 24 h back to 3 days ahead, stored on the device ([#7](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/7)).
-  - Tested on device: 233,000 programmes for all channels downloaded and read in 5–10 s; now/next correct in list and player.
+- 🚧 **Live TV guide, step 0: foundation** (see below).
 
 ## Next: Live TV guide, step by step
 
 Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvio + IPTV for Android TV, adapted to tvOS).
 
-0. ⏭ **Foundation**: design tokens, glass panel, activity pill for background work.
+0. 🚧 **Foundation**: design tokens, glass panel, activity pill for background work.
 1. ⏭ **Guide grid**: groups · channels · timeline with now line (TiviMate style).
 2. ⏭ **Info panel**: focused programme with times, progress, description.
 3. ⏭ **Preview window**: small live picture of the highlighted channel.
@@ -37,6 +36,7 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
 
 | What | PR |
 | --- | --- |
+| Live TV: full guide (`xmltv.php`) in SQLite, 233,000 programmes in 5–10 s; CI package cache and retries; design concept | [#7](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/7) |
 | Live TV: hide groups, favorites, recently watched, channel search, separator rows hidden, smooth group manager, right logo when switching channels; README and roadmap | [#6](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/6) |
 | Live TV: channel up/down in the player, now/next EPG in list and player, scrobbling on by default, Jellyfin series indexing fix | [#5](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/5) |
 | README logo (light and dark) | [#4](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/4) |

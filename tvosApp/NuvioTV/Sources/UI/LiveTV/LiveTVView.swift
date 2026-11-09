@@ -49,7 +49,6 @@ struct LiveTVView: View {
                 accountSummary
                     .font(.system(size: 22))
                     .foregroundColor(.white.opacity(0.6))
-                LiveTVGuideStatusView()
             }
             Spacer()
             if store.state == .loading {
