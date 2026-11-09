@@ -83,7 +83,11 @@ struct LiveTVGroupCollection: UIViewRepresentable {
 
         /// Not while coming back from the player: focus goes to the guide.
         func collectionView(_ collectionView: UICollectionView, canFocusItemAt indexPath: IndexPath) -> Bool {
-            !LiveTVFocusLinks.returningFromPlayer
+            if LiveTVFocusLinks.returningFromPlayer {
+                LiveTVFocusLog.add("group \(indexPath.item) refused (locked)")
+                return false
+            }
+            return true
         }
 
         /// Set when focus came over from the guide: the swipe that brought
@@ -95,8 +99,12 @@ struct LiveTVGroupCollection: UIViewRepresentable {
                context.previouslyFocusedItem is LiveTVGroupCell,
                !(context.nextFocusedItem is LiveTVGroupCell),
                let entry = enteredFromGuide {
-                return Date().timeIntervalSince(entry.at) > 0.35
+                let allowed = Date().timeIntervalSince(entry.at) > LiveTVFocusLinks.pause
                     && LiveTVFocusLinks.isNewGesture(since: entry.touch)
+                    && LiveTVFocusLinks.leftPaused()
+                LiveTVFocusLinks.leftPressed()
+                LiveTVFocusLog.add("group → left " + (allowed ? "out" : "held"))
+                return allowed
             }
             return true
         }
@@ -107,6 +115,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             with coordinator: UIFocusAnimationCoordinator
         ) {
             guard context.nextFocusedItem is LiveTVGroupCell else { return }
+            LiveTVFocusLog.add("group \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView))")
             if context.previouslyFocusedItem is LiveTVGuideRowCell {
                 enteredFromGuide = (LiveTVFocusLinks.touchSession, Date())
             } else if !(context.previouslyFocusedItem is LiveTVGroupCell) {

@@ -186,11 +186,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// Left: back through time; on what's on now onto the channel; from
         /// the channel the focus engine itself moves on to the groups.
         @objc private func handleLeft() {
+            // On the channel the focus engine takes Left (see shouldUpdateFocusIn).
             guard let cell = focusedRow, !onChannel else { return }
+            LiveTVFocusLinks.leftPressed()
             let now = Date()
             let before = timeline
             let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now)
-            if !moved { setOnChannel(true) }
+            if !moved {
+                setOnChannel(true)
+                // From the channel the groups are the next step.
+                LiveTVFocusLinks.endReturn("left on now")
+            }
             if timeline != before || !moved { refreshAll(now: now) }
         }
 
@@ -257,8 +263,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             if context.focusHeading.contains(.left),
                context.previouslyFocusedItem is LiveTVGuideRowCell,
                !(context.nextFocusedItem is LiveTVGuideRowCell) {
-                return onChannel && Date().timeIntervalSince(onChannelSince) > 0.35
+                let allowed = onChannel && Date().timeIntervalSince(onChannelSince) > LiveTVFocusLinks.pause
                     && LiveTVFocusLinks.isNewGesture(since: onChannelTouch)
+                    && LiveTVFocusLinks.leftPaused()
+                LiveTVFocusLinks.leftPressed()
+                LiveTVFocusLog.add("guide → left " + (allowed ? "out" : "held"))
+                return allowed
             }
             return true
         }
@@ -277,7 +287,16 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 // Landed (on the last watched channel or elsewhere): from now
                 // on the collection view remembers the focused row itself.
                 preferredIndexPath = nil
-                LiveTVFocusLinks.returningFromPlayer = false
+                if context.previouslyFocusedItem is LiveTVGuideRowCell {
+                    LiveTVFocusLinks.endReturn("moved in guide")
+                } else if LiveTVFocusLinks.returningFromPlayer {
+                    // Stays set a moment: SwiftUI may still move focus on.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        LiveTVFocusLinks.endReturn("guide held 1.5 s")
+                    }
+                }
+                LiveTVFocusLog.add("guide row \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView))")
                 if context.previouslyFocusedIndexPath == nil {
                     // Entering the guide: from the groups on what's on now,
                     // back from the player on the channel.
@@ -298,6 +317,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard indexPath.item < channels.count else { return }
             // Back from the player focus comes back here, on the channel.
             LiveTVFocusLinks.returningFromPlayer = true
+            LiveTVFocusLog.add("play row \(indexPath.item), groups locked")
             landOnChannel = true
             onSelect(channels[indexPath.item])
         }
@@ -330,17 +350,25 @@ final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
     let leftTrap = UIFocusGuide()
+    /// Focus trace while step 1 is being tuned on the device (temporary).
+    private let debugLabel = UILabel()
 
     override init(frame: CGRect) {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
         super.init(frame: frame)
+        debugLabel.numberOfLines = 0
+        debugLabel.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
+        debugLabel.textColor = .yellow
+        debugLabel.backgroundColor = UIColor.black.withAlphaComponent(0.75)
+        debugLabel.isUserInteractionEnabled = false
+        LiveTVFocusLog.label = debugLabel
         collectionView.backgroundColor = .clear
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.clipsToBounds = true
         collectionView.register(LiveTVGuideRowCell.self, forCellWithReuseIdentifier: LiveTVGuideRowCell.reuseID)
         collectionView.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 40, right: 0)
 
-        for view in [ruler, collectionView] as [UIView] {
+        for view in [ruler, collectionView, debugLabel] as [UIView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -362,6 +390,9 @@ final class LiveTVGuideGridView: UIView {
             collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
             collectionView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            debugLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            debugLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            debugLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
         ])
     }
 
@@ -464,6 +495,21 @@ enum LiveTVFocusLinks {
     /// (tvOS would pick the groups, the first thing on the left).
     static var returningFromPlayer = false
 
+    static func endReturn(_ reason: String) {
+        guard returningFromPlayer else { return }
+        returningFromPlayer = false
+        LiveTVFocusLog.add("groups unlocked: " + reason)
+    }
+
+    /// Fast presses stop on the channel and in the groups: the next step
+    /// to the left needs this much quiet since the last Left.
+    static let pause: TimeInterval = 0.45
+    private static var lastLeft = Date.distantPast
+
+    static func leftPressed() { lastLeft = Date() }
+
+    static func leftPaused() -> Bool { Date().timeIntervalSince(lastLeft) > pause }
+
     // One touch on the remote's surface. A fast swipe goes on moving focus
     // after the guide handled it; a step out of the guide or the groups
     // needs a new touch (or a press after the swipe has settled).
@@ -498,6 +544,52 @@ enum LiveTVFocusLinks {
     fileprivate static func touchFinished() {
         touchActiveSince = nil
         touchEnded = Date()
+    }
+}
+
+/// Temporary on-screen focus trace (last lines, newest at the bottom).
+@MainActor
+enum LiveTVFocusLog {
+    static weak var label: UILabel?
+    private static var lines: [String] = []
+    private static var observer: NSObjectProtocol?
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "ss.SSS"
+        return f
+    }()
+
+    static func add(_ line: String) {
+        startObserving()
+        lines.append(formatter.string(from: Date()) + " " + line)
+        if lines.count > 9 { lines.removeFirst(lines.count - 9) }
+        label?.text = lines.joined(separator: "\n")
+    }
+
+    /// Every focus change in the app, while Live TV is open.
+    private static func startObserving() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated {
+                guard label?.window != nil else { return }
+                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+                add("focus → " + describe(context?.nextFocusedView)
+                    + (LiveTVFocusLinks.returningFromPlayer ? "  [locked]" : ""))
+            }
+        }
+    }
+
+    static func describe(_ view: UIView?) -> String {
+        var current = view
+        while let v = current {
+            if v is LiveTVGuideRowCell { return "guide row" }
+            if v is LiveTVGroupCell { return "group" }
+            current = v.superview
+        }
+        guard let view else { return "nothing" }
+        return String(describing: type(of: view)).prefix(40).description
     }
 }
 
