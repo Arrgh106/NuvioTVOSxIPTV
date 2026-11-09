@@ -21,7 +21,33 @@ final class LiveTVPlayer: ObservableObject {
     let session = PlaybackSessionCoordinator()
     @Published private(set) var channel: XtreamLiveChannel?
     @Published private(set) var status: Status = .idle
-    @Published var isFullscreen = false
+    @Published var isFullscreen = false {
+        didSet { if !isFullscreen { hideBar() } }
+    }
+
+    // MARK: Info bar (step 4)
+
+    enum Bar: Equatable {
+        case hidden
+        /// Channel and what's on (after switching channels, Right).
+        case compact
+        /// OK: also the channel row.
+        case expanded
+    }
+
+    @Published private(set) var bar: Bar = .hidden
+    /// The playing channel's programmes (stored guide, else now/next).
+    @Published private(set) var programmes: [XtreamProgram] = []
+    /// The channel row: recently watched, the playing one first.
+    @Published private(set) var rowChannels: [XtreamLiveChannel] = []
+    @Published private(set) var rowIndex = 0
+
+    /// Set by Live TV: recently watched channels, and starting a channel
+    /// from the row (it knows the store and the zapping list).
+    var recentChannels: () -> [XtreamLiveChannel] = { [] }
+    var startChannel: (XtreamLiveChannel) -> Void = { _ in }
+    private var barTimer: Timer?
+    private var programmesTask: Task<Void, Never>?
 
     private var watch: Timer?
     private var loadStarted = Date.distantPast
@@ -33,6 +59,7 @@ final class LiveTVPlayer: ObservableObject {
         self.channel = channel
         status = .loading
         loadStarted = Date()
+        loadProgrammes(for: channel)
         triedFallback = false
         session.load(PlaybackLoadRequest(
             videoURL: item.url,
@@ -55,7 +82,9 @@ final class LiveTVPlayer: ObservableObject {
         watch = nil
         session.stopAll()
         PlaybackWakeLock.release(ownerID: session.wakeLockOwnerID)
+        programmesTask?.cancel()
         channel = nil
+        programmes = []
         status = .idle
         isFullscreen = false
     }
@@ -64,7 +93,57 @@ final class LiveTVPlayer: ObservableObject {
     /// started from (Android and the film player do the same).
     func zap(by delta: Int) {
         guard let next = LiveTVZapper.shared.step(by: delta) else { return }
-        play(next.channel, item: next.item)
+        startChannel(next.channel)
+        showBar(.compact)
+    }
+
+    func showBar(_ kind: Bar) {
+        if kind == .expanded {
+            rowChannels = Array(recentChannels().prefix(20))
+            rowIndex = rowChannels.firstIndex { $0.streamID == channel?.streamID } ?? 0
+        }
+        withAnimation(.easeOut(duration: 0.2)) { bar = kind }
+        restartBarTimer()
+    }
+
+    func hideBar() {
+        barTimer?.invalidate()
+        barTimer = nil
+        guard bar != .hidden else { return }
+        withAnimation(.easeIn(duration: 0.2)) { bar = .hidden }
+    }
+
+    /// Left / Right in the channel row.
+    func moveInRow(by delta: Int) {
+        guard !rowChannels.isEmpty else { return }
+        rowIndex = min(max(0, rowIndex + delta), rowChannels.count - 1)
+        restartBarTimer()
+    }
+
+    /// OK in the channel row: that channel.
+    func playRowSelection() {
+        guard rowChannels.indices.contains(rowIndex) else { return }
+        let target = rowChannels[rowIndex]
+        if target.streamID != channel?.streamID { startChannel(target) }
+        showBar(.compact)
+    }
+
+    /// The bar goes after a while (longer with the channel row open).
+    private func restartBarTimer() {
+        barTimer?.invalidate()
+        barTimer = Timer.scheduledTimer(withTimeInterval: bar == .expanded ? 10 : 5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hideBar() }
+        }
+    }
+
+    private func loadProgrammes(for channel: XtreamLiveChannel) {
+        programmesTask?.cancel()
+        programmes = LiveTVGuideRows.shared.cached(channel) ?? []
+        programmesTask = Task { [weak self] in
+            let list = await LiveTVGuideRows.shared.programmes(for: channel)
+            guard !Task.isCancelled, let self, self.channel?.streamID == channel.streamID else { return }
+            self.programmes = list
+        }
     }
 
     /// Loading, first picture, errors. A few cheap property reads twice a
@@ -206,26 +285,54 @@ struct LiveTVVideoLayer: View {
     }
 }
 
-/// Full screen: takes focus so the remote talks to the player. Up / Down
-/// switch channels, Menu goes back to the guide.
+/// Full screen: takes focus so the remote talks to the player (as on
+/// Android): Up / Down switch channels, Right shows the info bar, OK the
+/// bar with the channel row (Left / Right / OK in it), Left and Menu go
+/// back to the guide (Menu first closes the bar).
 struct LiveTVFullscreenControls: View {
     @ObservedObject var player: LiveTVPlayer
     let onExit: () -> Void
     @FocusState private var focused: Bool
 
     var body: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .focusable()
+        // A button for OK; it draws nothing.
+        Button(action: select) { Color.clear.contentShape(Rectangle()) }
+            .buttonStyle(LiveTVInvisibleButtonStyle())
             .focused($focused)
-            .onMoveCommand { direction in
-                switch direction {
-                case .up: player.zap(by: -1)
-                case .down: player.zap(by: 1)
-                default: break
-                }
+            .onMoveCommand(perform: move)
+            .onExitCommand {
+                if player.bar != .hidden { player.hideBar() } else { onExit() }
             }
-            .onExitCommand(perform: onExit)
             .onAppear { focused = true }
+    }
+
+    private func select() {
+        if player.bar == .expanded {
+            player.playRowSelection()
+        } else {
+            player.showBar(.expanded)
+        }
+    }
+
+    private func move(_ direction: MoveCommandDirection) {
+        let inRow = player.bar == .expanded
+        switch direction {
+        case .up:
+            if inRow { player.showBar(.compact) } else { player.zap(by: -1) }
+        case .down:
+            if !inRow { player.zap(by: 1) }
+        case .left:
+            if inRow { player.moveInRow(by: -1) } else { onExit() }
+        case .right:
+            if inRow { player.moveInRow(by: 1) } else { player.showBar(.compact) }
+        @unknown default:
+            break
+        }
+    }
+}
+
+struct LiveTVInvisibleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }
