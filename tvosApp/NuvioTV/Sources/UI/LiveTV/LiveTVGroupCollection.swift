@@ -26,6 +26,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.remembersLastFocusedIndexPath = true
         view.register(LiveTVGroupCell.self, forCellWithReuseIdentifier: LiveTVGroupCell.reuseID)
         LiveTVFocusLinks.groups = view
+        LiveTVFocusLinks.trackTouches(on: view)
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
@@ -76,6 +77,41 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < groups.count else { return }
             onSelect(groups[indexPath.item].id)
+        }
+
+        // MARK: Focus
+
+        /// Not while coming back from the player: focus goes to the guide.
+        func collectionView(_ collectionView: UICollectionView, canFocusItemAt indexPath: IndexPath) -> Bool {
+            !LiveTVFocusLinks.returningFromPlayer
+        }
+
+        /// Set when focus came over from the guide: the swipe that brought
+        /// it here must not carry on into the app's sidebar.
+        private var enteredFromGuide: (touch: Int, at: Date)?
+
+        func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
+            if context.focusHeading.contains(.left),
+               context.previouslyFocusedItem is LiveTVGroupCell,
+               !(context.nextFocusedItem is LiveTVGroupCell),
+               let entry = enteredFromGuide {
+                return Date().timeIntervalSince(entry.at) > 0.35
+                    && LiveTVFocusLinks.isNewGesture(since: entry.touch)
+            }
+            return true
+        }
+
+        func collectionView(
+            _ collectionView: UICollectionView,
+            didUpdateFocusIn context: UICollectionViewFocusUpdateContext,
+            with coordinator: UIFocusAnimationCoordinator
+        ) {
+            guard context.nextFocusedItem is LiveTVGroupCell else { return }
+            if context.previouslyFocusedItem is LiveTVGuideRowCell {
+                enteredFromGuide = (LiveTVFocusLinks.touchSession, Date())
+            } else if !(context.previouslyFocusedItem is LiveTVGroupCell) {
+                enteredFromGuide = nil
+            }
         }
     }
 }

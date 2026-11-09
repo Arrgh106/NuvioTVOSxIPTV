@@ -76,6 +76,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let pressLeft = UITapGestureRecognizer(target: self, action: #selector(handleLeft))
             pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
             collection.addGestureRecognizer(pressLeft)
+            // Tells one swipe from the next (a fast swipe keeps moving focus
+            // after the swipe itself was handled).
+            LiveTVFocusLinks.trackTouches(on: collection)
 
             view.ruler.update(timeline: timeline, now: Date())
             // The clock: the now line moves, and on now the window follows.
@@ -131,7 +134,18 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var landOnChannel = false
 
         func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
-            preferredIndexPath
+            // Back from the player: the channel playing last (after zapping
+            // that is not the one started here).
+            if LiveTVFocusLinks.returningFromPlayer,
+               let id = LiveTVZapper.shared.currentChannel?.streamID,
+               let index = channels.firstIndex(where: { $0.streamID == id }) {
+                let indexPath = IndexPath(item: index, section: 0)
+                if !collectionView.indexPathsForVisibleItems.contains(indexPath) {
+                    collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+                }
+                return indexPath
+            }
+            return preferredIndexPath
         }
 
         func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void) {
@@ -185,10 +199,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// the groups. Ups and downs keep it there.
         private var onChannel = false
         private var onChannelSince = Date.distantPast
+        private var onChannelTouch = 0
 
         private func setOnChannel(_ value: Bool) {
             onChannel = value
             onChannelSince = Date()
+            onChannelTouch = LiveTVFocusLinks.touchSession
             // On the channel, the focus guide on the left leads to the groups.
             if let view {
                 view.leftTrap.preferredFocusEnvironments = value
@@ -237,11 +253,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
             // Focus leaves a row to the left only from the channel, and not
-            // with the same press that just put the cursor there.
+            // with the press or swipe that just put the cursor there.
             if context.focusHeading.contains(.left),
                context.previouslyFocusedItem is LiveTVGuideRowCell,
                !(context.nextFocusedItem is LiveTVGuideRowCell) {
                 return onChannel && Date().timeIntervalSince(onChannelSince) > 0.35
+                    && LiveTVFocusLinks.isNewGesture(since: onChannelTouch)
             }
             return true
         }
@@ -260,6 +277,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 // Landed (on the last watched channel or elsewhere): from now
                 // on the collection view remembers the focused row itself.
                 preferredIndexPath = nil
+                LiveTVFocusLinks.returningFromPlayer = false
                 if context.previouslyFocusedIndexPath == nil {
                     // Entering the guide: from the groups on what's on now,
                     // back from the player on the channel.
@@ -278,6 +296,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < channels.count else { return }
+            // Back from the player focus comes back here, on the channel.
+            LiveTVFocusLinks.returningFromPlayer = true
+            landOnChannel = true
             onSelect(channels[indexPath.item])
         }
 
@@ -437,4 +458,64 @@ final class LiveTVTimeRuler: UIView {
 @MainActor
 enum LiveTVFocusLinks {
     static weak var groups: UICollectionView?
+
+    /// From playing a channel until the guide has focus again: the groups
+    /// can't take focus, so coming back from the player lands in the guide
+    /// (tvOS would pick the groups, the first thing on the left).
+    static var returningFromPlayer = false
+
+    // One touch on the remote's surface. A fast swipe goes on moving focus
+    // after the guide handled it; a step out of the guide or the groups
+    // needs a new touch (or a press after the swipe has settled).
+    private(set) static var touchSession = 0
+    private static var touchActiveSince: Date?
+    private static var touchEnded = Date.distantPast
+
+    static func trackTouches(on view: UIView) {
+        let pan = UIPanGestureRecognizer(target: TouchTracker.shared, action: #selector(TouchTracker.pan(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        pan.cancelsTouchesInView = false
+        pan.delaysTouchesBegan = false
+        pan.delaysTouchesEnded = false
+        pan.delegate = TouchTracker.shared
+        view.addGestureRecognizer(pan)
+    }
+
+    /// True when the touch that set a state (its session) is over and has
+    /// settled, or a new one started since.
+    static func isNewGesture(since session: Int) -> Bool {
+        if touchSession != session { return true }
+        // A touch left open (a missed end) stops counting after 2 s.
+        if let since = touchActiveSince, Date().timeIntervalSince(since) < 2 { return false }
+        return Date().timeIntervalSince(touchEnded) > 0.5
+    }
+
+    fileprivate static func touchBegan() {
+        touchSession &+= 1
+        touchActiveSince = Date()
+    }
+
+    fileprivate static func touchFinished() {
+        touchActiveSince = nil
+        touchEnded = Date()
+    }
+}
+
+/// Watches touches only; never takes them from the focus engine.
+@MainActor
+private final class TouchTracker: NSObject, UIGestureRecognizerDelegate {
+    static let shared = TouchTracker()
+
+    @objc func pan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began: LiveTVFocusLinks.touchBegan()
+        case .ended, .cancelled, .failed: LiveTVFocusLinks.touchFinished()
+        default: break
+        }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool { true }
 }
