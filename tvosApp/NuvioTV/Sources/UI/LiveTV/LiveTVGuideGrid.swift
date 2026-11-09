@@ -105,6 +105,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             gate.onward = { [LiveTVFocusLinks.groups].compactMap { $0 } }
             gate.canOpen = { [weak self] in self?.onChannel ?? false }
             LiveTVFocusLinks.guideGate = gate
+            LiveTVFocusLinks.prepareGuideReturn = { [weak self] in
+                // Otherwise the row started from wins over the one zapped to.
+                self?.view?.collectionView.remembersLastFocusedIndexPath = false
+                self?.landOnChannel = true
+            }
 
             view.ruler.update(timeline: timeline, now: Date())
             // The clock: the now line moves, and on now the window follows.
@@ -342,10 +347,6 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < channels.count else { return }
             // Back from the player focus comes back here, on the channel.
-            LiveTVFocusLinks.returningFromPlayer = true
-            // Otherwise the row started here wins over the one zapped to.
-            collectionView.remembersLastFocusedIndexPath = false
-            landOnChannel = true
             onSelect(channels[indexPath.item])
         }
 
@@ -515,6 +516,16 @@ enum LiveTVFocusLinks {
 
     static weak var guideGate: LiveTVLeftGate?
     static weak var groupGate: LiveTVLeftGate?
+
+    /// Set by the guide: readies it for focus coming back from full screen.
+    static var prepareGuideReturn: (() -> Void)?
+
+    /// Going full screen: coming back, focus lands in the guide on the
+    /// channel playing then (header and groups wait until it has).
+    static func beginReturn() {
+        returningFromPlayer = true
+        prepareGuideReturn?()
+    }
 
     static func endReturn(_ reason: String) {
         guard returningFromPlayer else { return }
