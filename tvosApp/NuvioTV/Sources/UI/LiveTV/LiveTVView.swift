@@ -7,6 +7,9 @@ struct LiveTVView: View {
     @State private var isManagingGroups = false
     @State private var searchText = ""
     @Namespace private var focusNamespace
+    /// Back from the player only the guide can take focus (tvOS picked the
+    /// search field or the groups otherwise).
+    @ObservedObject private var returnLock = LiveTVReturnLock.shared
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -31,10 +34,12 @@ struct LiveTVView: View {
     private var channelBrowser: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
+                .disabled(returnLock.locked)
             // Groups · channels · timeline (the guide gets the most room).
             HStack(alignment: .top, spacing: 30) {
                 groupList
                     .frame(width: 400)
+                    .disabled(returnLock.locked)
                     // Its own focus section: Right from any group lands in
                     // the guide, Left from the guide comes back here.
                     .focusSection()

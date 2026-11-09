@@ -79,6 +79,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             // Tells one swipe from the next (a fast swipe keeps moving focus
             // after the swipe itself was handled).
             LiveTVFocusLinks.trackTouches(on: collection)
+            view.leftTrap.target = { [weak self] in self?.leftTarget() ?? [] }
 
             view.ruler.update(timeline: timeline, now: Date())
             // The clock: the now line moves, and on now the window follows.
@@ -211,12 +212,20 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             onChannel = value
             onChannelSince = Date()
             onChannelTouch = LiveTVFocusLinks.touchSession
-            // On the channel, the focus guide on the left leads to the groups.
-            if let view {
-                view.leftTrap.preferredFocusEnvironments = value
-                    ? [LiveTVFocusLinks.groups].compactMap { $0 }
-                    : [view.collectionView]
+        }
+
+        /// Where the focus guide on the left leads. Never a dead end: tvOS
+        /// opens the app's sidebar when focus can't move left. From the
+        /// channel (with a new press or swipe, after a short pause) to the
+        /// groups, otherwise back to the focused row.
+        fileprivate func leftTarget() -> [UIFocusEnvironment] {
+            guard let view else { return [] }
+            let out = LiveTVFocusLinks.decide("guide") {
+                onChannel && Date().timeIntervalSince(onChannelSince) > LiveTVFocusLinks.pause
+                    && LiveTVFocusLinks.isNewGesture(since: onChannelTouch)
             }
+            if out, let groups = LiveTVFocusLinks.groups { return [groups] }
+            return [view.collectionView]
         }
 
         private func tick() {
@@ -260,16 +269,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
             // Focus leaves a row to the left only from the channel, and not
             // with the press or swipe that just put the cursor there.
-            if context.focusHeading.contains(.left),
-               context.previouslyFocusedItem is LiveTVGuideRowCell,
-               !(context.nextFocusedItem is LiveTVGuideRowCell) {
-                let allowed = onChannel && Date().timeIntervalSince(onChannelSince) > LiveTVFocusLinks.pause
-                    && LiveTVFocusLinks.isNewGesture(since: onChannelTouch)
-                    && LiveTVFocusLinks.leftPaused()
-                LiveTVFocusLinks.leftPressed()
-                LiveTVFocusLog.add("guide → left " + (allowed ? "out" : "held"))
-                return allowed
-            }
+            // Left out of the guide is decided by its focus guide (leftTarget);
+            // refusing here would make tvOS open the sidebar.
             return true
         }
 
@@ -349,7 +350,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
-    let leftTrap = UIFocusGuide()
+    let leftTrap = LiveTVTrapGuide()
     /// Focus trace while step 1 is being tuned on the device (temporary).
     private let debugLabel = UILabel()
 
@@ -376,7 +377,6 @@ final class LiveTVGuideGridView: UIView {
         // groups or the sidebar; it leads back into the guide (the row that
         // is focused), so the focus engine never takes focus out on Left.
         addLayoutGuide(leftTrap)
-        leftTrap.preferredFocusEnvironments = [collectionView]
         NSLayoutConstraint.activate([
             leftTrap.leadingAnchor.constraint(equalTo: leadingAnchor),
             leftTrap.widthAnchor.constraint(equalToConstant: 8),
@@ -493,7 +493,23 @@ enum LiveTVFocusLinks {
     /// From playing a channel until the guide has focus again: the groups
     /// can't take focus, so coming back from the player lands in the guide
     /// (tvOS would pick the groups, the first thing on the left).
-    static var returningFromPlayer = false
+    static var returningFromPlayer: Bool {
+        get { LiveTVReturnLock.shared.locked }
+        set { if LiveTVReturnLock.shared.locked != newValue { LiveTVReturnLock.shared.locked = newValue } }
+    }
+
+    /// One answer per press: tvOS may ask a focus guide more than once.
+    private static var decisions: [String: (at: Date, value: Bool)] = [:]
+
+    static func decide(_ key: String, _ rule: () -> Bool) -> Bool {
+        let now = Date()
+        if let last = decisions[key], now.timeIntervalSince(last.at) < 0.12 { return last.value }
+        let value = rule() && leftPaused()
+        leftPressed()
+        decisions[key] = (now, value)
+        LiveTVFocusLog.add(key + " → left " + (value ? "out" : "held"))
+        return value
+    }
 
     static func endReturn(_ reason: String) {
         guard returningFromPlayer else { return }
@@ -545,6 +561,24 @@ enum LiveTVFocusLinks {
         touchActiveSince = nil
         touchEnded = Date()
     }
+}
+
+/// A focus guide that asks where to lead each time focus reaches it.
+final class LiveTVTrapGuide: UIFocusGuide {
+    var target: @MainActor () -> [UIFocusEnvironment] = { [] }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment]! {
+        get { target() }
+        set {}
+    }
+}
+
+/// Back from the player: header and groups stay out of reach until the
+/// guide has focus (SwiftUI side of `LiveTVFocusLinks.returningFromPlayer`).
+@MainActor
+final class LiveTVReturnLock: ObservableObject {
+    static let shared = LiveTVReturnLock()
+    @Published var locked = false
 }
 
 /// Temporary on-screen focus trace (last lines, newest at the bottom).
