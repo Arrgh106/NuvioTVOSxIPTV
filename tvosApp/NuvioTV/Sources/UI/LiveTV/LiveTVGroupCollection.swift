@@ -25,6 +25,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.backgroundColor = .clear
         view.remembersLastFocusedIndexPath = true
         view.register(LiveTVGroupCell.self, forCellWithReuseIdentifier: LiveTVGroupCell.reuseID)
+        LiveTVFocusLinks.groups = view
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)

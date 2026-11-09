@@ -68,6 +68,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let press = UITapGestureRecognizer(target: self, action: #selector(moveRight))
             press.allowedPressTypes = [NSNumber(value: UIPress.PressType.rightArrow.rawValue)]
             collection.addGestureRecognizer(press)
+            // Left, the same way: handled here, never by the focus engine
+            // (which opened the app's sidebar from inside the guide).
+            let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(handleLeft))
+            swipeLeft.direction = .left
+            collection.addGestureRecognizer(swipeLeft)
+            let pressLeft = UITapGestureRecognizer(target: self, action: #selector(handleLeft))
+            pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
+            collection.addGestureRecognizer(pressLeft)
 
             view.ruler.update(timeline: timeline, now: Date())
             // The clock: the now line moves, and on now the window follows.
@@ -154,15 +162,22 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             if timeline != before { refreshAll(now: now) }
         }
 
-        /// Left inside the grid; false when focus should leave (to the groups).
-        private func moveLeft() -> Bool {
-            guard let cell = focusedRow else { return false }
+        /// Left: back through time; on what's on now, out to the groups.
+        @objc private func handleLeft() {
+            guard let cell = focusedRow else { return }
             let now = Date()
             let before = timeline
             let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now)
             if timeline != before { refreshAll(now: now) }
-            return moved
+            guard !moved, let groups = LiveTVFocusLinks.groups, groups.window != nil,
+                  let system = UIFocusSystem.focusSystem(for: groups) else { return }
+            leavingToGroups = true
+            system.requestFocusUpdate(to: groups)
+            system.updateFocusIfNeeded()
+            leavingToGroups = false
         }
+
+        private var leavingToGroups = false
 
         private func tick() {
             let now = Date()
@@ -202,10 +217,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         // MARK: Focus
 
         func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
-            // Left from a row: back through time first; on now, out to the groups.
-            if context.focusHeading.contains(.left), context.previouslyFocusedIndexPath != nil,
-               context.previouslyFocusedItem is LiveTVGuideRowCell {
-                return !moveLeft()
+            // Focus never leaves a row to the left on its own (that opened the
+            // sidebar); `handleLeft` decides and moves it to the groups.
+            if context.focusHeading.contains(.left), !leavingToGroups,
+               context.previouslyFocusedItem is LiveTVGuideRowCell,
+               !(context.nextFocusedItem is LiveTVGuideRowCell) {
+                return false
             }
             return true
         }
@@ -262,6 +279,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
+    private let leftTrap = UIFocusGuide()
 
     override init(frame: CGRect) {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
@@ -276,12 +294,21 @@ final class LiveTVGuideGridView: UIView {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
+        // Left of the rows, so a move to the left finds this before the
+        // groups or the sidebar; it leads back into the guide (the row that
+        // is focused), so the focus engine never takes focus out on Left.
+        addLayoutGuide(leftTrap)
+        leftTrap.preferredFocusEnvironments = [collectionView]
         NSLayoutConstraint.activate([
-            ruler.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leftTrap.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leftTrap.widthAnchor.constraint(equalToConstant: 8),
+            leftTrap.topAnchor.constraint(equalTo: collectionView.topAnchor),
+            leftTrap.bottomAnchor.constraint(equalTo: collectionView.bottomAnchor),
+            ruler.leadingAnchor.constraint(equalTo: collectionView.leadingAnchor),
             ruler.trailingAnchor.constraint(equalTo: trailingAnchor),
             ruler.topAnchor.constraint(equalTo: topAnchor),
             ruler.heightAnchor.constraint(equalToConstant: LiveTVTimeRuler.height),
-            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: leftTrap.trailingAnchor, constant: 4),
             collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
             collectionView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -373,4 +400,12 @@ final class LiveTVTimeRuler: UIView {
             context.fill(CGRect(x: x - 1, y: bounds.height - 5, width: 2, height: 5))
         }
     }
+}
+
+// MARK: - Focus links
+
+/// Views the guide moves focus to on its own (Left on now → groups).
+@MainActor
+enum LiveTVFocusLinks {
+    static weak var groups: UICollectionView?
 }
