@@ -21,8 +21,11 @@ enum LiveTVTheme {
     /// sit inside focused cells (playing channel, now line) fall back to the
     /// app's red "live" color.
     static var markColor: Color {
-        isWhiteAccent ? Color(red: 0.95, green: 0.27, blue: 0.27) : accent
+        isWhiteAccent ? liveRed : accent
     }
+
+    /// The red of LIVE tags (as Android's LIVE_RED).
+    static let liveRed = Color(red: 0.95, green: 0.27, blue: 0.27)
 
     /// The app default; white marks need a different treatment on white focus.
     static var isWhiteAccent: Bool {

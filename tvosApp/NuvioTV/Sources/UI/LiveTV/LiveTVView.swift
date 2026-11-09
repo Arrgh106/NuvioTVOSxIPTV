@@ -10,6 +10,8 @@ struct LiveTVView: View {
     /// Back from the player only the guide can take focus (tvOS picked the
     /// search field or the groups otherwise).
     @ObservedObject private var returnLock = LiveTVReturnLock.shared
+    /// Not observed here: only the info panel redraws when focus moves.
+    @State private var info = LiveTVInfoModel()
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -35,6 +37,7 @@ struct LiveTVView: View {
         VStack(alignment: .leading, spacing: 24) {
             header
                 .disabled(returnLock.locked)
+            LiveTVInfoPanel(model: info)
             // Groups · channels · timeline (the guide gets the most room).
             HStack(alignment: .top, spacing: 30) {
                 groupList
@@ -152,7 +155,8 @@ struct LiveTVView: View {
                 // after zapping), not on the groups.
                 focusChannelID: LiveTVZapper.shared.currentChannel?.streamID,
                 onSelect: play,
-                onToggleFavorite: { store.toggleFavorite($0) }
+                onToggleFavorite: { store.toggleFavorite($0) },
+                info: info
             )
         }
     }

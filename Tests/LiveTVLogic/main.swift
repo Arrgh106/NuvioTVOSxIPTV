@@ -100,5 +100,19 @@ let overlapping = [show("A", 0, 60), show("B", 30, 90)]
 let overlapBlocks = LiveTVTimeline(now: at(0)).visibleBlocks(in: overlapping)
 check(zip(overlapBlocks, overlapBlocks.dropFirst()).allSatisfy { $0.end <= $1.start }, "blocks never go backwards")
 
+// MARK: Info panel
+
+let info = LiveTVProgrammeInfo(start: at(15), end: at(105), title: "Film", description: nil)
+check(info.isOn(at: at(15)) && !info.isOn(at: at(105)), "on from start, not at end")
+check(abs(info.progress(at: at(60)) - 0.5) < 0.0001, "half way")
+check(info.progress(at: at(0)) == 0 && info.progress(at: at(200)) == 1, "progress clamped")
+check(info.minutesLeft(at: at(33)) == 72, "1 h 12 min left")
+check(info.minutesLeft(at: at(104.5)) == 1, "30 s left shows 1 min")
+check(info.minutesLeft(at: at(110)) == 0, "over: 0 min")
+var utc = Calendar(identifier: .gregorian)
+utc.timeZone = TimeZone(identifier: "UTC")!
+check(LiveTVProgrammeInfo.dayOffset(of: at(180), from: at(0), calendar: utc) == 0, "23:00 is today")
+check(LiveTVProgrammeInfo.dayOffset(of: at(300), from: at(0), calendar: utc) == 1, "01:00 is tomorrow")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

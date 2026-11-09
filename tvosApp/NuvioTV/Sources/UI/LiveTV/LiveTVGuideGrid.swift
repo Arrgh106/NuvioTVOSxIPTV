@@ -17,12 +17,15 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     var focusChannelID: Int?
     let onSelect: (XtreamLiveChannel) -> Void
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
+    /// Told what's in focus, for the info panel.
+    var info: LiveTVInfoModel?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> LiveTVGuideGridView {
         let view = LiveTVGuideGridView()
         context.coordinator.attach(to: view)
+        context.coordinator.infoModel = info
         context.coordinator.pendingFocusID = focusChannelID
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
@@ -30,6 +33,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     }
 
     func updateUIView(_ view: LiveTVGuideGridView, context: Context) {
+        context.coordinator.infoModel = info
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
     }
@@ -53,6 +57,22 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var rowsObserver: NSObjectProtocol?
         /// Channel to focus once it is in the list (see `focusChannelID`).
         var pendingFocusID: Int?
+        weak var infoModel: LiveTVInfoModel?
+
+        /// The focused row's channel and the block under the cursor (what's
+        /// on now when the cursor is on the channel) for the info panel.
+        private func publishInfo(now: Date = Date()) {
+            guard let infoModel, let cell = focusedCell, let channel = cell.channel else { return }
+            var info: LiveTVProgrammeInfo?
+            if let programmes = cell.strip.programmes {
+                let time = onChannel ? now : timeline.cursorTime(now: now)
+                let block = LiveTVTimeline.block(at: time, in: programmes)
+                info = LiveTVProgrammeInfo(
+                    start: block.start, end: block.end,
+                    title: block.programme?.title, description: block.programme?.description)
+            }
+            infoModel.show(.init(channel: channel, info: info))
+        }
         private var preferredIndexPath: IndexPath?
 
         func attach(to view: LiveTVGuideGridView) {
@@ -237,6 +257,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 cell.strip.cursor = cell.isFocused && !onChannel ? timeline.cursorTime(now: now) : nil
                 cell.setChannelHighlighted(cell.isFocused && onChannel)
             }
+            publishInfo(now: now)
         }
 
         private func reloadVisibleProgrammes() {
@@ -255,6 +276,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             if indexPath.item < channels.count {
                 let channel = channels[indexPath.item]
                 cell.configure(with: channel, favorite: favoriteIDs.contains(channel.streamID), timeline: timeline, now: Date())
+                // Programmes arriving for the focused row update the panel.
+                cell.onProgrammesLoaded = { [weak self, weak cell] in
+                    guard let self, let cell, cell === self.focusedCell else { return }
+                    self.publishInfo()
+                }
             }
             return cell
         }
@@ -305,6 +331,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 }
                 cell.strip.cursor = onChannel ? nil : timeline.cursorTime(now: now)
                 cell.setChannelHighlighted(onChannel)
+                publishInfo(now: now)
             } else if context.previouslyFocusedItem is LiveTVGuideRowCell {
                 // Left the guide (to the groups or the header).
                 focusedCell = nil
