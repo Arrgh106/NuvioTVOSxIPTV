@@ -126,6 +126,30 @@ final class LiveTVGuide: ObservableObject {
     }
 }
 
+/// Guide refresh failures, worded for the Live TV header.
+enum GuideError: LocalizedError {
+    case storage
+    case unreadable
+    case notXMLTV
+    case empty
+    case noMatchingChannels
+
+    var errorDescription: String? {
+        switch self {
+        case .storage:
+            return L10n.string("livetv_guide_error_storage", fallback: "Couldn't create the guide database on the Apple TV.")
+        case .unreadable:
+            return L10n.string("livetv_guide_error_unreadable", fallback: "The downloaded guide file couldn't be opened.")
+        case .notXMLTV:
+            return L10n.string("livetv_guide_error_not_xmltv", fallback: "The provider didn't send an XMLTV guide.")
+        case .empty:
+            return L10n.string("livetv_guide_error_empty", fallback: "The provider's guide is empty.")
+        case .noMatchingChannels:
+            return L10n.string("livetv_guide_error_no_match", fallback: "The guide has no programmes for your visible channels.")
+        }
+    }
+}
+
 // MARK: - SQLite
 
 /// Thin SQLite wrapper: one table of programmes indexed by channel and start.
@@ -319,12 +343,17 @@ private enum GuideImporter {
     ) throws -> Int {
         let staging = target.deletingLastPathComponent().appendingPathComponent(target.lastPathComponent + ".new")
         try? FileManager.default.removeItem(at: staging)
-        guard let database = GuideDatabase(url: staging, readOnly: false),
-              let inserter = GuideDatabase.Inserter(database: database),
-              let stream = InputStream(url: file) else {
-            throw XtreamError.invalidResponse
+        guard let database = GuideDatabase(url: staging, readOnly: false) else {
+            throw GuideError.storage
         }
+        // The table must exist before the insert statement can be prepared.
         database.createSchema()
+        guard let inserter = GuideDatabase.Inserter(database: database) else {
+            throw GuideError.storage
+        }
+        guard let stream = InputStream(url: file) else {
+            throw GuideError.unreadable
+        }
         database.execute("BEGIN")
 
         let now = Date().timeIntervalSince1970
@@ -348,7 +377,11 @@ private enum GuideImporter {
         database.execute("COMMIT")
         if Task.isCancelled { throw CancellationError() }
         guard ok || delegate.count > 0 else {
-            throw parser.parserError ?? XtreamError.invalidResponse
+            // Typically an HTML error page or an empty answer instead of XMLTV.
+            throw GuideError.notXMLTV
+        }
+        guard delegate.count > 0 else {
+            throw delegate.sawProgrammes ? GuideError.noMatchingChannels : GuideError.empty
         }
         database.createIndex()
         let count = delegate.count
@@ -378,6 +411,9 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     private let onProgramme: (Programme) -> Void
     private let onCount: (Int) -> Void
     private(set) var count = 0
+    /// Any <programme> at all, matched or not (tells "no guide" from "no
+    /// matching channels").
+    private(set) var sawProgrammes = false
 
     private var current: (channel: String, start: Int64, stop: Int64)?
     private var title = ""
@@ -398,6 +434,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         if Task.isCancelled { parser.abortParsing(); return }
         switch elementName {
         case "programme":
+            sawProgrammes = true
             // Guide ids are matched without regard to case (as on Android).
             guard let channel = attributes["channel"]?.lowercased(), keep.contains(channel),
                   let start = attributes["start"].flatMap(Self.parseTime),
