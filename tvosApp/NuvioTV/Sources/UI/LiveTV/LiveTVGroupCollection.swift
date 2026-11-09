@@ -11,7 +11,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> UICollectionView {
+    func makeUIView(context: Context) -> LiveTVGroupContainer {
         let item = NSCollectionLayoutItem(layoutSize: .init(
             widthDimension: .fractionalWidth(1), heightDimension: .absolute(LiveTVGroupCell.height)))
         let group = NSCollectionLayoutGroup.vertical(layoutSize: .init(
@@ -25,15 +25,27 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.backgroundColor = .clear
         view.remembersLastFocusedIndexPath = true
         view.register(LiveTVGroupCell.self, forCellWithReuseIdentifier: LiveTVGroupCell.reuseID)
+        LiveTVFocusLinks.groups = view
+        LiveTVFocusLinks.trackTouches(on: view)
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
-        return view
+        let container = LiveTVGroupContainer(collectionView: view)
+        let gate = container.leftTrap
+        gate.name = "groups"
+        gate.stay = { [weak coordinator = context.coordinator] in coordinator?.focusedCell }
+        LiveTVFocusLinks.groupGate = gate
+        context.coordinator.gate = gate
+        // A press the gate held back restarts its pause.
+        let pressLeft = UITapGestureRecognizer(target: gate, action: #selector(LiveTVLeftGate.holdIfClosed))
+        pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
+        view.addGestureRecognizer(pressLeft)
+        return container
     }
 
-    func updateUIView(_ view: UICollectionView, context: Context) {
-        context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
+    func updateUIView(_ container: LiveTVGroupContainer, context: Context) {
+        context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
     }
 
     @MainActor
@@ -76,7 +88,60 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             guard indexPath.item < groups.count else { return }
             onSelect(groups[indexPath.item].id)
         }
+
+        // MARK: Focus
+
+        /// Not while coming back from the player: focus goes to the guide.
+        func collectionView(_ collectionView: UICollectionView, canFocusItemAt indexPath: IndexPath) -> Bool {
+            !LiveTVFocusLinks.returningFromPlayer
+        }
+
+        /// The focused group, where the gate on the left leads back to.
+        weak var focusedCell: LiveTVGroupCell?
+        weak var gate: LiveTVLeftGate?
+
+        func collectionView(
+            _ collectionView: UICollectionView,
+            didUpdateFocusIn context: UICollectionViewFocusUpdateContext,
+            with coordinator: UIFocusAnimationCoordinator
+        ) {
+            guard context.nextFocusedItem is LiveTVGroupCell else { return }
+            focusedCell = context.nextFocusedItem as? LiveTVGroupCell
+            if context.previouslyFocusedItem is LiveTVGroupCell {
+                gate?.refresh()
+            } else {
+                // Just arrived: the press or swipe that brought focus here
+                // doesn't go on into the sidebar.
+                gate?.hold()
+            }
+        }
     }
+}
+
+/// The group list with a focus guide on its left edge (see `LiveTVLeftGate`).
+final class LiveTVGroupContainer: UIView {
+    let collectionView: UICollectionView
+    let leftTrap = LiveTVLeftGate()
+
+    init(collectionView: UICollectionView) {
+        self.collectionView = collectionView
+        super.init(frame: .zero)
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(collectionView)
+        addLayoutGuide(leftTrap)
+        NSLayoutConstraint.activate([
+            leftTrap.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leftTrap.widthAnchor.constraint(equalToConstant: 8),
+            leftTrap.topAnchor.constraint(equalTo: topAnchor),
+            leftTrap.bottomAnchor.constraint(equalTo: bottomAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: leftTrap.trailingAnchor, constant: 2),
+            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            collectionView.topAnchor.constraint(equalTo: topAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 
 final class LiveTVGroupCell: UICollectionViewCell {

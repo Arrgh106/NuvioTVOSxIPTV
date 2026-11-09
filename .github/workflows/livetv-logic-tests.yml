@@ -1,0 +1,39 @@
+name: Live TV logic tests
+
+# Plain Swift tests for the Live TV logic that has no UIKit (guide timeline).
+# Linux, no Xcode: about a minute, so they run on every push next to the
+# IPA build.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift'
+      - 'Tests/LiveTVLogic/**'
+      - '.github/workflows/livetv-logic-tests.yml'
+  pull_request:
+    paths:
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift'
+      - 'Tests/LiveTVLogic/**'
+
+concurrency:
+  group: livetv-logic-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run
+        run: |
+          swiftc -O \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift \
+            Tests/LiveTVLogic/main.swift \
+            -o livetv-tests
+          ./livetv-tests

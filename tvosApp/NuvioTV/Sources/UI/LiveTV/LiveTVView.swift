@@ -6,6 +6,10 @@ struct LiveTVView: View {
     @State private var isEditingAccount = false
     @State private var isManagingGroups = false
     @State private var searchText = ""
+    @Namespace private var focusNamespace
+    /// Back from the player only the guide can take focus (tvOS picked the
+    /// search field or the groups otherwise).
+    @ObservedObject private var returnLock = LiveTVReturnLock.shared
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -30,13 +34,24 @@ struct LiveTVView: View {
     private var channelBrowser: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
-            HStack(alignment: .top, spacing: 40) {
+                .disabled(returnLock.locked)
+            // Groups · channels · timeline (the guide gets the most room).
+            HStack(alignment: .top, spacing: 30) {
                 groupList
-                    .frame(width: 460)
+                    .frame(width: 400)
+                    .disabled(returnLock.locked)
+                    // Its own focus section: Right from any group lands in
+                    // the guide, Left from the guide comes back here.
+                    .focusSection()
                 channelList
                     .frame(maxWidth: .infinity)
+                    .focusSection()
+                    // Back from the player the guide takes the first focus
+                    // (on the channel watched last), not the groups.
+                    .prefersDefaultFocus(LiveTVZapper.shared.currentChannel != nil, in: focusNamespace)
             }
         }
+        .focusScope(focusNamespace)
         .padding(.horizontal, 60)
         .padding(.top, 30)
     }
@@ -125,14 +140,17 @@ struct LiveTVView: View {
             .foregroundColor(.white.opacity(0.7))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            // UIKit list with cell reuse: stays fast with tens of thousands
-            // of channels ("All channels" can hold 50k+).
-            LiveTVChannelCollection(
+            // The guide: UIKit rows with cell reuse, stays fast with tens of
+            // thousands of channels ("All channels" can hold 50k+).
+            LiveTVGuideGrid(
                 // Search text and hidden groups change the content of a
                 // group without changing its id or always its size.
                 listID: "\(store.selectedGroupID)|\(store.listRevision)|\(store.searchQuery)|\(store.hiddenGroupIDs.count)",
                 channels: channels,
                 favoriteIDs: Set(store.favoriteIDs),
+                // Back from the player: on the channel watched last (also
+                // after zapping), not on the groups.
+                focusChannelID: LiveTVZapper.shared.currentChannel?.streamID,
                 onSelect: play,
                 onToggleFavorite: { store.toggleFavorite($0) }
             )

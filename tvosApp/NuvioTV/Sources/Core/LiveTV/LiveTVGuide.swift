@@ -231,10 +231,10 @@ final class GuideDatabase: @unchecked Sendable {
         return Int(String(cString: text)) ?? 0
     }
 
-    func programmes(channel: String, from: Date, to: Date) -> [XtreamProgram] {
+    func programmes(channel: String, from: Date, to: Date, limit: Int = 200) -> [XtreamProgram] {
         lock.lock(); defer { lock.unlock() }
         var statement: OpaquePointer?
-        let sql = "SELECT start, stop, title, descr FROM programmes WHERE ch = ? AND stop > ? AND start < ? ORDER BY start LIMIT 200"
+        let sql = "SELECT start, stop, title, descr FROM programmes WHERE ch = ? AND stop > ? AND start < ? ORDER BY start LIMIT \(max(1, limit))"
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, channel.lowercased(), -1, SQLITE_TRANSIENT_DESTRUCTOR)
