@@ -44,6 +44,28 @@ jobs:
           mise exec -- tuist version
           xcrun --sdk appletvos --show-sdk-version
 
+      # The player's prebuilt binaries (MPVKit, FFmpeg, OpenSSL, libass, ...)
+      # are GitHub release downloads, which time out (HTTP 504) during GitHub
+      # incidents. Keep SwiftPM's shared artifact cache between runs, and
+      # retry only the package resolution, so a real compile error still
+      # fails once and fast.
+      - name: Cache Swift package binaries
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('tvosApp/.package.resolved', 'Vendor/AetherEngine/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Resolve packages (with retries)
+        run: |
+          cd tvosApp
+          for attempt in 1 2 3 4; do
+            if mise exec -- tuist generate --no-open; then exit 0; fi
+            echo "::warning::Package resolution failed (attempt $attempt); retrying in 60 s"
+            sleep 60
+          done
+          exit 1
+
       - name: Build unsigned IPA
         env:
           NUVIO_IPA_OUTPUT_DIR: ${{ runner.temp }}/ipa

@@ -241,6 +241,13 @@ struct XtreamProgram: Hashable, Sendable {
     let start: Date
     let end: Date
 
+    init(title: String, description: String?, start: Date, end: Date) {
+        self.title = title
+        self.description = description
+        self.start = start
+        self.end = end
+    }
+
     init?(listing: [String: Any]) {
         func number(_ key: String) -> Double? {
             if let value = listing[key] as? Double { return value }

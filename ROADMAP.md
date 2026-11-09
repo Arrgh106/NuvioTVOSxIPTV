@@ -6,19 +6,26 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV: groups, favorites, recently watched, search** ([#6](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/6))
-  - Group manager with filter ("Only these"), favorites via long press, recently watched, channel search, separator rows hidden.
-  - Tested on device: all of it, including the smooth group manager list and the right channel logo when switching channels. Ready to merge.
+- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data 24 h back to 3 days ahead, stored on the device ([#7](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/7)).
+  - Tested on device: 233,000 programmes for all channels downloaded and read in 5–10 s; now/next correct in list and player.
 
-## Next (in this order)
+## Next: Live TV guide, step by step
 
-1. ⏭ **German translations** for all new texts (Live TV, account sync, Trakt/Simkl hints, Jellyfin sync status).
-2. ⏭ **Full EPG** from the provider (`xmltv.php`): programme data for many hours ahead, stored on the device.
-3. ⏭ **TV guide grid** (TiviMate style): channels down, time across, info panel for a programme.
-4. ⏭ **Catch-up / restart** for channels with archive (`tv_archive`).
+Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvio + IPTV for Android TV, adapted to tvOS).
+
+0. ⏭ **Foundation**: design tokens, glass panel, activity pill for background work.
+1. ⏭ **Guide grid**: groups · channels · timeline with now line (TiviMate style).
+2. ⏭ **Info panel**: focused programme with times, progress, description.
+3. ⏭ **Preview window**: small live picture of the highlighted channel.
+4. ⏭ **Player info bar & overlay**: now/next, channel row, guide over the video.
+5. ⏭ **Quick menu & Settings → Live TV** (incl. separator rows option, 24-hour clock).
+6. ⏭ **Catch-up / restart** for channels with archive.
+7. ⏭ **Reminders & Home row**.
 
 ## Noted for later
 
+- 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
+- 💡 Guide matching by channel name for channels without a guide id (Android does this), and choosing a guide by hand per channel ("Assign EPG"); extra XMLTV sources.
 - 💡 Separator rows such as `##### AT&T #####`: make hiding them a setting (currently always hidden).
 - 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
@@ -30,6 +37,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 | What | PR |
 | --- | --- |
+| Live TV: hide groups, favorites, recently watched, channel search, separator rows hidden, smooth group manager, right logo when switching channels; README and roadmap | [#6](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/6) |
 | Live TV: channel up/down in the player, now/next EPG in list and player, scrobbling on by default, Jellyfin series indexing fix | [#5](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/5) |
 | README logo (light and dark) | [#4](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/4) |
 | nuvio.tv sync (API keys, Jellyfin servers, Trakt and trailer options), one-tap Trakt login, Jellyfin live lookup, fast Live TV lists (50k+ channels), IPA without App Group | [#3](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/3) |
