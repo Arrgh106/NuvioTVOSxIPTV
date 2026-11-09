@@ -32,9 +32,15 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
-        container.leftTrap.target = { [weak coordinator = context.coordinator, weak view] in
-            coordinator?.leftTarget(view) ?? []
-        }
+        let gate = container.leftTrap
+        gate.name = "groups"
+        gate.stay = { [weak coordinator = context.coordinator] in coordinator?.focusedCell }
+        LiveTVFocusLinks.groupGate = gate
+        context.coordinator.gate = gate
+        // A press the gate held back restarts its pause.
+        let pressLeft = UITapGestureRecognizer(target: gate, action: #selector(LiveTVLeftGate.holdIfClosed))
+        pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
+        view.addGestureRecognizer(pressLeft)
         return container
     }
 
@@ -94,22 +100,9 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             return true
         }
 
-        /// Set when focus came over from the guide: the swipe that brought
-        /// it here must not carry on into the app's sidebar.
-        private var enteredFromGuide: (touch: Int, at: Date)?
-
-        /// The focus guide left of the groups: back onto the group while the
-        /// press or swipe that came from the guide is still going; otherwise
-        /// nothing, so tvOS opens the app's sidebar as usual.
-        func leftTarget(_ view: UICollectionView?) -> [UIFocusEnvironment] {
-            guard let view, let entry = enteredFromGuide else { return [] }
-            let out = LiveTVFocusLinks.decide("group") {
-                Date().timeIntervalSince(entry.at) > LiveTVFocusLinks.pause
-                    && LiveTVFocusLinks.isNewGesture(since: entry.touch)
-            }
-            if out { enteredFromGuide = nil; return [] }
-            return [view]
-        }
+        /// The focused group, where the gate on the left leads back to.
+        weak var focusedCell: LiveTVGroupCell?
+        weak var gate: LiveTVLeftGate?
 
         func collectionView(
             _ collectionView: UICollectionView,
@@ -118,19 +111,22 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         ) {
             guard context.nextFocusedItem is LiveTVGroupCell else { return }
             LiveTVFocusLog.add("group \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView))")
-            if context.previouslyFocusedItem is LiveTVGuideRowCell {
-                enteredFromGuide = (LiveTVFocusLinks.touchSession, Date())
-            } else if !(context.previouslyFocusedItem is LiveTVGroupCell) {
-                enteredFromGuide = nil
+            focusedCell = context.nextFocusedItem as? LiveTVGroupCell
+            if context.previouslyFocusedItem is LiveTVGroupCell {
+                gate?.refresh()
+            } else {
+                // Just arrived: the press or swipe that brought focus here
+                // doesn't go on into the sidebar.
+                gate?.hold()
             }
         }
     }
 }
 
-/// The group list with a focus guide on its left edge (see `leftTarget`).
+/// The group list with a focus guide on its left edge (see `LiveTVLeftGate`).
 final class LiveTVGroupContainer: UIView {
     let collectionView: UICollectionView
-    let leftTrap = LiveTVTrapGuide()
+    let leftTrap = LiveTVLeftGate()
 
     init(collectionView: UICollectionView) {
         self.collectionView = collectionView
