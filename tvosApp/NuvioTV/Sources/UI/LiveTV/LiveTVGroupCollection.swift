@@ -93,11 +93,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
 
         /// Not while coming back from the player: focus goes to the guide.
         func collectionView(_ collectionView: UICollectionView, canFocusItemAt indexPath: IndexPath) -> Bool {
-            if LiveTVFocusLinks.returningFromPlayer {
-                LiveTVFocusLog.add("group \(indexPath.item) refused (locked)")
-                return false
-            }
-            return true
+            !LiveTVFocusLinks.returningFromPlayer
         }
 
         /// The focused group, where the gate on the left leads back to.
@@ -110,7 +106,6 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             with coordinator: UIFocusAnimationCoordinator
         ) {
             guard context.nextFocusedItem is LiveTVGroupCell else { return }
-            LiveTVFocusLog.add("group \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView))")
             focusedCell = context.nextFocusedItem as? LiveTVGroupCell
             if context.previouslyFocusedItem is LiveTVGroupCell {
                 gate?.refresh()

@@ -295,7 +295,6 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                         LiveTVFocusLinks.endReturn("guide held 1.5 s")
                     }
                 }
-                LiveTVFocusLog.add("guide row \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView))")
                 if context.previouslyFocusedIndexPath == nil {
                     // Entering the guide: from the groups on what's on now,
                     // back from the player on the channel.
@@ -319,7 +318,6 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             LiveTVFocusLinks.returningFromPlayer = true
             // Otherwise the row started here wins over the one zapped to.
             collectionView.remembersLastFocusedIndexPath = false
-            LiveTVFocusLog.add("play row \(indexPath.item), groups locked")
             landOnChannel = true
             onSelect(channels[indexPath.item])
         }
@@ -352,25 +350,17 @@ final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
     let leftTrap = LiveTVLeftGate()
-    /// Focus trace while step 1 is being tuned on the device (temporary).
-    private let debugLabel = UILabel()
 
     override init(frame: CGRect) {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
         super.init(frame: frame)
-        debugLabel.numberOfLines = 0
-        debugLabel.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
-        debugLabel.textColor = .yellow
-        debugLabel.backgroundColor = UIColor.black.withAlphaComponent(0.75)
-        debugLabel.isUserInteractionEnabled = false
-        LiveTVFocusLog.label = debugLabel
         collectionView.backgroundColor = .clear
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.clipsToBounds = true
         collectionView.register(LiveTVGuideRowCell.self, forCellWithReuseIdentifier: LiveTVGuideRowCell.reuseID)
         collectionView.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 40, right: 0)
 
-        for view in [ruler, collectionView, debugLabel] as [UIView] {
+        for view in [ruler, collectionView] as [UIView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -391,9 +381,6 @@ final class LiveTVGuideGridView: UIView {
             collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
             collectionView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            debugLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            debugLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            debugLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
         ])
     }
 
@@ -505,7 +492,6 @@ enum LiveTVFocusLinks {
     static func endReturn(_ reason: String) {
         guard returningFromPlayer else { return }
         returningFromPlayer = false
-        LiveTVFocusLog.add("groups unlocked: " + reason)
     }
 
     /// Fast presses stop on the channel and in the groups: the next step
@@ -588,7 +574,6 @@ final class LiveTVLeftGate: UIFocusGuide {
         guard canOpen(), !LiveTVFocusLinks.isTouching else { return }
         isOpen = true
         refresh()
-        LiveTVFocusLog.add(name + " gate open")
     }
 
     func refresh() {
@@ -604,52 +589,6 @@ final class LiveTVLeftGate: UIFocusGuide {
 final class LiveTVReturnLock: ObservableObject {
     static let shared = LiveTVReturnLock()
     @Published var locked = false
-}
-
-/// Temporary on-screen focus trace (last lines, newest at the bottom).
-@MainActor
-enum LiveTVFocusLog {
-    static weak var label: UILabel?
-    private static var lines: [String] = []
-    private static var observer: NSObjectProtocol?
-    private static let formatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "ss.SSS"
-        return f
-    }()
-
-    static func add(_ line: String) {
-        startObserving()
-        lines.append(formatter.string(from: Date()) + " " + line)
-        if lines.count > 9 { lines.removeFirst(lines.count - 9) }
-        label?.text = lines.joined(separator: "\n")
-    }
-
-    /// Every focus change in the app, while Live TV is open.
-    private static func startObserving() {
-        guard observer == nil else { return }
-        observer = NotificationCenter.default.addObserver(
-            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
-        ) { note in
-            MainActor.assumeIsolated {
-                guard label?.window != nil else { return }
-                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
-                add("focus → " + describe(context?.nextFocusedView)
-                    + (LiveTVFocusLinks.returningFromPlayer ? "  [locked]" : ""))
-            }
-        }
-    }
-
-    static func describe(_ view: UIView?) -> String {
-        var current = view
-        while let v = current {
-            if v is LiveTVGuideRowCell { return "guide row" }
-            if v is LiveTVGroupCell { return "group" }
-            current = v.superview
-        }
-        guard let view else { return "nothing" }
-        return String(describing: type(of: view)).prefix(40).description
-    }
 }
 
 /// Watches touches only; never takes them from the focus engine.
