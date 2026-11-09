@@ -12,6 +12,10 @@ struct LiveTVView: View {
     @ObservedObject private var returnLock = LiveTVReturnLock.shared
     /// Not observed here: only the info panel redraws when focus moves.
     @State private var info = LiveTVInfoModel()
+    /// Preview window and full screen: one player (step 3).
+    @StateObject private var player = LiveTVPlayer()
+    /// The app's film player. Not used since step 3 (Live TV plays in its
+    /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -57,6 +61,19 @@ struct LiveTVView: View {
         .focusScope(focusNamespace)
         .padding(.horizontal, 60)
         .padding(.top, 30)
+        // Full screen: only the player takes the remote.
+        .disabled(player.isFullscreen)
+        .overlayPreferenceValue(LiveTVPreviewAnchorKey.self) { anchor in
+            ZStack {
+                LiveTVVideoLayer(player: player, anchor: anchor)
+                if player.isFullscreen {
+                    LiveTVFullscreenControls(player: player, onExit: { player.isFullscreen = false })
+                }
+            }
+        }
+        .toolbar(player.isFullscreen ? .hidden : .visible, for: .tabBar)
+        // Leaving Live TV frees the provider connection.
+        .onDisappear { player.stop() }
     }
 
     private var header: some View {
@@ -161,15 +178,28 @@ struct LiveTVView: View {
         }
     }
 
+    /// OK on a channel, as on Android: plays it in the preview window; OK on
+    /// the channel already playing there makes it full screen (same stream).
     private func play(_ channel: XtreamLiveChannel) {
+        if player.channel?.streamID == channel.streamID {
+            switch player.status {
+            case .loading, .playing:
+                // Back from full screen: on this channel, in the guide.
+                LiveTVFocusLinks.beginReturn()
+                player.isFullscreen = true
+                return
+            case .idle, .failed:
+                break // try again
+            }
+        }
         guard let item = store.playbackItem(for: channel) else { return }
         store.recordWatched(channel)
-        // Up/down in the player switches through this group.
+        // Up/down in full screen switches through this group.
         let liveStore = store
         LiveTVZapper.shared.begin(channel: channel, in: liveStore.visibleChannels) { [weak liveStore] in
             liveStore?.playbackItem(for: $0)
         }
-        onPlayChannel(item.url, item.meta, item.headers)
+        player.play(channel, item: item)
     }
 }
 

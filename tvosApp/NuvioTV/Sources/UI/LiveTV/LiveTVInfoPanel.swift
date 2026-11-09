@@ -43,10 +43,15 @@ struct LiveTVInfoPanel: View {
 
     var body: some View {
         // The clock moves time left and progress along.
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            content(now: context.date)
+        HStack(spacing: 0) {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                content(now: context.date)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // The preview window (the video layer draws the picture here).
+            LiveTVPreviewSlot()
+                .padding(.trailing, 24)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: Self.height)
         .background(glow)
         .liveTVGlass()
