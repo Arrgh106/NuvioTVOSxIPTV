@@ -158,6 +158,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         placeholder.isHidden = false
         strip.programmes = nil
         strip.cursor = nil
+        setChannelHighlighted(false)
     }
 
     private func loadLogo(_ url: URL?) {
@@ -184,11 +185,26 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         })
     }
 
-    /// The strong highlight is the programme under the cursor (white tile);
-    /// the channel part of the focused row is only lifted a little.
+    /// The cursor is on the channel itself (white, like a focused list row).
+    private var channelHighlighted = false
+
+    func setChannelHighlighted(_ highlighted: Bool) {
+        guard highlighted != channelHighlighted else { return }
+        channelHighlighted = highlighted
+        applyFocus(isFocused)
+    }
+
+    /// The strong highlight is where the cursor is: the programme (white
+    /// tile) or the channel (white channel part). Otherwise the channel part
+    /// of the focused row is only lifted a little.
     private func applyFocus(_ focused: Bool) {
-        channelBackground.backgroundColor = focused ? UIColor.white.withAlphaComponent(0.16) : .clear
-        numberLabel.textColor = UIColor.white.withAlphaComponent(focused ? 0.8 : 0.55)
+        let onChannel = focused && channelHighlighted
+        channelBackground.backgroundColor = onChannel ? .white
+            : focused ? UIColor.white.withAlphaComponent(0.16) : .clear
+        nameLabel.textColor = onChannel ? .black : .white
+        numberLabel.textColor = onChannel ? UIColor.black.withAlphaComponent(0.6)
+            : UIColor.white.withAlphaComponent(focused ? 0.8 : 0.55)
+        archiveIcon.tintColor = onChannel ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.5)
     }
 }
 

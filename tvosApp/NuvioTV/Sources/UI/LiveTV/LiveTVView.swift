@@ -6,6 +6,7 @@ struct LiveTVView: View {
     @State private var isEditingAccount = false
     @State private var isManagingGroups = false
     @State private var searchText = ""
+    @Namespace private var focusNamespace
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
 
     var body: some View {
@@ -40,8 +41,12 @@ struct LiveTVView: View {
                 channelList
                     .frame(maxWidth: .infinity)
                     .focusSection()
+                    // Back from the player the guide takes the first focus
+                    // (on the channel watched last), not the groups.
+                    .prefersDefaultFocus(LiveTVZapper.shared.currentChannel != nil, in: focusNamespace)
             }
         }
+        .focusScope(focusNamespace)
         .padding(.horizontal, 60)
         .padding(.top, 30)
     }

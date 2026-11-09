@@ -121,14 +121,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let collection = view.collectionView
             collection.layoutIfNeeded()
             collection.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
-            // After SwiftUI has placed its initial focus (on the groups).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak collection] in
-                guard let collection, collection.window != nil,
-                      let system = UIFocusSystem.focusSystem(for: collection) else { return }
-                system.requestFocusUpdate(to: collection)
-                system.updateFocusIfNeeded()
-            }
+            // SwiftUI gives the guide the first focus (prefersDefaultFocus in
+            // LiveTVView); the collection then picks this row. It lands on the
+            // channel itself, as it was left.
+            landOnChannel = true
         }
+
+        /// Next focus into the guide lands on the channel, not the programme.
+        private var landOnChannel = false
 
         func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
             preferredIndexPath
@@ -156,28 +156,46 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         @objc private func moveRight() {
             guard let cell = focusedRow else { return }
             let now = Date()
+            if onChannel {
+                // From the channel onto what's on now.
+                setOnChannel(false)
+                timeline.resetToNow(now)
+                refreshAll(now: now)
+                return
+            }
             let limit = now.addingTimeInterval(LiveTVGuide.futureWindow)
             let before = timeline
             timeline.moveRight(in: cell.strip.programmes ?? [], now: now, limit: limit)
             if timeline != before { refreshAll(now: now) }
         }
 
-        /// Left: back through time; on what's on now, out to the groups.
+        /// Left: back through time; on what's on now onto the channel; from
+        /// the channel the focus engine itself moves on to the groups.
         @objc private func handleLeft() {
-            guard let cell = focusedRow else { return }
+            guard let cell = focusedRow, !onChannel else { return }
             let now = Date()
             let before = timeline
             let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now)
-            if timeline != before { refreshAll(now: now) }
-            guard !moved, let groups = LiveTVFocusLinks.groups, groups.window != nil,
-                  let system = UIFocusSystem.focusSystem(for: groups) else { return }
-            leavingToGroups = true
-            system.requestFocusUpdate(to: groups)
-            system.updateFocusIfNeeded()
-            leavingToGroups = false
+            if !moved { setOnChannel(true) }
+            if timeline != before || !moved { refreshAll(now: now) }
         }
 
-        private var leavingToGroups = false
+        /// The cursor sits on the channel (number, logo, name) instead of a
+        /// programme, like Android's channel column: one more Left reaches
+        /// the groups. Ups and downs keep it there.
+        private var onChannel = false
+        private var onChannelSince = Date.distantPast
+
+        private func setOnChannel(_ value: Bool) {
+            onChannel = value
+            onChannelSince = Date()
+            // On the channel, the focus guide on the left leads to the groups.
+            if let view {
+                view.leftTrap.preferredFocusEnvironments = value
+                    ? [LiveTVFocusLinks.groups].compactMap { $0 }
+                    : [view.collectionView]
+            }
+        }
 
         private func tick() {
             let now = Date()
@@ -190,7 +208,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             view?.ruler.update(timeline: timeline, now: now)
             for cell in visibleRows {
                 cell.strip.update(timeline: timeline, now: now)
-                cell.strip.cursor = cell.isFocused ? timeline.cursorTime(now: now) : nil
+                cell.strip.cursor = cell.isFocused && !onChannel ? timeline.cursorTime(now: now) : nil
+                cell.setChannelHighlighted(cell.isFocused && onChannel)
             }
         }
 
@@ -217,12 +236,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         // MARK: Focus
 
         func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
-            // Focus never leaves a row to the left on its own (that opened the
-            // sidebar); `handleLeft` decides and moves it to the groups.
-            if context.focusHeading.contains(.left), !leavingToGroups,
+            // Focus leaves a row to the left only from the channel, and not
+            // with the same press that just put the cursor there.
+            if context.focusHeading.contains(.left),
                context.previouslyFocusedItem is LiveTVGuideRowCell,
                !(context.nextFocusedItem is LiveTVGuideRowCell) {
-                return false
+                return onChannel && Date().timeIntervalSince(onChannelSince) > 0.35
             }
             return true
         }
@@ -233,17 +252,27 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             with coordinator: UIFocusAnimationCoordinator
         ) {
             let now = Date()
-            (context.previouslyFocusedItem as? LiveTVGuideRowCell)?.strip.cursor = nil
+            if let previous = context.previouslyFocusedItem as? LiveTVGuideRowCell {
+                previous.strip.cursor = nil
+                previous.setChannelHighlighted(false)
+            }
             if let cell = context.nextFocusedItem as? LiveTVGuideRowCell {
                 // Landed (on the last watched channel or elsewhere): from now
                 // on the collection view remembers the focused row itself.
                 preferredIndexPath = nil
-                // Entering the guide from the groups starts on what's on now.
                 if context.previouslyFocusedIndexPath == nil {
+                    // Entering the guide: from the groups on what's on now,
+                    // back from the player on the channel.
                     timeline.resetToNow(now)
+                    setOnChannel(landOnChannel)
+                    landOnChannel = false
                     refreshAll(now: now)
                 }
-                cell.strip.cursor = timeline.cursorTime(now: now)
+                cell.strip.cursor = onChannel ? nil : timeline.cursorTime(now: now)
+                cell.setChannelHighlighted(onChannel)
+            } else if context.previouslyFocusedItem is LiveTVGuideRowCell {
+                // Left the guide (to the groups or the header).
+                setOnChannel(false)
             }
         }
 
@@ -279,7 +308,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
-    private let leftTrap = UIFocusGuide()
+    let leftTrap = UIFocusGuide()
 
     override init(frame: CGRect) {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
