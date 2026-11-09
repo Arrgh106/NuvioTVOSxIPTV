@@ -30,11 +30,16 @@ struct LiveTVView: View {
     private var channelBrowser: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
-            HStack(alignment: .top, spacing: 40) {
+            // Groups · channels · timeline (the guide gets the most room).
+            HStack(alignment: .top, spacing: 30) {
                 groupList
-                    .frame(width: 460)
+                    .frame(width: 400)
+                    // Its own focus section: Right from any group lands in
+                    // the guide, Left from the guide comes back here.
+                    .focusSection()
                 channelList
                     .frame(maxWidth: .infinity)
+                    .focusSection()
             }
         }
         .padding(.horizontal, 60)
@@ -125,9 +130,9 @@ struct LiveTVView: View {
             .foregroundColor(.white.opacity(0.7))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            // UIKit list with cell reuse: stays fast with tens of thousands
-            // of channels ("All channels" can hold 50k+).
-            LiveTVChannelCollection(
+            // The guide: UIKit rows with cell reuse, stays fast with tens of
+            // thousands of channels ("All channels" can hold 50k+).
+            LiveTVGuideGrid(
                 // Search text and hidden groups change the content of a
                 // group without changing its id or always its size.
                 listID: "\(store.selectedGroupID)|\(store.listRevision)|\(store.searchQuery)|\(store.hiddenGroupIDs.count)",

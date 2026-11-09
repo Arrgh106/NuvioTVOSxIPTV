@@ -6,14 +6,14 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV guide, step 0: foundation** (see below).
+- 🚧 **Live TV guide, step 1: guide grid** (see below). Step 0 is in PR #8.
 
 ## Next: Live TV guide, step by step
 
 Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvio + IPTV for Android TV, adapted to tvOS).
 
 0. 🚧 **Foundation**: design tokens, glass panel, activity pill for background work. Channels load one request after another (no more HTTP 404 right after sign-in).
-1. ⏭ **Guide grid**: groups · channels · timeline with now line (TiviMate style).
+1. 🚧 **Guide grid**: groups · channels · timeline with now line (TiviMate style). Two-hour window in half-hour steps, Right/Left move through the programmes, Left on now goes to the groups; programmes come from the stored guide for visible rows only, short EPG for channels the guide doesn't cover. Timeline logic has Linux tests in CI.
 2. ⏭ **Info panel**: focused programme with times, progress, description.
 3. ⏭ **Preview window**: small live picture of the highlighted channel.
 4. ⏭ **Player info bar & overlay**: now/next, channel row, guide over the video.
