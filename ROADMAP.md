@@ -12,7 +12,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvio + IPTV for Android TV, adapted to tvOS).
 
-0. 🚧 **Foundation**: design tokens, glass panel, activity pill for background work.
+0. 🚧 **Foundation**: design tokens, glass panel, activity pill for background work. Channels load one request after another (no more HTTP 404 right after sign-in).
 1. ⏭ **Guide grid**: groups · channels · timeline with now line (TiviMate style).
 2. ⏭ **Info panel**: focused programme with times, progress, description.
 3. ⏭ **Preview window**: small live picture of the highlighted channel.

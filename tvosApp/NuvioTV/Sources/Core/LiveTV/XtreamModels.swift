@@ -227,7 +227,24 @@ enum XtreamError: LocalizedError, Equatable {
         case .accountInactive(let status):
             return L10n.string("livetv_error_inactive", fallback: "The account is not active") + " (\(status))."
         case .badStatus(let code):
-            return L10n.string("livetv_error_http", fallback: "The server answered with HTTP") + " \(code)."
+            // Plain-English reasons for the codes people actually hit (as on Android).
+            let reason: String?
+            switch code {
+            case 404:
+                reason = L10n.string("livetv_error_http_404", fallback: "nothing at that address, or the server is busy. Check server and port, then try Refresh.")
+            case 429:
+                reason = L10n.string("livetv_error_http_429", fallback: "too many requests, try again in a few minutes.")
+            case 456, 458, 461:
+                reason = L10n.string("livetv_error_http_limit", fallback: "the provider refused this login for now (too many connections, expired or blocked).")
+            case 502, 503, 504, 520...524:
+                reason = L10n.string("livetv_error_http_down", fallback: "the provider's server didn't respond, try again later.")
+            case 884:
+                reason = L10n.string("livetv_error_http_blocked", fallback: "the provider blocked this app.")
+            default:
+                reason = nil
+            }
+            let prefix = L10n.string("livetv_error_http", fallback: "The server answered with HTTP") + " \(code)"
+            return reason.map { "\(prefix): \($0)" } ?? prefix + "."
         case .invalidResponse:
             return L10n.string("livetv_error_response", fallback: "The server sent an unexpected response.")
         }
