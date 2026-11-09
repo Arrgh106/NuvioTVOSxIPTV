@@ -6,7 +6,8 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data 24 h back to 3 days ahead, stored on the device ([branch](https://github.com/Arrgh106/NuvioTVOSxIPTV/tree/feature/livetv-full-epg)).
+- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data 24 h back to 3 days ahead, stored on the device ([#7](https://github.com/Arrgh106/NuvioTVOSxIPTV/pull/7)).
+  - Tested on device: 233,000 programmes for all channels downloaded and read in 5–10 s; now/next correct in list and player.
 
 ## Next: Live TV guide, step by step
 

@@ -114,6 +114,12 @@ tvOS strengths: the focus engine, glass materials, parallax-free calm motion.
 - **Preview window is a setting** with a sensible default per device (it runs
   a second decoder; on an Apple TV HD it may cost smoothness).
 
+### Decisions
+
+- **Accent color follows the app theme** ("Match Theme", as on Android).
+- **Preview window on by default.** The Apple TV 4K handles a second small
+  decoder easily (Android TV sticks with less power do); it stays a setting.
+
 ## 3. Build plan
 
 Each step is one pull request with a test build and a short device test list.
