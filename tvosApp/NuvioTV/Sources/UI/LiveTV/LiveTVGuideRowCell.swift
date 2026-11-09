@@ -21,6 +21,8 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
     let strip = LiveTVProgrammeStrip()
 
     private(set) var channel: XtreamLiveChannel?
+    /// Called when the row's programmes arrive (not for cached ones).
+    var onProgrammesLoaded: (() -> Void)?
     private var logoTask: Task<Void, Never>?
     private var logoURL: URL?
     private var programmeTask: Task<Void, Never>?
@@ -143,6 +145,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
             let list = await LiveTVGuideRows.shared.programmes(for: channel)
             guard !Task.isCancelled, let self, self.channel?.streamID == id else { return }
             self.strip.programmes = list
+            self.onProgrammesLoaded?()
         }
     }
 
