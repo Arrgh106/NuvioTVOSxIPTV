@@ -20,7 +20,24 @@ final class LiveTVGuide: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var status: Status = .idle
+    @Published private(set) var status: Status = .idle {
+        didSet { reportActivity() }
+    }
+
+    private func reportActivity() {
+        let id = "livetv.guide"
+        let center = ActivityCenter.shared
+        switch status {
+        case .idle, .ready:
+            center.finish(id)
+        case .downloading(let fraction):
+            center.update(id, label: L10n.string("livetv_guide_downloading_label", fallback: "Downloading guide"), fraction: fraction)
+        case .importing(let count):
+            center.update(id, label: L10n.format("livetv_guide_importing_label", fallback: "Reading guide · %@ programmes", count.formatted()))
+        case .failed(let message):
+            center.fail(id, message: L10n.string("livetv_guide", fallback: "Guide") + ": " + message)
+        }
+    }
 
     /// Kept: 24 h back (as on Android; catch-up needs the past) to 3 days
     /// ahead. Refreshed every 12 h, also as on Android.

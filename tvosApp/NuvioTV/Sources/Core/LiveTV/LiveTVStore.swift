@@ -129,7 +129,19 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var account: XtreamAccount?
     @Published private(set) var userInfo: XtreamUserInfo?
     @Published private(set) var groups: [LiveTVGroup] = []
-    @Published private(set) var state: LoadState = .idle
+    @Published private(set) var state: LoadState = .idle {
+        didSet {
+            let id = "livetv.channels"
+            switch state {
+            case .loading:
+                ActivityCenter.shared.update(id, label: L10n.string("livetv_loading_label", fallback: "Loading channels"))
+            case .idle:
+                ActivityCenter.shared.finish(id)
+            case .failed(let message):
+                ActivityCenter.shared.fail(id, message: message)
+            }
+        }
+    }
     @Published private(set) var lastUpdated: Date?
     @Published var selectedGroupID: String = LiveTVGroup.allID {
         didSet {
@@ -361,7 +373,8 @@ final class LiveTVStore: ObservableObject {
         self.account = account
         self.userInfo = info
         self.allowedFormats = info.allowedOutputFormats
-        refresh()
+        // The login was just checked; don't ask the panel for it again.
+        refresh(verifiedInfo: info)
     }
 
     func signOut() {
@@ -389,7 +402,10 @@ final class LiveTVStore: ObservableObject {
 
     // MARK: Loading
 
-    func refresh() {
+    /// Loads account, categories, then channels one after another, like
+    /// Android and TiviMate. Several requests at once (right after a login)
+    /// made some panels answer HTTP 404; each step also gets one retry.
+    func refresh(verifiedInfo: XtreamUserInfo? = nil) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
         loadTask?.cancel()
@@ -397,10 +413,15 @@ final class LiveTVStore: ObservableObject {
         loadTask = Task { [weak self] in
             let client = XtreamClient(account: account, password: password)
             do {
-                async let infoResult = client.login()
-                async let categoriesResult = client.liveCategories()
-                async let channelsResult = client.liveChannels()
-                let (info, categories, channels) = try await (infoResult, categoriesResult, channelsResult)
+                let info: XtreamUserInfo
+                if let verifiedInfo {
+                    info = verifiedInfo
+                } else {
+                    info = try await Self.withRetry { try await client.login() }
+                }
+                // Optional, as on Android: without categories everything lands in "Other".
+                let categories = (try? await Self.withRetry { try await client.liveCategories() }) ?? []
+                let channels = try await Self.withRetry { try await client.liveChannels() }
                 let scopeURL = await MainActor.run { LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope) }
                 let names = await MainActor.run { LiveTVStore.groupNamesValue() }
                 let prepared = await Task.detached(priority: .userInitiated) {
@@ -436,6 +457,31 @@ final class LiveTVStore: ObservableObject {
             self?.userInfo = info
             self?.allowedFormats = info.allowedOutputFormats
         }
+    }
+
+    /// One more try after a short pause for errors that are often momentary
+    /// (busy panel, flood protection, network). Wrong logins aren't retried.
+    nonisolated static func withRetry<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            guard isTransient(error) else { throw error }
+            try await Task.sleep(for: .seconds(2))
+            return try await operation()
+        }
+    }
+
+    nonisolated static func isTransient(_ error: Error) -> Bool {
+        if let xtream = error as? XtreamError {
+            if case .badStatus(let code) = xtream {
+                return code == 404 || code == 429 || code >= 500
+            }
+            return xtream == .invalidResponse
+        }
+        if let url = error as? URLError { return url.code != .cancelled }
+        return false
     }
 
     struct GroupNames: Sendable {

@@ -91,7 +91,7 @@ final class LiveTVGroupCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        background.layer.cornerRadius = 14
+        background.layer.cornerRadius = LiveTVTheme.Metric.cornerRadius
         background.layer.cornerCurve = .continuous
         background.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(background)
@@ -144,7 +144,10 @@ final class LiveTVGroupCell: UICollectionViewCell {
 
     private func applyStyle() {
         let focused = isFocused
-        background.backgroundColor = focused ? .white : (isGroupSelected ? UIColor.white.withAlphaComponent(0.14) : .clear)
+        // The selected group carries the app's accent (Match Theme).
+        let selectedFill = LiveTVTheme.accentUIColor.withAlphaComponent(
+            LiveTVTheme.isWhiteAccent ? 0.14 : 0.28)
+        background.backgroundColor = focused ? .white : (isGroupSelected ? selectedFill : .clear)
         nameLabel.font = .systemFont(ofSize: 24, weight: isGroupSelected ? .bold : .regular)
         nameLabel.textColor = focused ? .black : .white
         countLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)

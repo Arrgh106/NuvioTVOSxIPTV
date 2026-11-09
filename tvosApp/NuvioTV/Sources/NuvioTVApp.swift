@@ -723,6 +723,8 @@ struct ContentView: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
             }
         }
+        // Fork: background work (guide, channels, Jellyfin sync) in one pill.
+        .overlay(alignment: .bottomTrailing) { ActivityPill() }
         .background(Color.black.ignoresSafeArea())
         // Safety net for the Menu button while an overlay is up. During the
         // overlay's insert animation focus is briefly in limbo (the tab view is

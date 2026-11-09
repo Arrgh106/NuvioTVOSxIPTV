@@ -223,6 +223,7 @@ final class JellyfinSessionManager: ObservableObject {
                     ) { text, count in
                         await MainActor.run {
                             self.syncStates[server.id] = .syncing(found: base + count, currentLibrary: text)
+                            ActivityCenter.shared.update("jellyfin.\(server.id)", label: "Jellyfin · " + text)
                         }
                     }
                     fetchedItemCount += outcome.titles.count
@@ -251,6 +252,7 @@ final class JellyfinSessionManager: ObservableObject {
                 updatedServer.lastSyncTitleCount = resolution.titles.count
                 JellyfinServerStore.shared.upsert(updatedServer)
 
+                ActivityCenter.shared.finish("jellyfin.\(server.id)")
                 syncStates[server.id] = .done(
                     JellyfinSyncReport(
                         matchedTitles: resolution.titles.count,
@@ -263,9 +265,11 @@ final class JellyfinSessionManager: ObservableObject {
                     )
                 )
             } catch is CancellationError {
+                ActivityCenter.shared.finish("jellyfin.\(server.id)")
                 // A new sync or a disconnect superseded this one; leave state to them.
             } catch {
                 syncStates[server.id] = .failed(error.localizedDescription)
+                ActivityCenter.shared.fail("jellyfin.\(server.id)", message: "Jellyfin: " + error.localizedDescription)
             }
         }
     }
