@@ -6,12 +6,20 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data for many hours ahead, stored on the device.
+- 🚧 **Full EPG** from the provider (`xmltv.php`): programme data 24 h back to 3 days ahead, stored on the device ([branch](https://github.com/Arrgh106/NuvioTVOSxIPTV/tree/feature/livetv-full-epg)).
 
-## Next (in this order)
+## Next: Live TV guide, step by step
 
-1. ⏭ **TV guide grid** (TiviMate style): channels down, time across, info panel for a programme.
-2. ⏭ **Catch-up / restart** for channels with archive (`tv_archive`).
+Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvio + IPTV for Android TV, adapted to tvOS).
+
+0. ⏭ **Foundation**: design tokens, glass panel, activity pill for background work.
+1. ⏭ **Guide grid**: groups · channels · timeline with now line (TiviMate style).
+2. ⏭ **Info panel**: focused programme with times, progress, description.
+3. ⏭ **Preview window**: small live picture of the highlighted channel.
+4. ⏭ **Player info bar & overlay**: now/next, channel row, guide over the video.
+5. ⏭ **Quick menu & Settings → Live TV** (incl. separator rows option, 24-hour clock).
+6. ⏭ **Catch-up / restart** for channels with archive.
+7. ⏭ **Reminders & Home row**.
 
 ## Noted for later
 
