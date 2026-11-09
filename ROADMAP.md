@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV guide, step 3: preview window** (see below). Step 1 is in PR #9, step 2 in PR #10.
+- 🚧 **Live TV guide, step 4: player info bar & overlay** (see below). Step 3 is in PR #11.
 
 ## Next: Live TV guide, step by step
 
@@ -15,8 +15,8 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
 0. ✅ **Foundation**: design tokens, glass panel, activity pill for background work. Channels load one request after another (no more HTTP 404 right after sign-in).
 1. ✅ **Guide grid**: groups · channels · timeline with now line (TiviMate style). Two-hour window in half-hour steps, Right/Left move through the programmes; Left on now goes to the channel, then to the groups (fast presses and swipes stop on the way); back from the player on the channel watched last; programmes come from the stored guide for visible rows only, short EPG for channels the guide doesn't cover. Timeline logic has Linux tests in CI.
 2. ✅ **Info panel**: glass panel above the guide with the channel line (LIVE / CATCH-UP tags), the programme under the cursor, times with time left, progress and description; follows focus after a short rest, so scrolling stays smooth.
-3. 🚧 **Preview window**: small live picture of the highlighted channel.
-4. ⏭ **Player info bar & overlay**: now/next, channel row, guide over the video.
+3. ✅ **Preview window**: OK plays a channel small in the info panel, OK again makes the same picture full screen (one player, one stream: fine for accounts with a single connection). Up/Down switch channels in full screen, Menu goes back to the guide on the channel playing. Leaving Live TV stops playback.
+4. 🚧 **Player info bar & overlay**: now/next, channel row, guide over the video.
 5. ⏭ **Quick menu & Settings → Live TV** (incl. separator rows option, 24-hour clock).
 6. ⏭ **Catch-up / restart** for channels with archive.
 7. ⏭ **Reminders & Home row**.
