@@ -12,6 +12,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     let listID: String
     let channels: [XtreamLiveChannel]
     var favoriteIDs: Set<Int> = []
+    /// The channel watched last: focused (and scrolled to) when the guide
+    /// comes back from the player, instead of focus landing on the groups.
+    var focusChannelID: Int?
     let onSelect: (XtreamLiveChannel) -> Void
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
 
@@ -20,6 +23,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     func makeUIView(context: Context) -> LiveTVGuideGridView {
         let view = LiveTVGuideGridView()
         context.coordinator.attach(to: view)
+        context.coordinator.pendingFocusID = focusChannelID
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         return view
@@ -47,6 +51,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var timeline = LiveTVTimeline(now: Date())
         private var clock: Timer?
         private var rowsObserver: NSObjectProtocol?
+        /// Channel to focus once it is in the list (see `focusChannelID`).
+        var pendingFocusID: Int?
+        private var preferredIndexPath: IndexPath?
 
         func attach(to view: LiveTVGuideGridView) {
             self.view = view
@@ -93,6 +100,30 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             if isNewList, !channels.isEmpty {
                 collection.setContentOffset(CGPoint(x: 0, y: -collection.contentInset.top), animated: false)
             }
+            focusPendingChannel()
+        }
+
+        /// Scrolls to the last watched channel and moves focus onto it.
+        private func focusPendingChannel() {
+            guard let id = pendingFocusID, let view,
+                  let index = channels.firstIndex(where: { $0.streamID == id }) else { return }
+            pendingFocusID = nil
+            let indexPath = IndexPath(item: index, section: 0)
+            preferredIndexPath = indexPath
+            let collection = view.collectionView
+            collection.layoutIfNeeded()
+            collection.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+            // After SwiftUI has placed its initial focus (on the groups).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak collection] in
+                guard let collection, collection.window != nil,
+                      let system = UIFocusSystem.focusSystem(for: collection) else { return }
+                system.requestFocusUpdate(to: collection)
+                system.updateFocusIfNeeded()
+            }
+        }
+
+        func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
+            preferredIndexPath
         }
 
         func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void) {
@@ -187,6 +218,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let now = Date()
             (context.previouslyFocusedItem as? LiveTVGuideRowCell)?.strip.cursor = nil
             if let cell = context.nextFocusedItem as? LiveTVGuideRowCell {
+                // Landed (on the last watched channel or elsewhere): from now
+                // on the collection view remembers the focused row itself.
+                preferredIndexPath = nil
                 // Entering the guide from the groups starts on what's on now.
                 if context.previouslyFocusedIndexPath == nil {
                     timeline.resetToNow(now)

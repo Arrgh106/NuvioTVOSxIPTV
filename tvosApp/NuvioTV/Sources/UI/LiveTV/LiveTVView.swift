@@ -138,6 +138,9 @@ struct LiveTVView: View {
                 listID: "\(store.selectedGroupID)|\(store.listRevision)|\(store.searchQuery)|\(store.hiddenGroupIDs.count)",
                 channels: channels,
                 favoriteIDs: Set(store.favoriteIDs),
+                // Back from the player: on the channel watched last (also
+                // after zapping), not on the groups.
+                focusChannelID: LiveTVZapper.shared.currentChannel?.streamID,
                 onSelect: play,
                 onToggleFavorite: { store.toggleFavorite($0) }
             )
