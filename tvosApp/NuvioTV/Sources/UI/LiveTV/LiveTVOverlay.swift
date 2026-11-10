@@ -404,6 +404,10 @@ struct LiveTVOverlayView: View {
                     .padding(.trailing, 60)
             }
         }
+        // Always the whole screen, panels on the left: without the details
+        // card (groups, a channel without information) it was only as wide
+        // as the panels and the full-screen view centred it.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .ignoresSafeArea()
         .allowsHitTesting(false)
     }
