@@ -170,20 +170,3 @@ struct LiveTVPlayerBar: View {
         .animation(LiveTVTheme.Motion.focus, value: focused)
     }
 }
-
-/// The bar over the whole screen (Live TV itself has margins).
-struct LiveTVFullscreenBarLayer: View {
-    @ObservedObject var player: LiveTVPlayer
-
-    var body: some View {
-        GeometryReader { geometry in
-            let screen = UIScreen.main.bounds.size
-            let global = geometry.frame(in: .global)
-            LiveTVPlayerBar(player: player)
-                .frame(width: screen.width, height: screen.height)
-                .position(x: screen.width / 2 - global.minX, y: screen.height / 2 - global.minY)
-        }
-        // The bar shows; the remote stays with the full-screen controls.
-        .allowsHitTesting(false)
-    }
-}

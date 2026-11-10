@@ -13,7 +13,7 @@ struct LiveTVView: View {
     /// Not observed here: only the info panel redraws when focus moves.
     @State private var info = LiveTVInfoModel()
     /// Preview window and full screen: one player (step 3).
-    @StateObject private var player = LiveTVPlayer()
+    @ObservedObject private var player = LiveTVPlayer.shared
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -33,8 +33,6 @@ struct LiveTVView: View {
             }
         }
         .onAppear { store.reloadAccount() }
-        // Full screen: no tab bar (on the tab's root view, where tvOS reads it).
-        .toolbar(player.isFullscreen ? .hidden : .automatic, for: .tabBar)
     }
 
     // MARK: Browser
@@ -66,13 +64,7 @@ struct LiveTVView: View {
         // Full screen: only the player takes the remote.
         .disabled(player.isFullscreen)
         .overlayPreferenceValue(LiveTVPreviewAnchorKey.self) { anchor in
-            ZStack {
-                LiveTVVideoLayer(player: player, anchor: anchor)
-                if player.isFullscreen {
-                    LiveTVFullscreenControls(player: player, onExit: { player.isFullscreen = false })
-                    LiveTVFullscreenBarLayer(player: player)
-                }
-            }
+            LiveTVVideoLayer(player: player, anchor: anchor)
         }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
