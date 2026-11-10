@@ -285,38 +285,25 @@ struct LiveTVVideoLayer: View {
     }
 }
 
-/// Full screen: takes focus so the remote talks to the player (as on
-/// Android): Up / Down switch channels, Right shows the info bar, OK the
-/// bar with the channel row (Left / Right / OK in it), Left and Menu go
-/// back to the guide (Menu first closes the bar).
+/// Full screen: the remote talks to the player (as on Android): Up / Down
+/// switch channels, Right shows the info bar, OK the bar with the channel
+/// row (Left / Right / OK in it), Left and Menu go back to the guide (Menu
+/// first closes the bar).
 struct LiveTVFullscreenControls: View {
     @ObservedObject var player: LiveTVPlayer
     let onExit: () -> Void
-    @FocusState private var focused: Bool
 
     var body: some View {
-        // A button for OK; it draws nothing.
-        Button(action: select) { Color.clear.contentShape(Rectangle()) }
-            .buttonStyle(LiveTVInvisibleButtonStyle())
-            .focused($focused)
-            .onMoveCommand(perform: move)
-            .onExitCommand {
-                if player.bar != .hidden { player.hideBar() } else { onExit() }
-            }
-            .onAppear { focused = true }
+        LiveTVRemoteCatcher(onPress: handle)
     }
 
-    private func select() {
-        if player.bar == .expanded {
-            player.playRowSelection()
-        } else {
-            player.showBar(.expanded)
-        }
-    }
-
-    private func move(_ direction: MoveCommandDirection) {
+    private func handle(_ press: LiveTVRemoteCatcher.Press) {
         let inRow = player.bar == .expanded
-        switch direction {
+        switch press {
+        case .select:
+            if inRow { player.playRowSelection() } else { player.showBar(.expanded) }
+        case .menu:
+            if player.bar != .hidden { player.hideBar() } else { onExit() }
         case .up:
             if inRow { player.showBar(.compact) } else { player.zap(by: -1) }
         case .down:
@@ -325,14 +312,125 @@ struct LiveTVFullscreenControls: View {
             if inRow { player.moveInRow(by: -1) } else { onExit() }
         case .right:
             if inRow { player.moveInRow(by: 1) } else { player.showBar(.compact) }
-        @unknown default:
-            break
         }
     }
 }
 
-struct LiveTVInvisibleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+/// Takes the remote in full screen: presses and swipes come here, never to
+/// the focus engine. A tiny focused point in the middle with focus guides
+/// all around it that lead back to it, so a swipe can't find anything to
+/// move to (tvOS opens the app's sidebar when focus can't move left).
+struct LiveTVRemoteCatcher: UIViewRepresentable {
+    enum Press { case up, down, left, right, select, menu }
+
+    let onPress: (Press) -> Void
+
+    func makeUIView(context: Context) -> CatcherView {
+        let view = CatcherView()
+        view.onPress = onPress
+        return view
+    }
+
+    func updateUIView(_ view: CatcherView, context: Context) {
+        view.onPress = onPress
+    }
+
+    final class CatcherView: UIView {
+        var onPress: (Press) -> Void = { _ in }
+        private let target = FocusPoint()
+        private var guides: [UIFocusGuide] = []
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            target.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(target)
+            NSLayoutConstraint.activate([
+                target.centerXAnchor.constraint(equalTo: centerXAnchor),
+                target.centerYAnchor.constraint(equalTo: centerYAnchor),
+                target.widthAnchor.constraint(equalToConstant: 2),
+                target.heightAnchor.constraint(equalToConstant: 2),
+            ])
+            // Left, right, above, below the point.
+            for _ in 0..<4 {
+                let guide = UIFocusGuide()
+                addLayoutGuide(guide)
+                guide.preferredFocusEnvironments = [target]
+                guides.append(guide)
+            }
+            NSLayoutConstraint.activate([
+                guides[0].leadingAnchor.constraint(equalTo: leadingAnchor),
+                guides[0].trailingAnchor.constraint(equalTo: target.leadingAnchor, constant: -4),
+                guides[0].topAnchor.constraint(equalTo: topAnchor),
+                guides[0].bottomAnchor.constraint(equalTo: bottomAnchor),
+                guides[1].leadingAnchor.constraint(equalTo: target.trailingAnchor, constant: 4),
+                guides[1].trailingAnchor.constraint(equalTo: trailingAnchor),
+                guides[1].topAnchor.constraint(equalTo: topAnchor),
+                guides[1].bottomAnchor.constraint(equalTo: bottomAnchor),
+                guides[2].leadingAnchor.constraint(equalTo: target.leadingAnchor),
+                guides[2].trailingAnchor.constraint(equalTo: target.trailingAnchor),
+                guides[2].topAnchor.constraint(equalTo: topAnchor),
+                guides[2].bottomAnchor.constraint(equalTo: target.topAnchor, constant: -4),
+                guides[3].leadingAnchor.constraint(equalTo: target.leadingAnchor),
+                guides[3].trailingAnchor.constraint(equalTo: target.trailingAnchor),
+                guides[3].topAnchor.constraint(equalTo: target.bottomAnchor, constant: 4),
+                guides[3].bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+
+            let presses: [(UIPress.PressType, Press)] = [
+                (.upArrow, .up), (.downArrow, .down), (.leftArrow, .left), (.rightArrow, .right),
+                (.select, .select), (.menu, .menu),
+            ]
+            for (type, press) in presses {
+                let recognizer = PressRecognizer(target: self, action: #selector(pressed(_:)))
+                recognizer.press = press
+                recognizer.allowedPressTypes = [NSNumber(value: type.rawValue)]
+                addGestureRecognizer(recognizer)
+            }
+            let swipes: [(UISwipeGestureRecognizer.Direction, Press)] = [
+                (.up, .up), (.down, .down), (.left, .left), (.right, .right),
+            ]
+            for (direction, press) in swipes {
+                let recognizer = SwipeRecognizer(target: self, action: #selector(swiped(_:)))
+                recognizer.press = press
+                recognizer.direction = direction
+                addGestureRecognizer(recognizer)
+            }
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+        override var preferredFocusEnvironments: [UIFocusEnvironment] { [target] }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            // Everything else is disabled while full screen; this asks
+            // tvOS to land on the point now rather than on its next move.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                UIFocusSystem.focusSystem(for: self)?.requestFocusUpdate(to: self.target)
+                UIFocusSystem.focusSystem(for: self)?.updateFocusIfNeeded()
+            }
+        }
+
+        @objc private func pressed(_ recognizer: PressRecognizer) {
+            onPress(recognizer.press)
+        }
+
+        @objc private func swiped(_ recognizer: SwipeRecognizer) {
+            onPress(recognizer.press)
+        }
+    }
+
+    final class FocusPoint: UIView {
+        override var canBecomeFocused: Bool { true }
+    }
+
+    final class PressRecognizer: UITapGestureRecognizer {
+        var press: Press = .select
+    }
+
+    final class SwipeRecognizer: UISwipeGestureRecognizer {
+        var press: Press = .up
     }
 }
