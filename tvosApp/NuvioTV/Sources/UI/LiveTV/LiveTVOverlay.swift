@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The guide over the full-screen picture (LIVE_TV_DESIGN.md, step 4b), as
 /// Android's `LiveTvOverlayMode` (TiviMate's overlay mode). Left in full
@@ -65,10 +66,12 @@ final class LiveTVOverlayModel: ObservableObject {
         show(group: group, channels: list, landOn: playing)
         level = .channels
         withAnimation(.easeOut(duration: 0.2)) { isOpen = true }
+        LiveTVOverlayPan.shared.install { [weak self] delta in self?.scroll(by: delta) }
         touched()
     }
 
     func close() {
+        LiveTVOverlayPan.shared.remove()
         settleTask?.cancel()
         groupTask?.cancel()
         closeTask?.cancel()
@@ -93,6 +96,8 @@ final class LiveTVOverlayModel: ObservableObject {
 
     func move(_ direction: MoveCommandDirection) {
         touched()
+        // Up / Down from a swipe: the swipe itself scrolls (LiveTVOverlayPan).
+        if direction == .up || direction == .down, !LiveTVOverlayPan.shared.acceptsMoveCommand() { return }
         switch (level, direction) {
         case (.channels, .up): moveChannel(by: -1)
         case (.channels, .down): moveChannel(by: 1)
@@ -107,6 +112,17 @@ final class LiveTVOverlayModel: ObservableObject {
             level = .channels
         default:
             break
+        }
+    }
+
+    /// A step of a swipe on the remote's touch surface (fast swipes take
+    /// bigger steps).
+    func scroll(by delta: Int) {
+        guard isOpen else { return }
+        touched()
+        switch level {
+        case .channels: moveChannel(by: delta, wraps: false)
+        case .groups: moveGroup(by: delta)
         }
     }
 
@@ -148,10 +164,15 @@ final class LiveTVOverlayModel: ObservableObject {
         settle(after: 0)
     }
 
-    private func moveChannel(by delta: Int) {
+    private func moveChannel(by delta: Int, wraps: Bool = true) {
         guard !channels.isEmpty else { return }
-        // Wraps round at the ends, as on Android.
-        channelIndex = (channelIndex + delta + channels.count) % channels.count
+        if wraps {
+            // Presses wrap round at the ends, as on Android.
+            channelIndex = ((channelIndex + delta) % channels.count + channels.count) % channels.count
+        } else {
+            // A swipe stops at the ends.
+            channelIndex = min(max(0, channelIndex + delta), channels.count - 1)
+        }
         channelWindow.follow(channelIndex, count: channels.count)
         settle(after: 0.2)
     }
@@ -223,6 +244,107 @@ final class LiveTVOverlayModel: ObservableObject {
     }
 }
 
+// MARK: - Swipe scrolling
+
+/// Swipes on the remote's touch surface scroll the overlay's lists by how
+/// far and how fast the finger moves (a swipe gives the focus engine only
+/// one Up / Down, too slow for long lists). Watches the window's touches
+/// while the overlay is open; never takes them from anyone.
+@MainActor
+final class LiveTVOverlayPan: NSObject, UIGestureRecognizerDelegate {
+    static let shared = LiveTVOverlayPan()
+
+    /// Finger travel per row; faster swipes count more.
+    private static let step: CGFloat = 55
+
+    private var recognizer: UIPanGestureRecognizer?
+    private var onStep: (Int) -> Void = { _ in }
+    private var travel: CGFloat = 0
+    private var touching = false
+    private var stepsThisTouch = 0
+    /// Up / Down that came in during this touch before the swipe took over.
+    private var commandsThisTouch = 0
+    private var endedAt = Date.distantPast
+
+    func install(onStep: @escaping (Int) -> Void) {
+        self.onStep = onStep
+        guard recognizer == nil, let window = Self.keyWindow else { return }
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        pan.cancelsTouchesInView = false
+        pan.delaysTouchesBegan = false
+        pan.delaysTouchesEnded = false
+        pan.delegate = self
+        window.addGestureRecognizer(pan)
+        recognizer = pan
+    }
+
+    func remove() {
+        if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+        recognizer = nil
+        touching = false
+    }
+
+    /// Whether an Up / Down move command should count: not while (or just
+    /// after) a swipe scrolls.
+    func acceptsMoveCommand() -> Bool {
+        if touching {
+            if stepsThisTouch > 0 { return false }
+            commandsThisTouch += 1
+            return true
+        }
+        return !(stepsThisTouch > 0 && Date().timeIntervalSince(endedAt) < 0.35)
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            touching = true
+            travel = 0
+            stepsThisTouch = 0
+            commandsThisTouch = 0
+        case .changed:
+            let view = recognizer.view
+            let moved = recognizer.translation(in: view).y
+            recognizer.setTranslation(.zero, in: view)
+            let speed = abs(recognizer.velocity(in: view).y)
+            let gain: CGFloat = speed > 3000 ? 5 : speed > 1500 ? 2.5 : 1
+            travel += moved * gain
+            while abs(travel) >= Self.step {
+                let direction = travel > 0 ? 1 : -1
+                travel -= CGFloat(direction) * Self.step
+                if commandsThisTouch > 0 {
+                    // That row was already taken by the move command.
+                    commandsThisTouch -= 1
+                    stepsThisTouch += 1
+                    continue
+                }
+                stepsThisTouch += 1
+                onStep(direction)
+            }
+        case .ended, .cancelled, .failed:
+            touching = false
+            endedAt = Date()
+        default:
+            break
+        }
+    }
+
+    nonisolated func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+    }
+}
+
 // MARK: - View
 
 struct LiveTVOverlayView: View {
@@ -233,6 +355,8 @@ struct LiveTVOverlayView: View {
     static let groupRowHeight: CGFloat = 62
     private static let headerHeight: CGFloat = 76
     private static let panelPadding: CGFloat = 50
+    /// Where the backdrop fades out into the picture.
+    private static let fade: CGFloat = 220
 
     var body: some View {
         if overlay.isOpen {
@@ -245,10 +369,6 @@ struct LiveTVOverlayView: View {
 
     private func content(now: Date) -> some View {
         ZStack(alignment: .topLeading) {
-            // Darkens the left side only; the picture stays visible.
-            LinearGradient(
-                colors: [Color.black.opacity(0.85), Color.black.opacity(0.55), .clear],
-                startPoint: .leading, endPoint: .trailing)
             HStack(alignment: .top, spacing: 0) {
                 if overlay.level == .groups {
                     groupsPanel
@@ -259,6 +379,18 @@ struct LiveTVOverlayView: View {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
+            // One dark backdrop behind the panels that fades into the
+            // picture (a hard edge cut the picture in two).
+            .background(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Color.black.opacity(0.78)
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.78), Color.black.opacity(0.3), .clear],
+                        startPoint: .leading, endPoint: .trailing)
+                        .frame(width: Self.fade)
+                }
+                .padding(.trailing, -Self.fade)
+            }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                 let body = height - Self.headerHeight - 2 * Self.panelPadding
                 overlay.setRows(
@@ -307,7 +439,8 @@ struct LiveTVOverlayView: View {
         .padding(.vertical, Self.panelPadding)
         .frame(width: 400, alignment: .topLeading)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color.black.opacity(0.6))
+        // A shade darker than the channels beside it.
+        .background(Color.black.opacity(0.35))
     }
 
     // MARK: Channels
@@ -347,7 +480,6 @@ struct LiveTVOverlayView: View {
         .padding(.vertical, Self.panelPadding)
         .frame(width: 560, alignment: .topLeading)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color.black.opacity(active ? 0.55 : 0.35))
         // Redraw rows once their shows arrive.
         .id(overlay.rowsRevision)
     }
@@ -365,7 +497,7 @@ struct LiveTVOverlayView: View {
                 .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
                 .foregroundColor(solid ? .black.opacity(0.7) : LiveTVTheme.secondaryText)
                 .frame(width: CGFloat(digits) * 11 + 4, alignment: .trailing)
-            LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
+            LiveTVCachedLogo(url: channel.logoURL.flatMap(URL.init(string:)))
                 .frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -429,7 +561,7 @@ struct LiveTVOverlayView: View {
         let shown = Array(list.dropFirst(max(0, anchor - 1)).prefix(14))
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
+                LiveTVCachedLogo(url: channel.logoURL.flatMap(URL.init(string:)))
                     .frame(width: 44, height: 44)
                 Text(channel.name)
                     .font(.system(size: LiveTVTheme.Font.small, weight: .semibold))
@@ -444,27 +576,65 @@ struct LiveTVOverlayView: View {
                     .foregroundColor(LiveTVTheme.secondaryText)
                     .padding(20)
             }
-            ForEach(shown, id: \.self) { programme in
-                let isLive = programme.start <= now && now < programme.end
-                let color: Color = isLive ? LiveTVTheme.accent
-                    : (programme.end <= now ? LiveTVTheme.secondaryText : LiveTVTheme.primaryText)
-                HStack(spacing: 14) {
-                    Text(LiveTVInfoPanel.clock(programme.start, now: now))
-                        .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
-                        .frame(minWidth: 70, alignment: .leading)
-                    Text(programme.title)
-                        .font(.system(size: LiveTVTheme.Font.badge, weight: isLive ? .semibold : .regular))
-                        .lineLimit(1)
+            ForEach(Self.scheduleRows(shown, now: now)) { row in
+                switch row {
+                case .day(let label):
+                    // "Tomorrow" once, not before every time.
+                    Text(label)
+                        .font(.system(size: LiveTVTheme.Font.badge, weight: .bold))
+                        .foregroundColor(LiveTVTheme.markColor)
+                        .padding(.horizontal, 20)
+                        .frame(height: 40, alignment: .bottomLeading)
+                case .show(let programme):
+                    let isLive = programme.start <= now && now < programme.end
+                    let color: Color = isLive ? LiveTVTheme.accent
+                        : (programme.end <= now ? LiveTVTheme.secondaryText : LiveTVTheme.primaryText)
+                    HStack(spacing: 14) {
+                        Text(LiveTVInfoPanel.clock(programme.start, now: now, withDay: false))
+                            .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
+                            .frame(minWidth: 62, alignment: .leading)
+                        Text(programme.title)
+                            .font(.system(size: LiveTVTheme.Font.badge, weight: isLive ? .semibold : .regular))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(color)
+                    .padding(.horizontal, 20)
+                    .frame(height: 44)
                 }
-                .foregroundColor(color)
-                .padding(.horizontal, 20)
-                .frame(height: 46)
             }
         }
         .padding(.vertical, Self.panelPadding)
         .frame(width: 440, alignment: .topLeading)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color.black.opacity(0.35))
+    }
+
+    private enum ScheduleRow: Identifiable {
+        case day(String)
+        case show(XtreamProgram)
+
+        var id: String {
+            switch self {
+            case .day(let label): return "day|" + label
+            case .show(let programme): return "\(programme.start.timeIntervalSince1970)|\(programme.title)"
+            }
+        }
+    }
+
+    /// The shows with a heading where a new day starts (none for today).
+    private static func scheduleRows(_ list: [XtreamProgram], now: Date) -> [ScheduleRow] {
+        var rows: [ScheduleRow] = []
+        var lastDay = 0
+        for programme in list {
+            let day = LiveTVProgrammeInfo.dayOffset(of: programme.start, from: now)
+            if day != lastDay {
+                rows.append(.day(day == 1
+                    ? L10n.string("livetv_info_tomorrow", fallback: "Tomorrow")
+                    : programme.start.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))))
+                lastDay = day
+            }
+            rows.append(.show(programme))
+        }
+        return rows
     }
 
     // MARK: Details
@@ -502,6 +672,38 @@ struct LiveTVOverlayView: View {
                 RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
                     .fill(Color.black.opacity(0.6))
             )
+        }
+    }
+}
+
+/// A channel logo from the shared logo cache: shown at once when it was
+/// loaded before (the guide loaded most of them), so fast scrolling doesn't
+/// flash empty boxes.
+struct LiveTVCachedLogo: View {
+    let url: URL?
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image = image ?? url.flatMap({ LiveTVLogoCache.shared.image(for: $0) }) {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "tv")
+                    .font(.system(size: 24))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .task(id: url) {
+            guard let url else { image = nil; return }
+            if let cached = LiveTVLogoCache.shared.image(for: url) { image = cached; return }
+            image = nil
+            // A row that scrolls straight past doesn't load.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            image = await LiveTVLogoCache.shared.load(url)
         }
     }
 }
