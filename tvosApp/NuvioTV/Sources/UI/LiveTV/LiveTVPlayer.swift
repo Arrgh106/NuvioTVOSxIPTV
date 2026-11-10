@@ -29,6 +29,9 @@ final class LiveTVPlayer: ObservableObject {
     @Published private(set) var status: Status = .idle
     /// Where the preview window is on screen (nil: not on screen).
     @Published var previewFrame: CGRect?
+    /// Something of Live TV's lies over the preview window (the quick menu):
+    /// the picture, drawn over the whole app, would cover it.
+    @Published var previewCovered = false
     @Published var isFullscreen = false {
         didSet {
             if !isFullscreen {
@@ -296,7 +299,8 @@ struct LiveTVVideoHost: View {
         let rect = player.isFullscreen ? CGRect(origin: .zero, size: screen) : (player.previewFrame ?? .zero)
         // Only a running picture: the status and the hint in the preview
         // window are below this layer.
-        let visible = player.status == .playing && (player.isFullscreen || (rect.width > 1 && !covered))
+        let visible = player.status == .playing
+            && (player.isFullscreen || (rect.width > 1 && !covered && !player.previewCovered))
         return StablePlayerSurfacePresentation(
             viewportSize: screen,
             presentationSize: CGSize(width: max(rect.width, 1), height: max(rect.height, 1))

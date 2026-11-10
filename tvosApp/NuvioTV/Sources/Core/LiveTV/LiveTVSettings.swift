@@ -20,7 +20,7 @@ final class LiveTVSettings: ObservableObject {
     @Published var showDescription = true { didSet { save(showDescription, Key.showDescription) } }
     @Published var showPreview = true { didSet { save(showPreview, Key.showPreview) } }
     @Published var smallHeader = false { didSet { save(smallHeader, Key.smallHeader) } }
-    @Published var hideSeparators = false { didSet { save(hideSeparators, Key.hideSeparators) } }
+    @Published var hideSeparators = true { didSet { save(hideSeparators, Key.hideSeparators) } }
     @Published var showGroupCounts = true { didSet { save(showGroupCounts, Key.showGroupCounts) } }
     @Published var clock: Clock = .system {
         didSet {
@@ -85,7 +85,7 @@ final class LiveTVSettings: ObservableObject {
         assign(\.showDescription, bool(Key.showDescription, true))
         assign(\.showPreview, bool(Key.showPreview, true))
         assign(\.smallHeader, bool(Key.smallHeader, false))
-        assign(\.hideSeparators, bool(Key.hideSeparators, false))
+        assign(\.hideSeparators, bool(Key.hideSeparators, true))
         assign(\.showGroupCounts, bool(Key.showGroupCounts, true))
         assign(\.rememberLastGroup, bool(Key.rememberLastGroup, true))
         assign(\.infoBarOnZap, bool(Key.infoBarOnZap, true))
@@ -116,24 +116,5 @@ final class LiveTVSettings: ObservableObject {
             formatter.dateFormat = "h:mm a"
         }
         return formatter
-    }
-
-    // MARK: Separator rows
-
-    /// "##### SPORTS #####", "===== News =====": providers put these between
-    /// channels as headings; they have no stream worth watching.
-    nonisolated static func isSeparator(_ name: String) -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        let marks: Set<Character> = ["#", "=", "*", "-", "~", "_", "|", "•", "★", "▬", "─", "━"]
-        var run = 0
-        for character in trimmed {
-            if marks.contains(character) {
-                run += 1
-                if run >= 3 { return true }
-            } else {
-                run = 0
-            }
-        }
-        return false
     }
 }

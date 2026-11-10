@@ -177,7 +177,7 @@ final class LiveTVStore: ObservableObject {
     /// "All channels" without hidden groups; rebuilt when they change.
     private var allVisible: [XtreamLiveChannel] = []
     private var searchResults: [XtreamLiveChannel] = []
-    /// "##### …" heading rows of the provider's list (LiveTVSettings.isSeparator).
+    /// "##### …" heading rows of the provider's list (`isSeparator`).
     private var separatorIDs: Set<Int> = []
     /// The groups without those rows, while the option hides them.
     private var channelsByGroupWithoutSeparators: [String: [XtreamLiveChannel]] = [:]
@@ -567,7 +567,7 @@ final class LiveTVStore: ObservableObject {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
-            .filter { !isSeparator($0.name) }
+        // Separator rows stay in: Live TV's option hides them (on by default).
         var byGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
         let byID = Dictionary(sorted.map { ($0.streamID, $0) }, uniquingKeysWith: { first, _ in first })
 
@@ -600,7 +600,7 @@ final class LiveTVStore: ObservableObject {
         channelsByGroup = prepared.channelsByGroup
         channelsByID = prepared.channelsByID
         knownCategoryIDs = prepared.knownCategoryIDs
-        separatorIDs = Set(prepared.channels.lazy.filter { LiveTVSettings.isSeparator($0.name) }.map(\.streamID))
+        separatorIDs = Set(prepared.channels.lazy.filter { Self.isSeparator($0.name) }.map(\.streamID))
         rebuildSeparatorLists()
         let restoring = groups.isEmpty
         categoryGroups = prepared.groups

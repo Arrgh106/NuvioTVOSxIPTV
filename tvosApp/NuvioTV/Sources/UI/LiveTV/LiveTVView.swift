@@ -79,6 +79,7 @@ struct LiveTVView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
+        .onChange(of: showsQuickMenu) { _, shows in player.previewCovered = shows }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
