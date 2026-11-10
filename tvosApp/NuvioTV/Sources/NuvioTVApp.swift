@@ -2689,11 +2689,15 @@ struct ContentView: View {
                 .zIndex(2)
             }
 
-            // Fork: Live TV full screen (the same player as its preview).
+            // Fork: Live TV's picture (preview window or full screen, one
+            // view for both) and, full screen, its controls and info bar.
+            LiveTVVideoHost(covered: !liveTVFullscreen.isActive
+                && (fullScreenOverlayPresented || visibleAppNotice != nil))
+                .zIndex(2)
             if liveTVFullscreen.isActive {
                 LiveTVFullscreenHost()
                     .transition(.opacity)
-                    .zIndex(2)
+                    .zIndex(2.1)
             }
 
             let showCloudLibrary = {

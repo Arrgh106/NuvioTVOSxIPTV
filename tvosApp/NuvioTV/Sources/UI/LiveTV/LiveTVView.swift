@@ -63,9 +63,6 @@ struct LiveTVView: View {
         .padding(.top, 30)
         // Full screen: only the player takes the remote.
         .disabled(player.isFullscreen)
-        .overlayPreferenceValue(LiveTVPreviewAnchorKey.self) { anchor in
-            LiveTVVideoLayer(player: player, anchor: anchor)
-        }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)

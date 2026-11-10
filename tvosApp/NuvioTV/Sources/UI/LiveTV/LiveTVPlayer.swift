@@ -25,6 +25,8 @@ final class LiveTVPlayer: ObservableObject {
     let session = PlaybackSessionCoordinator()
     @Published private(set) var channel: XtreamLiveChannel?
     @Published private(set) var status: Status = .idle
+    /// Where the preview window is on screen (nil: not on screen).
+    @Published var previewFrame: CGRect?
     @Published var isFullscreen = false {
         didSet {
             if !isFullscreen { hideBar() }
@@ -221,59 +223,70 @@ struct LiveTVVideoSurface: View {
     }
 }
 
-/// Where the preview window sits; the video layer reads it.
-struct LiveTVPreviewAnchorKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>?
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = value ?? nextValue()
-    }
-}
-
-/// The preview window's place in the info panel (16:9).
+/// The preview window's place in the info panel (16:9). It reports where
+/// it is on screen; the picture itself is drawn over the app there by
+/// `LiveTVVideoHost`, with the status and the outline on top.
 struct LiveTVPreviewSlot: View {
     static let size = CGSize(width: 288, height: 162)
+    @ObservedObject var player = LiveTVPlayer.shared
 
     var body: some View {
         RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
             .fill(Color.black)
             .frame(width: Self.size.width, height: Self.size.height)
-            .anchorPreference(key: LiveTVPreviewAnchorKey.self, value: .bounds) { $0 }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                player.previewFrame = frame
+            }
+            .onDisappear { player.previewFrame = nil }
+            // Over the picture (the picture layer sits below Live TV's
+            // overlays but above the panel; see LiveTVVideoHost).
+            .overlay { LiveTVPlayerStatus(player: player) }
+            .overlay(
+                RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
+                    .strokeBorder(LiveTVTheme.accent.opacity(player.channel == nil ? 0 : 0.8), lineWidth: 2)
+            )
     }
 }
 
-/// The picture, in the preview window or full screen, with its status.
-struct LiveTVVideoLayer: View {
-    @ObservedObject var player: LiveTVPlayer
-    let anchor: Anchor<CGRect>?
+/// The picture, over the whole app, in one place for the whole session:
+/// moving the engine's view between the preview and full screen blacked it
+/// out (SwiftUI took it out of its new place). Rendered at full-screen size
+/// and scaled to the preview window, so going full screen only changes the
+/// scale and position.
+struct LiveTVVideoHost: View {
+    @ObservedObject var player = LiveTVPlayer.shared
+    /// Another full-screen screen or a notice covers Live TV.
+    var covered = false
 
     var body: some View {
         GeometryReader { geometry in
             let screen = UIScreen.main.bounds.size
-            let rect = anchor.map { geometry[$0] } ?? .zero
-            if rect.width > 1 {
-                ZStack {
-                    // Full screen draws the picture over the app instead
-                    // (one engine view can only be in one place).
-                    if player.channel != nil, !player.isFullscreen {
-                        StablePlayerSurfacePresentation(viewportSize: screen, presentationSize: rect.size) {
-                            LiveTVVideoSurface(session: player.session)
-                        }
-                        // The picture never takes focus or presses.
-                        .disabled(true)
-                        .allowsHitTesting(false)
-                    }
-                    LiveTVPlayerStatus(player: player)
+            let origin = geometry.frame(in: .global).origin
+            let rect = player.isFullscreen ? CGRect(origin: .zero, size: screen) : (player.previewFrame ?? .zero)
+            // Only a running picture: the status and the hint in the preview
+            // window are below this layer.
+            let visible = player.status == .playing && (player.isFullscreen || (rect.width > 1 && !covered))
+            if player.channel != nil {
+                StablePlayerSurfacePresentation(
+                    viewportSize: screen,
+                    presentationSize: CGSize(width: max(rect.width, 1), height: max(rect.height, 1))
+                ) {
+                    LiveTVVideoSurface(session: player.session)
                 }
-                .frame(width: rect.width, height: rect.height)
-                .background(Color.black)
-                .clipShape(RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous))
+                .clipShape(RoundedRectangle(
+                    cornerRadius: player.isFullscreen ? 0 : LiveTVTheme.Metric.cornerRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
-                        .strokeBorder(LiveTVTheme.accent.opacity(player.channel == nil ? 0 : 0.8), lineWidth: 2)
+                        .strokeBorder(LiveTVTheme.accent.opacity(player.isFullscreen ? 0 : 0.8), lineWidth: 2)
                 )
-                .position(x: rect.midX, y: rect.midY)
+                .position(x: rect.midX - origin.x, y: rect.midY - origin.y)
+                .opacity(visible ? 1 : 0)
             }
         }
+        .ignoresSafeArea()
+        // The picture never takes focus or presses.
+        .disabled(true)
+        .allowsHitTesting(false)
     }
 }
 
@@ -312,12 +325,7 @@ struct LiveTVFullscreenHost: View {
 
     var body: some View {
         ZStack {
-            Color.black
-            if player.channel != nil {
-                LiveTVVideoSurface(session: player.session)
-                    .disabled(true)
-                    .allowsHitTesting(false)
-            }
+            // The picture is below, in LiveTVVideoHost.
             LiveTVPlayerStatus(player: player)
             LiveTVFullscreenControls(player: player, onExit: { player.isFullscreen = false })
             LiveTVPlayerBar(player: player)
