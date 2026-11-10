@@ -106,6 +106,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             gate.canOpen = { [weak self] in self?.onChannel ?? false }
             LiveTVFocusLinks.guideGate = gate
             LiveTVFocusLinks.prepareGuideReturn = { [weak self] in
+                LiveTVFocusLog.add("full screen from row \(self?.focusedCell.flatMap { self?.view?.collectionView.indexPath(for: $0)?.item } ?? -1)")
                 // Otherwise the row started from wins over the one zapped to.
                 self?.view?.collectionView.remembersLastFocusedIndexPath = false
                 self?.landOnChannel = true
@@ -139,6 +140,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let collection = view?.collectionView else { return }
             guard listID != self.listID || channels.count != self.channels.count else { return }
             let isNewList = listID != self.listID
+            LiveTVFocusLog.add(isNewList ? "new list (\(channels.count))" : "list size \(channels.count)")
             self.listID = listID
             self.channels = channels
             if isNewList { timeline.resetToNow(Date()); refreshAll() }
@@ -154,6 +156,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let id = pendingFocusID, let view,
                   let index = channels.firstIndex(where: { $0.streamID == id }) else { return }
             pendingFocusID = nil
+            LiveTVFocusLog.add("pending channel → row \(index)")
             let indexPath = IndexPath(item: index, section: 0)
             preferredIndexPath = indexPath
             let collection = view.collectionView
@@ -183,6 +186,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         /// Leaving full screen: the row is on screen before focus comes back.
         private func scrollToReturnChannel() {
+            LiveTVFocusLog.add("exit full screen: pending=\(returnPending) return=\(returnIndexPath.map { String($0.item) } ?? "nil")")
             guard returnPending, let indexPath = returnIndexPath, let collection = view?.collectionView else { return }
             preferredIndexPath = indexPath
             collection.layoutIfNeeded()
@@ -196,9 +200,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 if !collectionView.indexPathsForVisibleItems.contains(indexPath) {
                     collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
                 }
+                LiveTVFocusLog.add("preferred? → return row \(indexPath.item) \(visibleRange(collectionView))")
                 return indexPath
             }
+            LiveTVFocusLog.add("preferred? → \(preferredIndexPath.map { String($0.item) } ?? "nil") pending=\(returnPending) \(visibleRange(collectionView))")
             return preferredIndexPath
+        }
+
+        private func visibleRange(_ collectionView: UICollectionView) -> String {
+            let items = collectionView.indexPathsForVisibleItems.map(\.item)
+            guard let low = items.min(), let high = items.max() else { return "vis -" }
+            return "vis \(low)–\(high)"
         }
 
         func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void) {
@@ -333,6 +345,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 previous.setChannelHighlighted(false)
             }
             if let cell = context.nextFocusedItem as? LiveTVGuideRowCell {
+                LiveTVFocusLog.add("guide row \(context.nextFocusedIndexPath?.item ?? -1) ← \(LiveTVFocusLog.describe(context.previouslyFocusedView)) pending=\(returnPending) \(visibleRange(collectionView))")
                 focusedCell = cell
                 view?.leftTrap.refresh()
                 // Landed (on the last watched channel or elsewhere): from now
@@ -401,17 +414,25 @@ final class LiveTVGuideGridView: UIView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
     let leftTrap = LiveTVLeftGate()
+    /// Focus trace while the return from full screen is tuned (temporary).
+    private let debugLabel = UILabel()
 
     override init(frame: CGRect) {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
         super.init(frame: frame)
+        debugLabel.numberOfLines = 0
+        debugLabel.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
+        debugLabel.textColor = .yellow
+        debugLabel.backgroundColor = UIColor.black.withAlphaComponent(0.75)
+        debugLabel.isUserInteractionEnabled = false
+        LiveTVFocusLog.label = debugLabel
         collectionView.backgroundColor = .clear
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.clipsToBounds = true
         collectionView.register(LiveTVGuideRowCell.self, forCellWithReuseIdentifier: LiveTVGuideRowCell.reuseID)
         collectionView.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 40, right: 0)
 
-        for view in [ruler, collectionView] as [UIView] {
+        for view in [ruler, collectionView, debugLabel] as [UIView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -432,6 +453,9 @@ final class LiveTVGuideGridView: UIView {
             collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
             collectionView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            debugLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            debugLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            debugLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 900),
         ])
     }
 
@@ -555,6 +579,7 @@ enum LiveTVFocusLinks {
     static func endReturn(_ reason: String) {
         guard returningFromPlayer else { return }
         returningFromPlayer = false
+        LiveTVFocusLog.add("unlocked: " + reason)
     }
 
     /// Fast presses stop on the channel and in the groups: the next step
@@ -652,6 +677,56 @@ final class LiveTVLeftGate: UIFocusGuide {
 final class LiveTVReturnLock: ObservableObject {
     static let shared = LiveTVReturnLock()
     @Published var locked = false
+}
+
+/// Temporary on-screen focus trace (last lines, newest at the bottom).
+@MainActor
+enum LiveTVFocusLog {
+    static weak var label: UILabel?
+    private static var lines: [String] = []
+    private static var observer: NSObjectProtocol?
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "ss.SSS"
+        return f
+    }()
+
+    static func add(_ line: String) {
+        startObserving()
+        lines.append(formatter.string(from: Date()) + " " + line)
+        if lines.count > 12 { lines.removeFirst(lines.count - 12) }
+        label?.text = lines.joined(separator: "\n")
+    }
+
+    /// Every focus change in the app.
+    private static func startObserving() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated {
+                let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+                add("focus → " + describe(context?.nextFocusedView)
+                    + (LiveTVFocusLinks.returningFromPlayer ? "  [locked]" : ""))
+            }
+        }
+    }
+
+    static func describe(_ view: UIView?) -> String {
+        var current = view
+        while let v = current {
+            if let cell = v as? LiveTVGuideRowCell {
+                var parent = cell.superview
+                while let p = parent, !(p is UICollectionView) { parent = p.superview }
+                let row = (parent as? UICollectionView)?.indexPath(for: cell)?.item ?? -1
+                return "guide row \(row)"
+            }
+            if v is LiveTVGroupCell { return "group" }
+            current = v.superview
+        }
+        guard let view else { return "nothing" }
+        return String(describing: type(of: view)).prefix(40).description
+    }
 }
 
 /// Watches touches only; never takes them from the focus engine.
