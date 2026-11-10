@@ -185,12 +185,18 @@ final class LiveTVStore: ObservableObject {
     var hasAccount: Bool { account != nil }
 
     var visibleChannels: [XtreamLiveChannel] {
-        switch selectedGroupID {
+        channels(inGroup: selectedGroupID)
+    }
+
+    /// The channels a group shows (also for groups not selected, e.g. the
+    /// guide over the full-screen picture).
+    func channels(inGroup groupID: String) -> [XtreamLiveChannel] {
+        switch groupID {
         case LiveTVGroup.allID: return allVisible
         case LiveTVGroup.favoritesID: return favoriteIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.recentID: return recentIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.searchID: return searchResults
-        default: return channelsByGroup[selectedGroupID] ?? []
+        default: return channelsByGroup[groupID] ?? []
         }
     }
 

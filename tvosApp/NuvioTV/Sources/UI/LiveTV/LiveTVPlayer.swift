@@ -23,6 +23,8 @@ final class LiveTVPlayer: ObservableObject {
     }
 
     let session = PlaybackSessionCoordinator()
+    /// The guide over the full-screen picture (step 4b).
+    let overlay = LiveTVOverlayModel()
     @Published private(set) var channel: XtreamLiveChannel?
     @Published private(set) var status: Status = .idle
     /// Where the preview window is on screen (nil: not on screen).
@@ -31,6 +33,7 @@ final class LiveTVPlayer: ObservableObject {
         didSet {
             if !isFullscreen {
                 hideBar()
+                overlay.close()
                 if oldValue { LiveTVFocusLinks.guideWillReturn?() }
             }
             if LiveTVFullscreenState.shared.isActive != isFullscreen {
@@ -338,9 +341,10 @@ struct LiveTVFullscreenHost: View {
         ZStack {
             // The picture is below, in LiveTVVideoHost.
             LiveTVPlayerStatus(player: player)
-            LiveTVFullscreenControls(player: player, onExit: { player.isFullscreen = false })
+            LiveTVFullscreenControls(player: player, overlay: player.overlay, onExit: { player.isFullscreen = false })
             LiveTVPlayerBar(player: player)
                 .allowsHitTesting(false)
+            LiveTVOverlayView(overlay: player.overlay, player: player)
         }
         .ignoresSafeArea()
     }
@@ -348,10 +352,11 @@ struct LiveTVFullscreenHost: View {
 
 /// Full screen: the remote talks to the player (as on Android): Up / Down
 /// switch channels, Right shows the info bar, OK the bar with the channel
-/// row (Left / Right / OK in it), Left and Menu go back to the guide (Menu
-/// first closes the bar).
+/// row (Left / Right / OK in it), Left the guide over the picture, Menu goes
+/// back to the guide (first closing the bar or the overlay).
 struct LiveTVFullscreenControls: View {
     @ObservedObject var player: LiveTVPlayer
+    @ObservedObject var overlay: LiveTVOverlayModel
     let onExit: () -> Void
     @FocusState private var focused: Bool
 
@@ -362,16 +367,32 @@ struct LiveTVFullscreenControls: View {
             .focused($focused)
             .onMoveCommand(perform: move)
             .onExitCommand {
-                if player.bar != .hidden { player.hideBar() } else { onExit() }
+                if overlay.isOpen {
+                    overlay.back()
+                } else if player.bar != .hidden {
+                    player.hideBar()
+                } else {
+                    onExit()
+                }
             }
             .onAppear { focused = true }
     }
 
     private func select() {
-        if player.bar == .expanded { player.playRowSelection() } else { player.showBar(.expanded) }
+        if overlay.isOpen {
+            overlay.select(playing: player.channel)
+        } else if player.bar == .expanded {
+            player.playRowSelection()
+        } else {
+            player.showBar(.expanded)
+        }
     }
 
     private func move(_ direction: MoveCommandDirection) {
+        if overlay.isOpen {
+            overlay.move(direction)
+            return
+        }
         let inRow = player.bar == .expanded
         switch direction {
         case .up:
@@ -379,7 +400,12 @@ struct LiveTVFullscreenControls: View {
         case .down:
             if !inRow { player.zap(by: 1) }
         case .left:
-            if inRow { player.moveInRow(by: -1) } else { onExit() }
+            if inRow {
+                player.moveInRow(by: -1)
+            } else {
+                player.hideBar()
+                overlay.open(playing: player.channel)
+            }
         case .right:
             if inRow { player.moveInRow(by: 1) } else { player.showBar(.compact) }
         @unknown default:

@@ -77,17 +77,24 @@ final class LiveTVGuideRows {
         let entry = await task.value
         inFlight[id] = nil
         store(entry, for: id)
-        return entry.programmes
+        return entries[id]?.programmes ?? entry.programmes
     }
 
     private func store(_ entry: Entry, for id: Int) {
         if entries[id] == nil { order.append(id) }
-        entries[id] = entry
+        entries[id] = Entry(programmes: Self.withoutDuplicates(entry.programmes), loadedAt: entry.loadedAt, partial: entry.partial)
         if order.count > Self.capacity {
             let drop = order.prefix(order.count - Self.capacity)
             for key in drop { entries[key] = nil }
             order.removeFirst(drop.count)
         }
+    }
+
+    /// Some providers list every show twice (the same start and title from
+    /// two guide sources): once is enough.
+    nonisolated static func withoutDuplicates(_ list: [XtreamProgram]) -> [XtreamProgram] {
+        var seen = Set<String>()
+        return list.filter { seen.insert("\($0.start.timeIntervalSince1970)|\($0.title)").inserted }
     }
 
     /// The full guide is refreshed every 12 h; rows are re-read after 6 h so

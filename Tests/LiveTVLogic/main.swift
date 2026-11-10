@@ -114,5 +114,31 @@ utc.timeZone = TimeZone(identifier: "UTC")!
 check(LiveTVProgrammeInfo.dayOffset(of: at(180), from: at(0), calendar: utc) == 0, "23:00 is today")
 check(LiveTVProgrammeInfo.dayOffset(of: at(300), from: at(0), calendar: utc) == 1, "01:00 is tomorrow")
 
+// MARK: List window (guide over the video)
+
+var window = LiveTVListWindow(rows: 10)
+window.follow(5, count: 100)
+check(window.range(count: 100) == 0..<10, "inside: no move")
+window.follow(9, count: 100)
+check(window.range(count: 100) == 1..<11, "bottom row: one row down, the next peeks in")
+window.follow(0, count: 100)
+check(window.range(count: 100) == 0..<10, "back to the top")
+window.follow(99, count: 100)
+check(window.range(count: 100) == 90..<100, "wrap to the end: last rows")
+window.land(on: 50, count: 100)
+check(window.range(count: 100) == 47..<57, "opening: a few rows above")
+var short = LiveTVListWindow(rows: 10)
+short.follow(4, count: 5)
+check(short.range(count: 5) == 0..<5, "short list: all of it")
+var stepping = LiveTVListWindow(rows: 10)
+var alwaysContext = true
+for index in 0..<100 {
+    stepping.follow(index, count: 100)
+    let range = stepping.range(count: 100)
+    if !range.contains(index) || (index < 99 && index == range.upperBound - 1) { alwaysContext = false }
+}
+check(alwaysContext, "stepping down: on screen, never on the last row before the end")
+check(LiveTVListWindow(rows: 10).range(count: 0).isEmpty, "empty list")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
