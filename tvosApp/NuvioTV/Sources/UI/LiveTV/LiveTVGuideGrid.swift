@@ -109,6 +109,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 // Otherwise the row started from wins over the one zapped to.
                 self?.view?.collectionView.remembersLastFocusedIndexPath = false
                 self?.landOnChannel = true
+                self?.returnPending = true
+            }
+            LiveTVFocusLinks.guideWillReturn = { [weak self] in
+                self?.scrollToReturnChannel()
             }
 
             view.ruler.update(timeline: timeline, now: Date())
@@ -164,13 +168,31 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// Next focus into the guide lands on the channel, not the programme.
         private var landOnChannel = false
 
+        /// From going full screen until a row has focus again: coming back
+        /// lands on the channel playing (on its own, not tied to the header
+        /// and groups lock, which can end earlier).
+        private var returnPending = false
+
+        /// The channel playing last (after zapping that's not the one
+        /// started here), in this list.
+        private var returnIndexPath: IndexPath? {
+            guard let id = LiveTVZapper.shared.currentChannel?.streamID,
+                  let index = channels.firstIndex(where: { $0.streamID == id }) else { return nil }
+            return IndexPath(item: index, section: 0)
+        }
+
+        /// Leaving full screen: the row is on screen before focus comes back.
+        private func scrollToReturnChannel() {
+            guard returnPending, let indexPath = returnIndexPath, let collection = view?.collectionView else { return }
+            preferredIndexPath = indexPath
+            collection.layoutIfNeeded()
+            if !collection.indexPathsForVisibleItems.contains(indexPath) {
+                collection.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+            }
+        }
+
         func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
-            // Back from the player: the channel playing last (after zapping
-            // that is not the one started here).
-            if LiveTVFocusLinks.returningFromPlayer,
-               let id = LiveTVZapper.shared.currentChannel?.streamID,
-               let index = channels.firstIndex(where: { $0.streamID == id }) {
-                let indexPath = IndexPath(item: index, section: 0)
+            if returnPending || LiveTVFocusLinks.returningFromPlayer, let indexPath = returnIndexPath {
                 if !collectionView.indexPathsForVisibleItems.contains(indexPath) {
                     collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
                 }
@@ -316,6 +338,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 // Landed (on the last watched channel or elsewhere): from now
                 // on the collection view remembers the focused row itself.
                 preferredIndexPath = nil
+                returnPending = false
                 collectionView.remembersLastFocusedIndexPath = true
                 if context.previouslyFocusedItem is LiveTVGuideRowCell {
                     LiveTVFocusLinks.endReturn("moved in guide")
@@ -519,6 +542,8 @@ enum LiveTVFocusLinks {
 
     /// Set by the guide: readies it for focus coming back from full screen.
     static var prepareGuideReturn: (() -> Void)?
+    /// Set by the guide: full screen is ending, scroll to the channel.
+    static var guideWillReturn: (() -> Void)?
 
     /// Going full screen: coming back, focus lands in the guide on the
     /// channel playing then (header and groups wait until it has).

@@ -29,7 +29,10 @@ final class LiveTVPlayer: ObservableObject {
     @Published var previewFrame: CGRect?
     @Published var isFullscreen = false {
         didSet {
-            if !isFullscreen { hideBar() }
+            if !isFullscreen {
+                hideBar()
+                if oldValue { LiveTVFocusLinks.guideWillReturn?() }
+            }
             if LiveTVFullscreenState.shared.isActive != isFullscreen {
                 LiveTVFullscreenState.shared.isActive = isFullscreen
             }
