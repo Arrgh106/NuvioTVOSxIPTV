@@ -13,7 +13,7 @@ struct LiveTVView: View {
     /// Not observed here: only the info panel redraws when focus moves.
     @State private var info = LiveTVInfoModel()
     /// Preview window and full screen: one player (step 3).
-    @StateObject private var player = LiveTVPlayer()
+    @ObservedObject private var player = LiveTVPlayer.shared
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -61,19 +61,9 @@ struct LiveTVView: View {
         .focusScope(focusNamespace)
         .padding(.horizontal, 60)
         .padding(.top, 30)
-        // Full screen: only the player takes the remote.
-        .disabled(player.isFullscreen)
-        .overlayPreferenceValue(LiveTVPreviewAnchorKey.self) { anchor in
-            ZStack {
-                LiveTVVideoLayer(player: player, anchor: anchor)
-                if player.isFullscreen {
-                    LiveTVFullscreenControls(player: player, onExit: { player.isFullscreen = false })
-                }
-            }
-        }
-        .toolbar(player.isFullscreen ? .hidden : .visible, for: .tabBar)
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
+        .onAppear(perform: connectPlayer)
     }
 
     private var header: some View {
@@ -192,14 +182,45 @@ struct LiveTVView: View {
                 break // try again
             }
         }
-        guard let item = store.playbackItem(for: channel) else { return }
-        store.recordWatched(channel)
         // Up/down in full screen switches through this group.
         let liveStore = store
         LiveTVZapper.shared.begin(channel: channel, in: liveStore.visibleChannels) { [weak liveStore] in
             liveStore?.playbackItem(for: $0)
         }
+        start(channel)
+    }
+
+    /// Plays `channel` where the picture is (preview or full screen).
+    private func start(_ channel: XtreamLiveChannel) {
+        guard let item = store.playbackItem(for: channel) else { return }
+        store.recordWatched(channel)
         player.play(channel, item: item)
+    }
+
+    /// What the full-screen bar needs from the store.
+    private func connectPlayer() {
+        let liveStore = store
+        player.recentChannels = { [weak liveStore] in
+            guard let liveStore else { return [] }
+            return liveStore.recentIDs.compactMap { liveStore.channel(id: $0) }
+        }
+        player.startChannel = { [weak liveStore, weak player] channel in
+            guard let liveStore, let player, let item = liveStore.playbackItem(for: channel) else { return }
+            // A channel from the row that isn't in the group: zap from the
+            // row's list instead.
+            if !LiveTVZapper.shared.channels.contains(where: { $0.streamID == channel.streamID }) {
+                let recent = liveStore.recentIDs.compactMap { liveStore.channel(id: $0) }
+                LiveTVZapper.shared.begin(channel: channel, in: recent) { [weak liveStore] in
+                    liveStore?.playbackItem(for: $0)
+                }
+            } else {
+                LiveTVZapper.shared.begin(channel: channel, in: LiveTVZapper.shared.channels) { [weak liveStore] in
+                    liveStore?.playbackItem(for: $0)
+                }
+            }
+            liveStore.recordWatched(channel)
+            player.play(channel, item: item)
+        }
     }
 }
 

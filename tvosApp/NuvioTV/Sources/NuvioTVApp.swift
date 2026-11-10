@@ -402,6 +402,8 @@ struct DetailsNavigationContextTransition {
 }
 
 struct ContentView: View {
+    /// Fork: Live TV full screen is an app-level screen like the player.
+    @ObservedObject private var liveTVFullscreen = LiveTVFullscreenState.shared
     private struct PartyDetailsDestination {
         let screen: TVScreen
         let tab: TVTab
@@ -1046,6 +1048,7 @@ struct ContentView: View {
     /// visible behind its glass panel.
     private var fullScreenOverlayPresented: Bool {
         if isResolvingContinueWatchingStream { return true }
+        if liveTVFullscreen.isActive { return true }
         switch activeScreen {
         case .details, .player, .cloudLibrary, .collectionFolder, .productionBrowse, .personBrowse: return true
         default: return false
@@ -2684,6 +2687,17 @@ struct ContentView: View {
                     detailsDidDisappearGeneration &+= 1
                 }
                 .zIndex(2)
+            }
+
+            // Fork: Live TV's picture (preview window or full screen, one
+            // view for both) and, full screen, its controls and info bar.
+            LiveTVVideoHost(covered: !liveTVFullscreen.isActive
+                && (fullScreenOverlayPresented || visibleAppNotice != nil))
+                .zIndex(2)
+            if liveTVFullscreen.isActive {
+                LiveTVFullscreenHost()
+                    .transition(.opacity)
+                    .zIndex(2.1)
             }
 
             let showCloudLibrary = {

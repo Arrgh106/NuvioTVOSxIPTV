@@ -230,6 +230,10 @@ final class LiveTVStore: ObservableObject {
         rebuildGroups()
     }
 
+    func channel(id: Int) -> XtreamLiveChannel? {
+        channelsByID[id]
+    }
+
     /// Called when a channel starts playing.
     func recordWatched(_ channel: XtreamLiveChannel) {
         var ids = recentIDs.filter { $0 != channel.streamID }
