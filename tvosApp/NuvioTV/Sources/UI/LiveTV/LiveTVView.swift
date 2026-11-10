@@ -33,6 +33,8 @@ struct LiveTVView: View {
             }
         }
         .onAppear { store.reloadAccount() }
+        // Full screen: no tab bar (on the tab's root view, where tvOS reads it).
+        .toolbar(player.isFullscreen ? .hidden : .automatic, for: .tabBar)
     }
 
     // MARK: Browser
@@ -72,7 +74,6 @@ struct LiveTVView: View {
                 }
             }
         }
-        .toolbar(player.isFullscreen ? .hidden : .visible, for: .tabBar)
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)

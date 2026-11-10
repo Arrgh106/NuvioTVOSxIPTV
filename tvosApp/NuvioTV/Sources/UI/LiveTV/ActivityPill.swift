@@ -4,9 +4,11 @@ import SwiftUI
 /// observing the center, so progress updates redraw only the pill.
 struct ActivityPill: View {
     @ObservedObject private var center = ActivityCenter.shared
+    @ObservedObject private var liveFullscreen = LiveTVFullscreenState.shared
 
     var body: some View {
-        if let activity = center.current {
+        // Not over the Live TV picture and its info bar.
+        if let activity = center.current, !liveFullscreen.isActive {
             HStack(spacing: 12) {
                 if activity.failed {
                     Image(systemName: "exclamationmark.triangle.fill")

@@ -22,7 +22,12 @@ final class LiveTVPlayer: ObservableObject {
     @Published private(set) var channel: XtreamLiveChannel?
     @Published private(set) var status: Status = .idle
     @Published var isFullscreen = false {
-        didSet { if !isFullscreen { hideBar() } }
+        didSet {
+            if !isFullscreen { hideBar() }
+            if LiveTVFullscreenState.shared.isActive != isFullscreen {
+                LiveTVFullscreenState.shared.isActive = isFullscreen
+            }
+        }
     }
 
     // MARK: Info bar (step 4)
@@ -180,6 +185,14 @@ final class LiveTVPlayer: ObservableObject {
             }
         }
     }
+}
+
+/// Whether Live TV plays full screen, for views outside Live TV (the
+/// activity pill hides then).
+@MainActor
+final class LiveTVFullscreenState: ObservableObject {
+    static let shared = LiveTVFullscreenState()
+    @Published var isActive = false
 }
 
 // MARK: - Video
