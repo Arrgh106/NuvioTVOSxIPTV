@@ -10,12 +10,14 @@ on:
     paths:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVProgrammeInfo.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVListWindow.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
     paths:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVProgrammeInfo.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVListWindow.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -37,6 +39,7 @@ jobs:
           swiftc -O \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVTimeline.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVProgrammeInfo.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVListWindow.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

@@ -221,6 +221,20 @@ struct LiveTVView: View {
             liveStore.recordWatched(channel)
             player.play(channel, item: item)
         }
+        // The guide over the full-screen picture: a channel from another
+        // group makes that group the one shown (and zapped through), so
+        // going back lands on it in the guide too.
+        player.overlay.store = liveStore
+        player.overlay.onPlay = { [weak liveStore, weak player] channel, list, groupID in
+            guard let liveStore, let player, let item = liveStore.playbackItem(for: channel) else { return }
+            if liveStore.selectedGroupID != groupID { liveStore.selectedGroupID = groupID }
+            LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
+                liveStore?.playbackItem(for: $0)
+            }
+            liveStore.recordWatched(channel)
+            player.play(channel, item: item)
+            player.showBar(.compact)
+        }
     }
 }
 
