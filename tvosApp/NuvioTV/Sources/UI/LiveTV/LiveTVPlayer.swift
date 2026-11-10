@@ -257,36 +257,44 @@ struct LiveTVVideoHost: View {
     @ObservedObject var player = LiveTVPlayer.shared
     /// Another full-screen screen or a notice covers Live TV.
     var covered = false
+    /// Where this layer's (zero-size) anchor sits on screen.
+    @State private var anchor: CGPoint = .zero
 
     var body: some View {
-        GeometryReader { geometry in
-            let screen = UIScreen.main.bounds.size
-            let origin = geometry.frame(in: .global).origin
-            let rect = player.isFullscreen ? CGRect(origin: .zero, size: screen) : (player.previewFrame ?? .zero)
-            // Only a running picture: the status and the hint in the preview
-            // window are below this layer.
-            let visible = player.status == .playing && (player.isFullscreen || (rect.width > 1 && !covered))
-            if player.channel != nil {
-                StablePlayerSurfacePresentation(
-                    viewportSize: screen,
-                    presentationSize: CGSize(width: max(rect.width, 1), height: max(rect.height, 1))
-                ) {
-                    LiveTVVideoSurface(session: player.session)
-                }
-                .clipShape(RoundedRectangle(
-                    cornerRadius: player.isFullscreen ? 0 : LiveTVTheme.Metric.cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
-                        .strokeBorder(LiveTVTheme.accent.opacity(player.isFullscreen ? 0 : 0.8), lineWidth: 2)
-                )
-                .position(x: rect.midX - origin.x, y: rect.midY - origin.y)
-                .opacity(visible ? 1 : 0)
+        // Takes no room at all: a full-screen layer, even an empty one, over
+        // the tab view hid the tab bar's "Live TV" pill and kept Menu from
+        // reaching it. The picture hangs off a zero-size anchor instead.
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { anchor = $0 }
+            .overlay(alignment: .topLeading) {
+                if player.channel != nil { picture }
             }
+            .allowsHitTesting(false)
+    }
+
+    private var picture: some View {
+        let screen = UIScreen.main.bounds.size
+        let rect = player.isFullscreen ? CGRect(origin: .zero, size: screen) : (player.previewFrame ?? .zero)
+        // Only a running picture: the status and the hint in the preview
+        // window are below this layer.
+        let visible = player.status == .playing && (player.isFullscreen || (rect.width > 1 && !covered))
+        return StablePlayerSurfacePresentation(
+            viewportSize: screen,
+            presentationSize: CGSize(width: max(rect.width, 1), height: max(rect.height, 1))
+        ) {
+            LiveTVVideoSurface(session: player.session)
         }
-        .ignoresSafeArea()
+        .clipShape(RoundedRectangle(
+            cornerRadius: player.isFullscreen ? 0 : LiveTVTheme.Metric.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
+                .strokeBorder(LiveTVTheme.accent.opacity(player.isFullscreen ? 0 : 0.8), lineWidth: 2)
+        )
+        .offset(x: rect.minX - anchor.x, y: rect.minY - anchor.y)
+        .opacity(visible ? 1 : 0)
         // The picture never takes focus or presses.
         .disabled(true)
-        .allowsHitTesting(false)
     }
 }
 
