@@ -14,6 +14,10 @@ struct LiveTVView: View {
     @State private var info = LiveTVInfoModel()
     /// Preview window and full screen: one player (step 3).
     @ObservedObject private var player = LiveTVPlayer.shared
+    /// Live TV options (quick menu, Settings → Live TV).
+    @ObservedObject private var settings = LiveTVSettings.shared
+    /// The quick menu (gear in the header).
+    @State private var showsQuickMenu = false
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -38,20 +42,23 @@ struct LiveTVView: View {
     // MARK: Browser
 
     private var channelBrowser: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: settings.smallHeader ? 16 : 24) {
             header
-                .disabled(returnLock.locked)
-            LiveTVInfoPanel(model: info)
+                .disabled(returnLock.locked || showsQuickMenu)
+            if settings.showInfoPanel {
+                LiveTVInfoPanel(model: info)
+            }
             // Groups · channels · timeline (the guide gets the most room).
             HStack(alignment: .top, spacing: 30) {
                 groupList
                     .frame(width: 400)
-                    .disabled(returnLock.locked)
+                    .disabled(returnLock.locked || showsQuickMenu)
                     // Its own focus section: Right from any group lands in
                     // the guide, Left from the guide comes back here.
                     .focusSection()
                 channelList
                     .frame(maxWidth: .infinity)
+                    .disabled(showsQuickMenu)
                     .focusSection()
                     // Back from the player the guide takes the first focus
                     // (on the channel watched last), not the groups.
@@ -60,20 +67,48 @@ struct LiveTVView: View {
         }
         .focusScope(focusNamespace)
         .padding(.horizontal, 60)
-        .padding(.top, 30)
+        .padding(.top, settings.smallHeader ? 16 : 30)
+        // The quick menu, top right over the guide: the guide changes as
+        // the options change.
+        .overlay(alignment: .topTrailing) {
+            if showsQuickMenu {
+                LiveTVQuickMenu(settings: settings, onClose: { showsQuickMenu = false })
+                    .padding(.top, 20)
+                    .padding(.trailing, 40)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
+        // Preview window switched off while it plays: nothing shows the
+        // picture any more, so it stops.
+        .onChange(of: settings.previewActive) { _, active in
+            if !active, !player.isFullscreen { player.stop() }
+        }
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 24) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L10n.string("livetv_title", fallback: "Live TV"))
-                    .font(.system(size: 44, weight: .bold))
-                accountSummary
-                    .font(.system(size: 22))
-                    .foregroundColor(.white.opacity(0.6))
+            if settings.smallHeader {
+                // More room for the guide: title and account in one line.
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    Text(L10n.string("livetv_title", fallback: "Live TV"))
+                        .font(.system(size: 30, weight: .bold))
+                    accountSummary
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L10n.string("livetv_title", fallback: "Live TV"))
+                        .font(.system(size: 44, weight: .bold))
+                    accountSummary
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.6))
+                }
             }
             Spacer()
             if store.state == .loading {
@@ -102,6 +137,12 @@ struct LiveTVView: View {
             } label: {
                 Label(L10n.string("livetv_account", fallback: "Account"), systemImage: "person.badge.key")
             }
+            Button {
+                showsQuickMenu = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .accessibilityLabel(L10n.string("livetv_quick_menu", fallback: "Guide display"))
+            }
         }
     }
 
@@ -129,6 +170,7 @@ struct LiveTVView: View {
         LiveTVGroupCollection(
             groups: store.groups,
             selectedID: store.selectedGroupID,
+            showCounts: settings.showGroupCounts,
             onSelect: { store.selectedGroupID = $0 }
         )
     }
@@ -188,6 +230,11 @@ struct LiveTVView: View {
             liveStore?.playbackItem(for: $0)
         }
         start(channel)
+        // No preview window: straight to full screen.
+        if !settings.previewActive {
+            LiveTVFocusLinks.beginReturn()
+            player.isFullscreen = true
+        }
     }
 
     /// Plays `channel` where the picture is (preview or full screen).

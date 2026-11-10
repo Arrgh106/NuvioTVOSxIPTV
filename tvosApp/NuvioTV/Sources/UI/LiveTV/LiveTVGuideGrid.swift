@@ -55,6 +55,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var timeline = LiveTVTimeline(now: Date())
         private var clock: Timer?
         private var rowsObserver: NSObjectProtocol?
+        private var clockObserver: NSObjectProtocol?
         /// Channel to focus once it is in the list (see `focusChannelID`).
         var pendingFocusID: Int?
         weak var infoModel: LiveTVInfoModel?
@@ -127,6 +128,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reloadVisibleProgrammes() }
             }
+            clockObserver = NotificationCenter.default.addObserver(
+                forName: LiveTVSettings.clockChangedNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.view?.ruler.setNeedsDisplay()
+                    self?.reloadVisibleProgrammes()
+                }
+            }
         }
 
         func detach() {
@@ -134,6 +143,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             clock = nil
             if let rowsObserver { NotificationCenter.default.removeObserver(rowsObserver) }
             rowsObserver = nil
+            if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
+            clockObserver = nil
         }
 
         func update(listID: String, channels: [XtreamLiveChannel], onSelect: @escaping (XtreamLiveChannel) -> Void) {
@@ -504,7 +515,6 @@ final class LiveTVTimeRuler: UIView {
 
     private static let slotFont = UIFont.monospacedDigitSystemFont(ofSize: LiveTVTheme.Font.small, weight: .semibold)
     private static let dayFont = UIFont.systemFont(ofSize: LiveTVTheme.Font.small, weight: .semibold)
-    private static let timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
@@ -520,7 +530,7 @@ final class LiveTVTimeRuler: UIView {
         } else {
             day = timeline.windowStart.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
         }
-        let label = "\(day)  ·  \(now.formatted(Self.timeStyle))" as NSString
+        let label = "\(day)  ·  \(LiveTVSettings.shared.time(now))" as NSString
         label.draw(at: CGPoint(x: 10, y: 10), withAttributes: [
             .font: Self.dayFont, .foregroundColor: UIColor.white.withAlphaComponent(0.85),
         ])
@@ -532,7 +542,7 @@ final class LiveTVTimeRuler: UIView {
             let x = stripX + CGFloat(Double(index) / Double(slots)) * stripWidth
             UIColor.white.withAlphaComponent(0.18).setFill()
             context.fill(CGRect(x: x, y: bounds.height - 14, width: 1, height: 14))
-            (time.formatted(Self.timeStyle) as NSString).draw(at: CGPoint(x: x + 8, y: 10), withAttributes: [
+            (LiveTVSettings.shared.time(time) as NSString).draw(at: CGPoint(x: x + 8, y: 10), withAttributes: [
                 .font: Self.slotFont, .foregroundColor: UIColor.white.withAlphaComponent(0.6),
             ])
         }

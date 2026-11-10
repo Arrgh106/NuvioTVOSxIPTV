@@ -34,7 +34,17 @@ final class LiveTVPlayer: ObservableObject {
             if !isFullscreen {
                 hideBar()
                 overlay.close()
-                if oldValue { LiveTVFocusLinks.guideWillReturn?() }
+                if oldValue {
+                    LiveTVFocusLinks.guideWillReturn?()
+                    // Without a preview window nothing would show the
+                    // picture: back in the guide, playback ends.
+                    if !LiveTVSettings.shared.previewActive {
+                        Task { @MainActor [weak self] in
+                            guard let self, !self.isFullscreen else { return }
+                            self.stop()
+                        }
+                    }
+                }
             }
             if LiveTVFullscreenState.shared.isActive != isFullscreen {
                 LiveTVFullscreenState.shared.isActive = isFullscreen
@@ -109,9 +119,11 @@ final class LiveTVPlayer: ObservableObject {
     /// Up / Down while full screen: the next channel of the group it was
     /// started from (Android and the film player do the same).
     func zap(by delta: Int) {
-        guard let next = LiveTVZapper.shared.step(by: delta) else { return }
+        // "Reverse channel up/down" (as on Android).
+        let step = LiveTVSettings.shared.reverseZap ? -delta : delta
+        guard let next = LiveTVZapper.shared.step(by: step) else { return }
         startChannel(next.channel)
-        showBar(.compact)
+        if LiveTVSettings.shared.infoBarOnZap { showBar(.compact) }
     }
 
     func showBar(_ kind: Bar) {

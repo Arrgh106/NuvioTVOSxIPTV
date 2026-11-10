@@ -176,10 +176,28 @@ final class LiveTVStore: ObservableObject {
     /// "All channels" without hidden groups; rebuilt when they change.
     private var allVisible: [XtreamLiveChannel] = []
     private var searchResults: [XtreamLiveChannel] = []
+    /// "##### …" heading rows of the provider's list (LiveTVSettings.isSeparator).
+    private var separatorIDs: Set<Int> = []
+    /// The groups without those rows, while the option hides them.
+    private var channelsByGroupWithoutSeparators: [String: [XtreamLiveChannel]] = [:]
+    private var hidesSeparators: Bool { LiveTVSettings.shared.hideSeparators && !separatorIDs.isEmpty }
+    private var settingsObserver: AnyCancellable?
     private var loadTask: Task<Void, Never>?
 
     init() {
         reloadAccount()
+        // The option changes the lists at once (the guide reloads).
+        settingsObserver = LiveTVSettings.shared.$hideSeparators
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.rebuildSeparatorLists()
+                    self.rebuildGroups()
+                    self.listRevision &+= 1
+                }
+            }
     }
 
     var hasAccount: Bool { account != nil }
@@ -196,7 +214,7 @@ final class LiveTVStore: ObservableObject {
         case LiveTVGroup.favoritesID: return favoriteIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.recentID: return recentIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.searchID: return searchResults
-        default: return channelsByGroup[groupID] ?? []
+        default: return (hidesSeparators ? channelsByGroupWithoutSeparators : channelsByGroup)[groupID] ?? []
         }
     }
 
@@ -281,7 +299,10 @@ final class LiveTVStore: ObservableObject {
     /// Sidebar: Search (while searching), Favorites, Recently watched, All,
     /// then the provider's groups that aren't hidden.
     private func rebuildGroups() {
-        allVisible = hiddenGroupIDs.isEmpty ? channels : channels.filter { channel in
+        let hideSeparators = hidesSeparators
+        let separators = separatorIDs
+        allVisible = hiddenGroupIDs.isEmpty && !hideSeparators ? channels : channels.filter { channel in
+            if hideSeparators, separators.contains(channel.streamID) { return false }
             let category = channel.categoryID ?? ""
             let group = knownCategoryIDs.contains(category) ? category : LiveTVGroup.otherID
             return !hiddenGroupIDs.contains(group)
@@ -311,7 +332,10 @@ final class LiveTVStore: ObservableObject {
         if !channels.isEmpty {
             result.append(LiveTVGroup(id: LiveTVGroup.allID, name: groupNames.all, count: allVisible.count))
         }
-        result += categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }
+        result += categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }.map { group in
+            guard hideSeparators else { return group }
+            return LiveTVGroup(id: group.id, name: group.name, count: channelsByGroupWithoutSeparators[group.id]?.count ?? 0)
+        }
         groups = result
         if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID
@@ -575,17 +599,31 @@ final class LiveTVStore: ObservableObject {
         channelsByGroup = prepared.channelsByGroup
         channelsByID = prepared.channelsByID
         knownCategoryIDs = prepared.knownCategoryIDs
+        separatorIDs = Set(prepared.channels.lazy.filter { LiveTVSettings.isSeparator($0.name) }.map(\.streamID))
+        rebuildSeparatorLists()
         let restoring = groups.isEmpty
         categoryGroups = prepared.groups
         listRevision &+= 1
         LiveTVEPG.shared.register(epgIDs: prepared.epgIDs)
         rebuildGroups()
         refreshGuide(force: false)
-        if restoring, let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
+        if restoring, LiveTVSettings.shared.rememberLastGroup,
+           let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
            groups.contains(where: { $0.id == last }) {
             selectedGroupID = last
         } else if !groups.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID
+        }
+    }
+
+    private func rebuildSeparatorLists() {
+        guard hidesSeparators else {
+            channelsByGroupWithoutSeparators = [:]
+            return
+        }
+        let separators = separatorIDs
+        channelsByGroupWithoutSeparators = channelsByGroup.mapValues { list in
+            list.filter { !separators.contains($0.streamID) }
         }
     }
 
