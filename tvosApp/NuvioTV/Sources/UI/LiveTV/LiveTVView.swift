@@ -61,8 +61,6 @@ struct LiveTVView: View {
         .focusScope(focusNamespace)
         .padding(.horizontal, 60)
         .padding(.top, 30)
-        // Full screen: only the player takes the remote.
-        .disabled(player.isFullscreen)
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
