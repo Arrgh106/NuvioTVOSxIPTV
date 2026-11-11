@@ -182,5 +182,31 @@ let onAir = LiveTVCatchup.xtreamURLs(
 check(onAir.contains { $0.absoluteString.contains("/30/") }, "on air: the aired 30 minutes")
 check(Set(onAir.map(\.absoluteString)).count == onAir.count, "no link twice")
 
+// MARK: Reminders
+
+func reminder(_ channel: Int, _ minutes: Double, _ title: String = "Show") -> LiveTVReminder {
+    LiveTVReminder(channelID: channel, channelName: "Ch \(channel)", title: title, start: at(minutes))
+}
+var reminders = LiveTVReminderList()
+check(reminders.toggle(reminder(1, 60, "Late")), "toggle sets a reminder")
+check(reminders.toggle(reminder(2, 30, "Early")), "a second one")
+check(reminders.items.map(\.title) == ["Early", "Late"], "sorted by start")
+check(reminders.contains(channelID: 1, start: at(60)), "found by channel and start")
+check(!reminders.contains(channelID: 1, start: at(30)), "not another start")
+check(!reminders.toggle(reminder(1, 60)), "toggle again cancels it")
+check(reminders.items.count == 1, "one left")
+// Due a minute before, until ten minutes after; shown ones not again.
+check(reminders.due(now: at(28.5), shown: []) == nil, "not due 90 s before")
+check(reminders.due(now: at(29), shown: [])?.title == "Early", "due a minute before")
+check(reminders.due(now: at(39.9), shown: [])?.title == "Early", "still due just under ten minutes after")
+check(reminders.due(now: at(40), shown: []) == nil, "not ten minutes after")
+check(reminders.due(now: at(30), shown: [reminder(2, 30).id]) == nil, "shown already")
+check(reminders.upcoming(now: at(35)).count == 1, "upcoming while it can still show")
+check(reminders.upcoming(now: at(41)).isEmpty, "not upcoming after that")
+// Dropped half an hour after the start.
+check(!reminders.prune(now: at(60)), "kept 30 minutes after")
+check(reminders.prune(now: at(60.5)), "dropped after that")
+check(reminders.items.isEmpty, "empty")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

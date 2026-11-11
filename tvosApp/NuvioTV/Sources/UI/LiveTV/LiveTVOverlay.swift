@@ -321,7 +321,7 @@ final class LiveTVOverlayModel: ObservableObject {
     }
 
     /// OK on a show: on now plays the channel live, a past one with an
-    /// archive plays again. Shows to come wait for reminders (step 7).
+    /// archive plays again, a show to come asks for a reminder (step 7a).
     private func activateShow(playing: XtreamLiveChannel?) {
         guard let channel = scheduleChannel, let programme = focusedShow else { return }
         let now = Date()
@@ -334,6 +334,9 @@ final class LiveTVOverlayModel: ObservableObject {
                   LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
             onCatchup(channel, programme, channels, groupID)
             close()
+        } else if programme.start > now {
+            // A show to come: remind me (the overlay stays open).
+            LiveTVReminders.shared.ask(channel: channel, programme: programme)
         }
     }
 
@@ -490,6 +493,11 @@ final class LiveTVOverlayPan: NSObject, UIGestureRecognizerDelegate {
             stepsThisTouch = 0
             commandsThisTouch = 0
         case .changed:
+            // A question is up (reminder): the list behind stays put.
+            if LiveTVAlert.isShowing {
+                recognizer.setTranslation(.zero, in: recognizer.view)
+                return
+            }
             let view = recognizer.view
             let moved = recognizer.translation(in: view).y
             recognizer.setTranslation(.zero, in: view)
@@ -536,6 +544,8 @@ final class LiveTVOverlayPan: NSObject, UIGestureRecognizerDelegate {
 struct LiveTVOverlayView: View {
     @ObservedObject var overlay: LiveTVOverlayModel
     @ObservedObject var player: LiveTVPlayer
+    /// The bells in the schedule.
+    @ObservedObject private var reminders = LiveTVReminders.shared
 
     static let channelRowHeight: CGFloat = 86
     static let groupRowHeight: CGFloat = 62
@@ -896,12 +906,18 @@ struct LiveTVOverlayView: View {
         let replayable = past
             && LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now)
         let playingLive = isLive && channel.streamID == player.channel?.streamID && player.replay == nil
+        let reminded = programme.start > now && reminders.isSet(channelID: channel.streamID, start: programme.start)
         let color: Color = solid ? .black
             : (isLive ? LiveTVTheme.accent : (past ? LiveTVTheme.secondaryText : LiveTVTheme.primaryText))
         return HStack(spacing: 14) {
             Text(LiveTVInfoPanel.clock(programme.start, now: now, withDay: false))
                 .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
                 .frame(minWidth: 100, alignment: .leading)
+            if reminded {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: LiveTVTheme.Font.badge - 4, weight: .semibold))
+                    .foregroundColor(solid ? .black : LiveTVTheme.markColor)
+            }
             Text((replayable ? "↺ " : "") + programme.title)
                 .font(.system(size: LiveTVTheme.Font.badge, weight: isLive ? .semibold : .regular))
                 .lineLimit(1)
@@ -1015,6 +1031,14 @@ struct LiveTVOverlayView: View {
                 .foregroundColor(LiveTVTheme.secondaryText)
                 if replayable, overlay.level != .channels {
                     Text(L10n.string("livetv_catchup_ok_hint", fallback: "↺ OK: watch again"))
+                        .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
+                        .foregroundColor(LiveTVTheme.markColor)
+                } else if current.start > now, overlay.level != .channels {
+                    let reminded = reminders.isSet(channelID: channel.streamID, start: current.start)
+                    Label(reminded
+                          ? L10n.string("livetv_reminder_set_hint", fallback: "Reminder set  ·  OK: cancel")
+                          : L10n.string("livetv_reminder_ok_hint", fallback: "OK: remind me"),
+                          systemImage: reminded ? "bell.fill" : "bell")
                         .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
                         .foregroundColor(LiveTVTheme.markColor)
                 }

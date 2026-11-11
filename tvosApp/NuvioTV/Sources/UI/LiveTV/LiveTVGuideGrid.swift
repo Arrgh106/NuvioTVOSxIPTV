@@ -61,6 +61,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var clock: Timer?
         private var rowsObserver: NSObjectProtocol?
         private var clockObserver: NSObjectProtocol?
+        private var remindersObserver: NSObjectProtocol?
         /// Channel to focus once it is in the list (see `focusChannelID`).
         var pendingFocusID: Int?
         weak var infoModel: LiveTVInfoModel?
@@ -148,6 +149,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     self?.reloadVisibleProgrammes()
                 }
             }
+            // A reminder set or gone: the bells.
+            remindersObserver = NotificationCenter.default.addObserver(
+                forName: LiveTVReminders.changedNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    for cell in self?.visibleRows ?? [] { cell.strip.setNeedsDisplay() }
+                }
+            }
         }
 
         func detach() {
@@ -157,6 +166,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             rowsObserver = nil
             if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
             clockObserver = nil
+            if let remindersObserver { NotificationCenter.default.removeObserver(remindersObserver) }
+            remindersObserver = nil
         }
 
         func update(listID: String, channels: [XtreamLiveChannel], onSelect: @escaping (XtreamLiveChannel) -> Void) {
@@ -437,16 +448,27 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let channel = channels[indexPath.item]
             // On a show that's over, on a channel with catch-up: watch it again.
             let now = Date()
-            if !onChannel, let cursor = timeline.cursor,
-               let cell = collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell,
-               let programme = LiveTVTimeline.block(at: cursor, in: cell.strip.programmes ?? []).programme,
-               programme.end <= now,
-               LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
-                onCatchup(channel, programme)
-                return
+            if let programme = cursorProgramme(at: indexPath, in: collectionView) {
+                if programme.end <= now,
+                   LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
+                    onCatchup(channel, programme)
+                    return
+                }
+                // A show to come: remind me (as on Android).
+                if programme.start > now {
+                    LiveTVReminders.shared.ask(channel: channel, programme: programme)
+                    return
+                }
             }
             // Back from the player focus comes back here, on the channel.
             onSelect(channel)
+        }
+
+        /// The show under the cursor (none on the channel).
+        private func cursorProgramme(at indexPath: IndexPath, in collectionView: UICollectionView) -> XtreamProgram? {
+            guard !onChannel, let cursor = timeline.cursor,
+                  let cell = collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell else { return nil }
+            return LiveTVTimeline.block(at: cursor, in: cell.strip.programmes ?? []).programme
         }
 
         func collectionView(
@@ -461,6 +483,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let now = Date()
             let shows = (collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell)?.strip.programmes ?? []
             let current = channel.archiveDays > 0 ? shows.first { $0.start <= now && now < $0.end } : nil
+            // On a show to come: remind me / cancel reminder.
+            let upcoming = cursorProgramme(at: indexPath, in: collectionView).flatMap { $0.start > now ? $0 : nil }
+            let reminderSet = upcoming.map {
+                LiveTVReminders.shared.isSet(channelID: channel.streamID, start: $0.start)
+            } ?? false
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 let title = isFavorite
                     ? L10n.string("livetv_remove_favorite", fallback: "Remove from Favorites")
@@ -469,6 +496,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     self?.onToggleFavorite(channel)
                 }
                 var children: [UIMenuElement] = []
+                if let upcoming {
+                    children.append(UIAction(
+                        title: reminderSet
+                            ? L10n.string("livetv_reminder_cancel", fallback: "Cancel reminder")
+                            : L10n.string("livetv_reminder_set", fallback: "Remind me"),
+                        image: UIImage(systemName: reminderSet ? "bell.slash" : "bell")
+                    ) { _ in LiveTVReminders.shared.toggle(channel: channel, programme: upcoming) })
+                }
                 if let current {
                     children.append(UIAction(
                         title: L10n.string("livetv_restart", fallback: "Watch from the beginning"),

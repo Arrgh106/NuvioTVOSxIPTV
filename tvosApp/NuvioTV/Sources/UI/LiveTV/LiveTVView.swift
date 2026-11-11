@@ -18,6 +18,9 @@ struct LiveTVView: View {
     @ObservedObject private var settings = LiveTVSettings.shared
     /// The quick menu (gear in the header).
     @State private var showsQuickMenu = false
+    /// Watch on a reminder: the channel full screen. Not observed: the
+    /// guide doesn't redraw when a reminder is set.
+    private var reminders: LiveTVReminders { LiveTVReminders.shared }
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -83,6 +86,13 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
+        // Watch on a reminder, from anywhere in the app; the channels may
+        // still be loading when Live TV opens for it.
+        .onReceive(reminders.$pendingWatch) { _ in
+            // Sent before the value is stored: look once it is.
+            Task { @MainActor in watchReminder() }
+        }
+        .onChange(of: store.listRevision) { _, _ in watchReminder() }
         // Preview window switched off while it plays: nothing shows the
         // picture any more, so it stops.
         .onChange(of: settings.previewActive) { _, active in
@@ -253,6 +263,24 @@ struct LiveTVView: View {
             LiveTVFocusLinks.beginReturn()
             player.isFullscreen = true
         }
+    }
+
+    /// Watch on a reminder: the channel full screen, zapping through the
+    /// group shown when the channel is in it.
+    private func watchReminder() {
+        guard let reminder = reminders.pendingWatch,
+              let channel = store.channel(id: reminder.channelID) else { return }
+        reminders.pendingWatch = nil
+        let list = store.visibleChannels.contains { $0.streamID == channel.streamID }
+            ? store.visibleChannels : [channel]
+        let liveStore = store
+        LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
+            liveStore?.playbackItem(for: $0)
+        }
+        start(channel)
+        LiveTVFocusLinks.beginReturn()
+        player.isFullscreen = true
+        player.showBar(.compact)
     }
 
     /// Plays `channel` where the picture is (preview or full screen).

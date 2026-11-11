@@ -8,6 +8,7 @@ import SwiftUI
 struct LiveTVSettingsView: View {
     let accentColor: Color
     @ObservedObject private var settings = LiveTVSettings.shared
+    @ObservedObject private var reminders = LiveTVReminders.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -87,6 +88,33 @@ struct LiveTVSettingsView: View {
                     subtitle: L10n.string("livetv_settings_reverse_zap_detail", fallback: "Up goes to the next channel, down to the previous one"),
                     isOn: $settings.reverseZap,
                     accentColor: accentColor
+                )
+            }
+
+            reminderList
+        }
+    }
+}
+
+extension LiveTVSettingsView {
+    /// Upcoming reminders, as Android's "Reminders (select to remove)".
+    @ViewBuilder
+    var reminderList: some View {
+        let now = Date()
+        let upcoming = reminders.list.upcoming(now: now)
+        LiveTVSettingsRows.group(
+            title: L10n.string("livetv_settings_reminders", fallback: "Reminders"),
+            subtitle: upcoming.isEmpty
+                ? L10n.string("livetv_settings_reminders_none", fallback: "None set. OK on a show to come in the guide: Remind me")
+                : L10n.string("livetv_settings_reminders_detail", fallback: "A minute before the start a prompt offers to watch. Select one to remove it")
+        ) {
+            ForEach(upcoming) { reminder in
+                LiveTVSettingsRows.action(
+                    title: reminder.title,
+                    subtitle: LiveTVInfoPanel.clock(reminder.start, now: now) + "  ·  " + reminder.channelName,
+                    value: L10n.string("livetv_settings_reminders_remove", fallback: "Remove"),
+                    accentColor: accentColor,
+                    action: { reminders.remove(reminder) }
                 )
             }
         }

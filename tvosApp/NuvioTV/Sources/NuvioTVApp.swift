@@ -2694,6 +2694,21 @@ struct ContentView: View {
             LiveTVVideoHost(covered: !liveTVFullscreen.isActive
                 && (fullScreenOverlayPresented || visibleAppNotice != nil))
                 .zIndex(2)
+                // Fork: Live TV reminders, over any screen once signed in.
+                .onAppear {
+                    LiveTVReminders.shared.start(
+                        canPrompt: {
+                            switch activeScreen {
+                            case .login, .profileSelection: return false
+                            default: return true
+                            }
+                        },
+                        canWatch: { !activeScreen.isPlayer },
+                        openLiveTV: {
+                            if activeScreen != .main { activeScreen = .main }
+                            selectedTab = .liveTV
+                        })
+                }
             if liveTVFullscreen.isActive {
                 LiveTVFullscreenHost()
                     .transition(.opacity)

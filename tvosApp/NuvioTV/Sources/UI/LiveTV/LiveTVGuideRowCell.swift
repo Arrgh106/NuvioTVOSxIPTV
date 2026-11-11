@@ -114,6 +114,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         nameLabel.text = channel.name
         archiveIcon.isHidden = channel.archiveDays == 0
         strip.archiveDays = channel.archiveDays
+        strip.channelID = channel.streamID
         setFavorite(favorite)
         loadLogo(channel.logoURL.flatMap(URL.init(string:)))
         strip.update(timeline: timeline, now: now)
@@ -163,6 +164,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         strip.programmes = nil
         strip.cursor = nil
         strip.archiveDays = 0
+        strip.channelID = 0
         setChannelHighlighted(false)
     }
 
@@ -232,6 +234,10 @@ final class LiveTVProgrammeStrip: UIView {
     var archiveDays = 0 {
         didSet { if archiveDays != oldValue { setNeedsDisplay() } }
     }
+    /// For the bells of shows with a reminder.
+    var channelID = 0 {
+        didSet { if channelID != oldValue { setNeedsDisplay() } }
+    }
     private var timeline = LiveTVTimeline(now: Date())
     private var now = Date()
 
@@ -263,6 +269,9 @@ final class LiveTVProgrammeStrip: UIView {
     private static let titleFont = UIFont.systemFont(ofSize: LiveTVTheme.Font.small + 2, weight: .medium)
     private static let timeFont = UIFont.monospacedDigitSystemFont(ofSize: LiveTVTheme.Font.badge + 1, weight: .regular)
     private static let noInfoFont = UIFont.italicSystemFont(ofSize: LiveTVTheme.Font.small)
+    private static let bell = UIImage(
+        systemName: "bell.fill",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: LiveTVTheme.Font.badge - 2, weight: .semibold))
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
@@ -321,9 +330,18 @@ final class LiveTVProgrammeStrip: UIView {
                 : UIColor.white.withAlphaComponent(replayable ? 0.75 : isPast ? 0.5 : 0.92)
             let secondary: UIColor = isCursor ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.5)
             if let programme = block.programme {
+                // A bell: a reminder is set (step 7a).
+                var titleX = tile.minX + 12
+                if programme.start > now,
+                   LiveTVReminders.shared.isSet(channelID: channelID, start: programme.start),
+                   let bell = Self.bell?.withTintColor(
+                       isCursor ? .black : LiveTVTheme.markUIColor, renderingMode: .alwaysOriginal) {
+                    bell.draw(at: CGPoint(x: titleX, y: tile.minY + 10 + (28 - bell.size.height) / 2))
+                    titleX += bell.size.width + 8
+                }
                 // ↺: OK watches it again.
                 let title = (replayable ? "↺ " + programme.title : programme.title) as NSString
-                title.draw(in: CGRect(x: tile.minX + 12, y: tile.minY + 10, width: textWidth, height: 28), withAttributes: [
+                title.draw(in: CGRect(x: titleX, y: tile.minY + 10, width: textWidth - (titleX - tile.minX - 12), height: 28), withAttributes: [
                     .font: Self.titleFont, .foregroundColor: primary, .paragraphStyle: Self.paragraph,
                 ])
                 let time = "\(LiveTVSettings.shared.time(programme.start)) – \(LiveTVSettings.shared.time(programme.end))" as NSString

@@ -533,6 +533,10 @@ struct LiveTVFullscreenControls: View {
             .onChange(of: player.status) { _, _ in focused = true }
             .onChange(of: overlay.isOpen) { _, _ in focused = true }
             .onChange(of: player.resumeChoice) { _, open in if !open { focused = true } }
+            // A question (reminder) closed: the controls take the remote again.
+            .onReceive(NotificationCenter.default.publisher(for: LiveTVAlert.closedNotification)) { _ in
+                focused = true
+            }
             // The choice takes the remote while it's open.
             .disabled(player.resumeChoice)
     }
@@ -653,6 +657,8 @@ final class LiveTVPlayPausePress: NSObject {
     }
 
     @objc private func pressed() {
+        // A question is up (reminder): it takes the press.
+        guard !LiveTVAlert.isShowing else { return }
         action()
     }
 
