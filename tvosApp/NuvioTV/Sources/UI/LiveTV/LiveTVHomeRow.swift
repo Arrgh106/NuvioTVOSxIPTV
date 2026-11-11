@@ -52,16 +52,19 @@ final class LiveTVHomeRowModel: ObservableObject {
 
     private static let key = "nuvio.tv.livetv.homeChannels"
     private var saved = Saved(favorites: [], recent: [])
+    private var profileID: String?
     private var observers: [NSObjectProtocol] = []
     private var settingsSubscription: AnyCancellable?
 
     private init() {
         load()
-        observers.append(NotificationCenter.default.addObserver(
-            forName: ProfileSettings.settingsChangedNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.load() }
-        })
+        for name in [ProfileSettings.settingsChangedNotification, ProfileSettings.activeProfileChangedNotification] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.load() }
+            })
+        }
         // On / off and the source, from Settings → Live TV.
         let settings = LiveTVSettings.shared
         settingsSubscription = settings.$homeRow.combineLatest(settings.$homeRowSource)
@@ -98,6 +101,13 @@ final class LiveTVHomeRowModel: ObservableObject {
     }
 
     private func load() {
+        // Another profile: none of the last one's channels or programmes.
+        if ProfileSettings.activeProfileID != profileID {
+            profileID = ProfileSettings.activeProfileID
+            channels = []
+            metas = []
+            LiveTVHomeRowNow.shared.load([])
+        }
         saved = ProfileSettings.current.data(forKey: Self.key)
             .flatMap { try? JSONDecoder().decode(Saved.self, from: $0) } ?? Saved(favorites: [], recent: [])
         rebuild()

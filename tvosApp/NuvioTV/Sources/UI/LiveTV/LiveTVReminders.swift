@@ -23,12 +23,19 @@ final class LiveTVReminders: ObservableObject {
     private var shown: Set<String> = []
     private var timer: Timer?
     private var observer: NSObjectProtocol?
+    private var profileObserver: NSObjectProtocol?
 
     private init() {
         load()
         // Another profile: its own reminders.
         observer = NotificationCenter.default.addObserver(
             forName: ProfileSettings.settingsChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.load() }
+        }
+        // Switching profiles doesn't post the one above.
+        profileObserver = NotificationCenter.default.addObserver(
+            forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.load() }
         }
@@ -132,6 +139,7 @@ final class LiveTVReminders: ObservableObject {
     }
 
     private func load() {
+        shown = []
         let items = ProfileSettings.current.data(forKey: Self.key)
             .flatMap { try? JSONDecoder().decode([LiveTVReminder].self, from: $0) } ?? []
         let loaded = LiveTVReminderList(items)

@@ -72,12 +72,19 @@ final class LiveTVSettings: ObservableObject {
     private var loading = false
     private var formatter = LiveTVSettings.makeFormatter(.system)
     private var observer: NSObjectProtocol?
+    private var profileObserver: NSObjectProtocol?
 
     private init() {
         load()
         // Another profile: its own options.
         observer = NotificationCenter.default.addObserver(
             forName: ProfileSettings.settingsChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.load() }
+        }
+        // Switching profiles doesn't post the one above.
+        profileObserver = NotificationCenter.default.addObserver(
+            forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.load() }
         }

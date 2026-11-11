@@ -54,7 +54,13 @@ final class LiveTVGuide: ObservableObject {
     /// The stored guide, for queries off the main thread (the handle is
     /// thread-safe). Nil until a guide has been imported.
     func reader() -> GuideDatabase? {
-        openDatabase()
+        // Another profile since it was opened: its own guide (or none).
+        let active = ProfileSettings.activeProfileScope
+        if let scope, scope != active, refreshTask == nil {
+            closeDatabase()
+            self.scope = active
+        }
+        return openDatabase()
     }
 
     // MARK: Refresh

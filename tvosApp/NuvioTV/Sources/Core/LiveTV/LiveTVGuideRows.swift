@@ -21,6 +21,7 @@ final class LiveTVGuideRows {
     private var order: [Int] = []
     private var inFlight: [Int: Task<Entry, Never>] = [:]
     private var guideObserver: NSObjectProtocol?
+    private var profileObserver: NSObjectProtocol?
     private static let capacity = 800
 
     private init() {
@@ -32,6 +33,15 @@ final class LiveTVGuideRows {
                 self?.entries.removeAll()
                 self?.order.removeAll()
                 NotificationCenter.default.post(name: Self.changedNotification, object: nil)
+            }
+        }
+        // Another profile (another provider): stream ids mean other channels.
+        profileObserver = NotificationCenter.default.addObserver(
+            forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.entries.removeAll()
+                self?.order.removeAll()
             }
         }
     }
