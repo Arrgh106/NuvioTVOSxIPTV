@@ -95,10 +95,13 @@ final class LiveTVPlayer: ObservableObject {
     /// A replay's first picture: make sure it plays (a Play/Pause press
     /// during the switch could leave it paused).
     private var playOnFirstFrame = false
+    /// Live paused, Play/Pause again: continue, or the show from its start?
+    @Published private(set) var resumeChoice = false
 
     /// Starts `channel` (or switches to it). The picture stays where it is:
     /// in the preview window or full screen.
     func play(_ channel: XtreamLiveChannel, item: LiveTVStore.PlaybackItem) {
+        resumeChoice = false
         replay = nil
         replayLinks = []
         start(channel, url: item.url, headers: item.headers, live: true)
@@ -107,6 +110,7 @@ final class LiveTVPlayer: ObservableObject {
     /// Plays a past show of `channel` from its start, trying the links in turn.
     func playCatchup(_ channel: XtreamLiveChannel, programme: XtreamProgram, urls: [URL], headers: [String: String]) {
         guard let first = urls.first else { return }
+        resumeChoice = false
         replay = programme
         replayLinks = Array(urls.dropFirst())
         replayHeaders = headers
@@ -150,23 +154,44 @@ final class LiveTVPlayer: ObservableObject {
 
     var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
 
-    /// Play/Pause: pauses a replay; live on a channel with an archive, the
-    /// show on now from its beginning (Android's "Watch from the beginning").
+    /// Play/Pause pauses and plays on. Live and paused on a channel with an
+    /// archive, it asks: continue, or the show from its beginning?
     func togglePause() {
-        guard replay != nil else {
-            restartShow()
-            return
-        }
         let engine = session.activeEngine
-        if engine.isPlayerPlaying { engine.pausePlayback() } else { engine.playPlayback() }
+        if engine.isPlayerPlaying {
+            engine.pausePlayback()
+        } else if replay == nil, restartableShow != nil {
+            resumeChoice = true
+            return
+        } else {
+            engine.playPlayback()
+        }
         showBar(.compact)
+    }
+
+    /// The show on now, when it can start again (live, channel with an archive).
+    var restartableShow: XtreamProgram? {
+        let now = Date()
+        guard replay == nil, let channel, channel.archiveDays > 0 else { return nil }
+        return programmes.first { $0.start <= now && now < $0.end }
+    }
+
+    /// The choice: go on where it paused.
+    func resumeLive() {
+        resumeChoice = false
+        session.activeEngine.playPlayback()
+        showBar(.compact)
+    }
+
+    /// The choice closed with Menu: stays paused.
+    func dismissResumeChoice() {
+        resumeChoice = false
     }
 
     /// The show on now, from its start (live channels with an archive).
     func restartShow() {
-        let now = Date()
-        guard let channel, channel.archiveDays > 0,
-              let current = programmes.first(where: { $0.start <= now && now < $0.end }) else { return }
+        resumeChoice = false
+        guard let channel, let current = restartableShow else { return }
         startReplay(channel, current)
     }
 
@@ -191,6 +216,7 @@ final class LiveTVPlayer: ObservableObject {
         channel = nil
         replay = nil
         replayLinks = []
+        resumeChoice = false
         programmes = []
         status = .idle
         isFullscreen = false
@@ -465,6 +491,7 @@ struct LiveTVFullscreenHost: View {
             LiveTVPlayerBar(player: player)
                 .allowsHitTesting(false)
             LiveTVOverlayView(overlay: player.overlay, player: player)
+            LiveTVResumeChoice(player: player)
         }
         .ignoresSafeArea()
     }
@@ -503,6 +530,9 @@ struct LiveTVFullscreenControls: View {
             .onChange(of: player.replay) { _, _ in focused = true }
             .onChange(of: player.status) { _, _ in focused = true }
             .onChange(of: overlay.isOpen) { _, _ in focused = true }
+            .onChange(of: player.resumeChoice) { _, open in if !open { focused = true } }
+            // The choice takes the remote while it's open.
+            .disabled(player.resumeChoice)
     }
 
     private func select() {
@@ -545,6 +575,54 @@ struct LiveTVFullscreenControls: View {
             if inRow { player.moveInRow(by: 1) } else { player.showBar(.compact) }
         @unknown default:
             break
+        }
+    }
+}
+
+/// Live paused, Play/Pause again: continue or watch the show from its start.
+struct LiveTVResumeChoice: View {
+    @ObservedObject var player: LiveTVPlayer
+    @FocusState private var focus: Choice?
+
+    private enum Choice {
+        case resume
+        case restart
+    }
+
+    var body: some View {
+        if player.resumeChoice {
+            VStack(spacing: 28) {
+                if let show = player.restartableShow {
+                    Text(show.title)
+                        .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
+                        .foregroundColor(LiveTVTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    Text(LiveTVInfoPanel.clock(show.start, now: Date()) + " – "
+                         + LiveTVInfoPanel.clock(show.end, now: Date(), withDay: false))
+                        .font(.system(size: LiveTVTheme.Font.small))
+                        .foregroundColor(LiveTVTheme.secondaryText)
+                }
+                HStack(spacing: 30) {
+                    Button(action: { player.resumeLive() }) {
+                        Label(L10n.string("livetv_resume", fallback: "Continue"), systemImage: "play.fill")
+                    }
+                    .focused($focus, equals: .resume)
+                    Button(action: { player.restartShow() }) {
+                        Label(L10n.string("livetv_restart", fallback: "Watch from the beginning"),
+                              systemImage: "backward.end.fill")
+                    }
+                    .focused($focus, equals: .restart)
+                }
+            }
+            .padding(44)
+            .frame(maxWidth: 1000)
+            .liveTVGlass()
+            .onAppear { focus = .resume }
+            .onExitCommand { player.dismissResumeChoice() }
+            .onPlayPauseCommand { player.resumeLive() }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.opacity)
         }
     }
 }

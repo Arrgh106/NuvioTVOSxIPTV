@@ -47,7 +47,7 @@ struct LiveTVPlayerBar: View {
                             .foregroundColor(LiveTVTheme.secondaryText)
                         progressBar(info.progress(at: now))
                         if channel.archiveDays > 0 {
-                            Text(L10n.string("livetv_restart_hint", fallback: "▶︎❚❚ watch from the beginning"))
+                            Text(L10n.string("livetv_restart_hint", fallback: "▶︎❚❚ pause  ·  again: continue or from the beginning"))
                                 .font(.system(size: LiveTVTheme.Font.badge))
                                 .foregroundColor(LiveTVTheme.tertiaryText)
                         }
