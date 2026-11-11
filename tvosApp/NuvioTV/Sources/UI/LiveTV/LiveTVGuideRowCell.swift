@@ -257,7 +257,6 @@ final class LiveTVProgrammeStrip: UIView {
     private static let titleFont = UIFont.systemFont(ofSize: LiveTVTheme.Font.small + 2, weight: .medium)
     private static let timeFont = UIFont.monospacedDigitSystemFont(ofSize: LiveTVTheme.Font.badge + 1, weight: .regular)
     private static let noInfoFont = UIFont.italicSystemFont(ofSize: LiveTVTheme.Font.small)
-    private static let timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
@@ -316,7 +315,7 @@ final class LiveTVProgrammeStrip: UIView {
                 title.draw(in: CGRect(x: tile.minX + 12, y: tile.minY + 10, width: textWidth, height: 28), withAttributes: [
                     .font: Self.titleFont, .foregroundColor: primary, .paragraphStyle: Self.paragraph,
                 ])
-                let time = "\(programme.start.formatted(Self.timeStyle)) – \(programme.end.formatted(Self.timeStyle))" as NSString
+                let time = "\(LiveTVSettings.shared.time(programme.start)) – \(LiveTVSettings.shared.time(programme.end))" as NSString
                 time.draw(in: CGRect(x: tile.minX + 12, y: tile.minY + 42, width: textWidth, height: 22), withAttributes: [
                     .font: Self.timeFont, .foregroundColor: secondary, .paragraphStyle: Self.paragraph,
                 ])

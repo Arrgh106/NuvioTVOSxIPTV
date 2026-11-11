@@ -425,9 +425,11 @@ struct LiveTVOverlayView: View {
                         .font(.system(size: LiveTVTheme.Font.secondary, weight: focused ? .semibold : .regular))
                         .lineLimit(1)
                     Spacer(minLength: 12)
-                    Text(String(group.count))
-                        .font(.system(size: LiveTVTheme.Font.badge))
-                        .opacity(0.6)
+                    if LiveTVSettings.shared.showGroupCounts {
+                        Text(String(group.count))
+                            .font(.system(size: LiveTVTheme.Font.badge))
+                            .opacity(0.6)
+                    }
                 }
                 .foregroundColor(focused ? .black : LiveTVTheme.primaryText)
                 .padding(.horizontal, 18)

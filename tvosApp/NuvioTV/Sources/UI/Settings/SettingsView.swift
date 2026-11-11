@@ -22,6 +22,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case layout = "Layout & Discovery"
     case integrations = "Integrations"
     case playback = "Playback"
+    // Fork: Live TV options (UI/LiveTV/LiveTVSettingsViews.swift).
+    case liveTV = "Live TV"
     case subtitles = "Subtitle Style"
     case advanced = "Advanced"
     case about = "About"
@@ -41,6 +43,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
             return L10n.string("settings_integration", fallback: "Integrations")
         case .playback:
             return L10n.string("settings_playback", fallback: "Playback")
+        case .liveTV:
+            return L10n.string("livetv_title", fallback: "Live TV")
         case .subtitles:
             return L10n.string("tvos_settings_subtitle_style", fallback: "Subtitle Style")
         case .advanced:
@@ -77,6 +81,11 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
                 "settings_playback_subtitle",
                 fallback: "Player, subtitles, and auto-play"
             )
+        case .liveTV:
+            return L10n.string(
+                "livetv_settings_subtitle",
+                fallback: "Guide, preview and channel switching"
+            )
         case .subtitles:
             return L10n.string(
                 "tvos_settings_subtitle_style_subtitle",
@@ -102,6 +111,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .layout: return "rectangle.grid.2x2"
         case .integrations: return "link"
         case .playback: return "play.circle"
+        case .liveTV: return "tv"
         case .subtitles: return "captions.bubble"
         case .advanced: return "wrench.and.screwdriver"
         case .about: return "info.circle"
@@ -1665,6 +1675,8 @@ struct SettingsView: View {
                     presentedLanguagePicker = .subtitles
                 }
             )
+        case .liveTV:
+            LiveTVSettingsView(accentColor: accentColor)
         case .subtitles:
             SubtitleStyleSettingsView(accentColor: accentColor)
         case .advanced:
@@ -12335,7 +12347,8 @@ private struct JellyfinServerEditSheet: View {
         let storedToken = server.map { JellyfinCredentialStore.token(forServerID: $0.id) } ?? ""
         _password = State(initialValue: server?.authKind == .login ? storedToken : "")
         _apiKey = State(initialValue: server?.authKind == .apiKey ? storedToken : "")
-        _syncAutomatically = State(initialValue: server?.syncAutomatically ?? true)
+        // Fork: off for new servers.
+        _syncAutomatically = State(initialValue: server?.syncAutomatically ?? false)
     }
 
     var body: some View {
@@ -17508,6 +17521,31 @@ private struct SettingsDetailHeader: View {
 
             Spacer()
         }
+    }
+}
+
+/// Fork: the app's settings rows for Settings → Live TV, which lives in its
+/// own file (the rows stay private here).
+enum LiveTVSettingsRows {
+    static func group<Content: View>(
+        title: String, subtitle: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        SettingsGroup(title: title, subtitle: subtitle, content: content)
+    }
+
+    static func toggle(
+        title: String, subtitle: String, isOn: Binding<Bool>, accentColor: Color, enabled: Bool = true
+    ) -> some View {
+        SettingsToggleRow(title: title, subtitle: subtitle, isOn: isOn, accentColor: accentColor, enabled: enabled)
+    }
+
+    static func option(
+        title: String, subtitle: String, selection: Binding<String>, options: [String], accentColor: Color,
+        optionLabel: @escaping (String) -> String
+    ) -> some View {
+        SettingsOptionRow(
+            title: title, subtitle: subtitle, selection: selection, options: options,
+            accentColor: accentColor, optionLabel: optionLabel)
     }
 }
 

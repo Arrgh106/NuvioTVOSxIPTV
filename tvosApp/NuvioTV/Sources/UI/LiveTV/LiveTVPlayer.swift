@@ -29,12 +29,25 @@ final class LiveTVPlayer: ObservableObject {
     @Published private(set) var status: Status = .idle
     /// Where the preview window is on screen (nil: not on screen).
     @Published var previewFrame: CGRect?
+    /// Something of Live TV's lies over the preview window (the quick menu):
+    /// the picture, drawn over the whole app, would cover it.
+    @Published var previewCovered = false
     @Published var isFullscreen = false {
         didSet {
             if !isFullscreen {
                 hideBar()
                 overlay.close()
-                if oldValue { LiveTVFocusLinks.guideWillReturn?() }
+                if oldValue {
+                    LiveTVFocusLinks.guideWillReturn?()
+                    // Without a preview window nothing would show the
+                    // picture: back in the guide, playback ends.
+                    if !LiveTVSettings.shared.previewActive {
+                        Task { @MainActor [weak self] in
+                            guard let self, !self.isFullscreen else { return }
+                            self.stop()
+                        }
+                    }
+                }
             }
             if LiveTVFullscreenState.shared.isActive != isFullscreen {
                 LiveTVFullscreenState.shared.isActive = isFullscreen
@@ -109,9 +122,11 @@ final class LiveTVPlayer: ObservableObject {
     /// Up / Down while full screen: the next channel of the group it was
     /// started from (Android and the film player do the same).
     func zap(by delta: Int) {
-        guard let next = LiveTVZapper.shared.step(by: delta) else { return }
+        // "Reverse channel up/down" (as on Android).
+        let step = LiveTVSettings.shared.reverseZap ? -delta : delta
+        guard let next = LiveTVZapper.shared.step(by: step) else { return }
         startChannel(next.channel)
-        showBar(.compact)
+        if LiveTVSettings.shared.infoBarOnZap { showBar(.compact) }
     }
 
     func showBar(_ kind: Bar) {
@@ -284,7 +299,8 @@ struct LiveTVVideoHost: View {
         let rect = player.isFullscreen ? CGRect(origin: .zero, size: screen) : (player.previewFrame ?? .zero)
         // Only a running picture: the status and the hint in the preview
         // window are below this layer.
-        let visible = player.status == .playing && (player.isFullscreen || (rect.width > 1 && !covered))
+        let visible = player.status == .playing
+            && (player.isFullscreen || (rect.width > 1 && !covered && !player.previewCovered))
         return StablePlayerSurfacePresentation(
             viewportSize: screen,
             presentationSize: CGSize(width: max(rect.width, 1), height: max(rect.height, 1))

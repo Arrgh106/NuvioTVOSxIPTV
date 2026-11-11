@@ -56,7 +56,8 @@ struct JellyfinServerConfig: Codable, Identifiable, Equatable {
         selectedLibraryIDs: [String] = [],
         lastSyncDate: Date? = nil,
         lastSyncTitleCount: Int? = nil,
-        syncAutomatically: Bool = true
+        // Fork: off for new servers; everyone decides for themselves.
+        syncAutomatically: Bool = false
     ) {
         self.id = id
         self.displayName = displayName

@@ -53,12 +53,12 @@ struct LiveTVPlayerBar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 110)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(now.formatted(date: .omitted, time: .shortened))
+                    Text(LiveTVSettings.shared.time(now))
                         .font(.system(size: 36, weight: .heavy))
                         .foregroundColor(LiveTVTheme.primaryText)
                     if let next {
                         Text(L10n.string("livetv_bar_up_next", fallback: "UP NEXT") + " · "
-                             + next.start.formatted(date: .omitted, time: .shortened))
+                             + LiveTVSettings.shared.time(next.start))
                             .font(.system(size: LiveTVTheme.Font.badge, weight: .bold))
                             .foregroundColor(LiveTVTheme.tertiaryText)
                         Text(next.title)

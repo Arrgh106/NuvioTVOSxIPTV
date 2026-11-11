@@ -7,6 +7,8 @@ import UIKit
 struct LiveTVGroupCollection: UIViewRepresentable {
     let groups: [LiveTVGroup]
     let selectedID: String
+    /// The number of channels beside each group (a Live TV option).
+    var showCounts = true
     let onSelect: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -30,6 +32,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
+        context.coordinator.showCounts = showCounts
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
         let gate = container.leftTrap
@@ -45,6 +48,12 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     }
 
     func updateUIView(_ container: LiveTVGroupContainer, context: Context) {
+        if context.coordinator.showCounts != showCounts {
+            context.coordinator.showCounts = showCounts
+            for case let cell as LiveTVGroupCell in container.collectionView.visibleCells {
+                cell.setShowsCount(showCounts)
+            }
+        }
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
     }
 
@@ -53,6 +62,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         private var groups: [LiveTVGroup] = []
         private var selectedID = ""
         private var onSelect: (String) -> Void = { _ in }
+        var showCounts = true
 
         func update(groups: [LiveTVGroup], selectedID: String, onSelect: @escaping (String) -> Void, in view: UICollectionView) {
             self.onSelect = onSelect
@@ -80,6 +90,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             if indexPath.item < groups.count {
                 let group = groups[indexPath.item]
                 cell.configure(with: group, selected: group.id == selectedID)
+                cell.setShowsCount(showCounts)
             }
             return cell
         }
@@ -194,6 +205,10 @@ final class LiveTVGroupCell: UICollectionViewCell {
         countLabel.text = group.count.formatted()
         isGroupSelected = selected
         applyStyle()
+    }
+
+    func setShowsCount(_ shows: Bool) {
+        countLabel.isHidden = !shows
     }
 
     func setSelected(_ selected: Bool) {

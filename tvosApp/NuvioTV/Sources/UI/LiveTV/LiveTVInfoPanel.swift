@@ -38,6 +38,7 @@ final class LiveTVInfoModel: ObservableObject {
 /// times with time left, progress and the description.
 struct LiveTVInfoPanel: View {
     @ObservedObject var model: LiveTVInfoModel
+    @ObservedObject var settings = LiveTVSettings.shared
 
     static let height: CGFloat = 210
 
@@ -49,8 +50,10 @@ struct LiveTVInfoPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // The preview window (the video layer draws the picture here).
-            LiveTVPreviewSlot()
-                .padding(.trailing, 24)
+            if settings.showPreview {
+                LiveTVPreviewSlot()
+                    .padding(.trailing, 24)
+            }
         }
         .frame(height: Self.height)
         .background(glow)
@@ -83,7 +86,8 @@ struct LiveTVInfoPanel: View {
                         if info.isOn(at: now) {
                             progressBar(info.progress(at: now))
                         }
-                        if let description = info.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        if settings.showDescription,
+                           let description = info.description?.trimmingCharacters(in: .whitespacesAndNewlines),
                            !description.isEmpty {
                             Text(description)
                                 .font(.system(size: LiveTVTheme.Font.small))
@@ -161,7 +165,7 @@ struct LiveTVInfoPanel: View {
     /// "21:14", "Tomorrow 06:00", "Wed 20:15" (the end time only gets a day
     /// when it's on a different day than the start, which the caller skips).
     static func clock(_ date: Date, now: Date, withDay: Bool = true) -> String {
-        let time = date.formatted(date: .omitted, time: .shortened)
+        let time = LiveTVSettings.shared.time(date)
         guard withDay else { return time }
         switch LiveTVProgrammeInfo.dayOffset(of: date, from: now) {
         case 0: return time
