@@ -22,7 +22,7 @@ func check(_ condition: Bool, _ message: String, line: Int = #line) {
     }
 }
 
-/// 2026-11-09 20:00 UTC as the base; minutes from there.
+/// 2026-11-04 20:00 UTC as the base; minutes from there.
 let base = Date(timeIntervalSince1970: 1_793_822_400)
 func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
 func show(_ title: String, _ from: Double, _ to: Double) -> Show { Show(title: title, start: at(from), end: at(to)) }
@@ -162,15 +162,15 @@ check(LiveTVCatchup.earliest(archiveDays: 7, now: at(60)) == at(60 - 24 * 60), "
 check(LiveTVCatchup.earliest(archiveDays: 0, now: at(60)) == nil, "no archive, no past")
 
 let berlin = TimeZone(identifier: "Europe/Berlin")!
-// 2026-11-09 20:00 UTC is 21:00 in Berlin.
-check(LiveTVCatchup.stamp(at(0), in: berlin) == "2026-11-09:21-00", "server time")
+// 2026-11-04 20:00 UTC is 21:00 in Berlin.
+check(LiveTVCatchup.stamp(at(0), in: berlin) == "2026-11-04:21-00", "server time")
 let links = LiveTVCatchup.xtreamURLs(
     server: "http://example.test:8080", username: "user", password: "p+ss", streamID: 42,
     start: at(15), end: at(105), now: at(200), fileExtension: "m3u8", serverTimeZone: berlin)
-check(links.first?.absoluteString == "http://example.test:8080/timeshift/user/p%2Bss/90/2026-11-09:21-15/42.m3u8", "timeshift link first")
+check(links.first?.absoluteString == "http://example.test:8080/timeshift/user/p%2Bss/90/2026-11-04:21-15/42.m3u8", "timeshift link first")
 check(links.count > 1 && links[1].absoluteString.hasSuffix("/42.ts"), "then the other extension")
 check(links.contains { $0.absoluteString.contains("timeshift.php?") && $0.absoluteString.contains("password=p%2Bss") }, "timeshift.php form")
-check(!links.contains { $0.absoluteString.contains("2026-11-09:20-15") }, "server zone known: no other-clock guess")
+check(!links.contains { $0.absoluteString.contains("2026-11-04:20-15") }, "server zone known: no other-clock guess")
 let onAir = LiveTVCatchup.xtreamURLs(
     server: "http://example.test", username: "u", password: "p", streamID: 1,
     start: at(15), end: at(105), now: at(45), fileExtension: "ts", serverTimeZone: nil)
