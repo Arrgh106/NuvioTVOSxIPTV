@@ -76,6 +76,8 @@ final class LiveTVPlayer: ObservableObject {
     /// from the row (it knows the store and the zapping list).
     var recentChannels: () -> [XtreamLiveChannel] = { [] }
     var startChannel: (XtreamLiveChannel) -> Void = { _ in }
+    /// Set by Live TV: plays a show of a channel again (it knows the links).
+    var startReplay: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     private var barTimer: Timer?
     private var programmesTask: Task<Void, Never>?
 
@@ -144,11 +146,24 @@ final class LiveTVPlayer: ObservableObject {
 
     var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
 
+    /// Play/Pause: pauses a replay; live on a channel with an archive, the
+    /// show on now from its beginning (Android's "Watch from the beginning").
     func togglePause() {
-        guard replay != nil else { return }
+        guard replay != nil else {
+            restartShow()
+            return
+        }
         let engine = session.activeEngine
         if engine.isPlayerPlaying { engine.pausePlayback() } else { engine.playPlayback() }
         showBar(.compact)
+    }
+
+    /// The show on now, from its start (live channels with an archive).
+    func restartShow() {
+        let now = Date()
+        guard let channel, channel.archiveDays > 0,
+              let current = programmes.first(where: { $0.start <= now && now < $0.end }) else { return }
+        startReplay(channel, current)
     }
 
     /// Left / Right in a replay: back 10 s, on 30 s.
@@ -214,7 +229,8 @@ final class LiveTVPlayer: ObservableObject {
     func playRowSelection() {
         guard rowChannels.indices.contains(rowIndex) else { return }
         let target = rowChannels[rowIndex]
-        if target.streamID != channel?.streamID { startChannel(target) }
+        // The channel replaying a show: live again.
+        if target.streamID != channel?.streamID || replay != nil { startChannel(target) }
         showBar(.compact)
     }
 

@@ -139,6 +139,11 @@ for index in 0..<100 {
 }
 check(alwaysContext, "stepping down: on screen, never on the last row before the end")
 check(LiveTVListWindow(rows: 10).range(count: 0).isEmpty, "empty list")
+var dates = LiveTVListWindow(rows: 10)
+dates.begin(at: 40, count: 100)
+check(dates.range(count: 100) == 40..<50, "a date: its heading on the top row")
+dates.begin(at: 95, count: 100)
+check(dates.range(count: 100) == 90..<100, "a date near the end: the last rows")
 
 // MARK: Catch-up
 

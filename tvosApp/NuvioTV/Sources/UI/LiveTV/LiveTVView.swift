@@ -300,6 +300,21 @@ struct LiveTVView: View {
             player.play(channel, item: item)
             player.showBar(.compact)
         }
+        player.startReplay = { [weak liveStore, weak player] channel, programme in
+            guard let liveStore, let player,
+                  let links = liveStore.catchupLinks(for: channel, programme: programme) else { return }
+            liveStore.recordWatched(channel)
+            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+            player.showBar(.compact)
+        }
+        player.overlay.onCatchup = { [weak liveStore, weak player] channel, programme, list, groupID in
+            guard let liveStore, let player else { return }
+            if liveStore.selectedGroupID != groupID { liveStore.selectedGroupID = groupID }
+            LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
+                liveStore?.playbackItem(for: $0)
+            }
+            player.startReplay(channel, programme)
+        }
     }
 }
 

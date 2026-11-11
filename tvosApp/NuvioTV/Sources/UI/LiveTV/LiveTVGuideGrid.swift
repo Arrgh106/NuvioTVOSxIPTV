@@ -457,6 +457,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let indexPath = indexPaths.first, indexPath.item < channels.count else { return nil }
             let channel = channels[indexPath.item]
             let isFavorite = favoriteIDs.contains(channel.streamID)
+            // Channels with an archive: the show on now from its beginning.
+            let now = Date()
+            let shows = (collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell)?.strip.programmes ?? []
+            let current = channel.archiveDays > 0 ? shows.first { $0.start <= now && now < $0.end } : nil
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 let title = isFavorite
                     ? L10n.string("livetv_remove_favorite", fallback: "Remove from Favorites")
@@ -464,7 +468,15 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 let action = UIAction(title: title, image: UIImage(systemName: isFavorite ? "star.slash" : "star")) { _ in
                     self?.onToggleFavorite(channel)
                 }
-                return UIMenu(title: channel.name, children: [action])
+                var children: [UIMenuElement] = []
+                if let current {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_restart", fallback: "Watch from the beginning"),
+                        image: UIImage(systemName: "backward.end.fill")
+                    ) { _ in self?.onCatchup(channel, current) })
+                }
+                children.append(action)
+                return UIMenu(title: channel.name, children: children)
             }
         }
     }

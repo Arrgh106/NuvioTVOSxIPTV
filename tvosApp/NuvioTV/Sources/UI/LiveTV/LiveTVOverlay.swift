@@ -4,7 +4,9 @@ import UIKit
 /// The guide over the full-screen picture (LIVE_TV_DESIGN.md, step 4b), as
 /// Android's `LiveTvOverlayMode` (TiviMate's overlay mode). Left in full
 /// screen opens the group's channels, with the highlighted channel's shows
-/// beside them and what's on top right; Left again the groups.
+/// beside them and what's on top right; Left again the groups. Right: the
+/// highlighted channel's schedule by day (OK on a past show replays it),
+/// Right again the dates.
 ///
 /// No focus engine: the full-screen controls pass the remote's presses here
 /// and only the highlight moves, so nothing can jump to the sidebar, and
@@ -14,6 +16,23 @@ final class LiveTVOverlayModel: ObservableObject {
     enum Level {
         case channels
         case groups
+        /// One channel's shows, by day.
+        case schedule
+        /// The days of that schedule (Up / Down jump to a day).
+        case dates
+    }
+
+    /// A row of one channel's schedule: a day's heading or a show.
+    enum ScheduleRow: Identifiable {
+        case day(Date)
+        case show(XtreamProgram)
+
+        var id: String {
+            switch self {
+            case .day(let day): return "day|\(day.timeIntervalSince1970)"
+            case .show(let programme): return "\(programme.start.timeIntervalSince1970)|\(programme.title)"
+            }
+        }
     }
 
     @Published private(set) var isOpen = false
@@ -35,18 +54,41 @@ final class LiveTVOverlayModel: ObservableObject {
     /// Bumped when programmes for rows on screen arrive.
     @Published private(set) var rowsRevision = 0
 
+    /// The channel whose schedule is open (Right on a channel).
+    @Published private(set) var scheduleChannel: XtreamLiveChannel?
+    @Published private(set) var scheduleRows: [ScheduleRow] = []
+    /// The highlighted show (an index into `scheduleRows`, never a heading).
+    @Published private(set) var showIndex = 0
+    @Published private(set) var scheduleWindow = LiveTVListWindow(rows: 14)
+    @Published private(set) var days: [Date] = []
+    @Published private(set) var dateIndex = 0
+    @Published private(set) var dateWindow = LiveTVListWindow(rows: 10)
+
     /// Set by Live TV (it owns the store).
     weak var store: LiveTVStore?
     /// Plays a channel picked here, from `list` (the zapping list) of `groupID`.
     var onPlay: (_ channel: XtreamLiveChannel, _ list: [XtreamLiveChannel], _ groupID: String) -> Void = { _, _, _ in }
+    /// Replays a past show picked in the schedule.
+    var onCatchup: (
+        _ channel: XtreamLiveChannel, _ programme: XtreamProgram, _ list: [XtreamLiveChannel], _ groupID: String
+    ) -> Void = { _, _, _, _ in }
 
     private var settleTask: Task<Void, Never>?
     private var groupTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var rowsTask: Task<Void, Never>?
+    private var scheduleTask: Task<Void, Never>?
 
     var highlighted: XtreamLiveChannel? {
         channels.indices.contains(channelIndex) ? channels[channelIndex] : nil
+    }
+
+    /// The show highlighted in the schedule.
+    var focusedShow: XtreamProgram? {
+        guard scheduleRows.indices.contains(showIndex), case .show(let programme) = scheduleRows[showIndex] else {
+            return nil
+        }
+        return programme
     }
 
     var favoriteIDs: Set<Int> { Set(store?.favoriteIDs ?? []) }
@@ -65,6 +107,7 @@ final class LiveTVOverlayModel: ObservableObject {
         }
         show(group: group, channels: list, landOn: playing)
         level = .channels
+        scheduleChannel = nil
         withAnimation(.easeOut(duration: 0.2)) { isOpen = true }
         LiveTVOverlayPan.shared.install { [weak self] delta in self?.scroll(by: delta) }
         touched()
@@ -76,12 +119,21 @@ final class LiveTVOverlayModel: ObservableObject {
         groupTask?.cancel()
         closeTask?.cancel()
         rowsTask?.cancel()
+        scheduleTask?.cancel()
         guard isOpen else { return }
         withAnimation(.easeIn(duration: 0.2)) { isOpen = false }
     }
 
     /// The panels set how many rows fit.
-    func setRows(channels channelRows: Int, groups groupRows: Int) {
+    func setRows(channels channelRows: Int, groups groupRows: Int, schedule scheduleRowCount: Int, dates dateRows: Int) {
+        if scheduleWindow.rows != scheduleRowCount {
+            scheduleWindow.rows = max(1, scheduleRowCount)
+            scheduleWindow.follow(showIndex, count: scheduleRows.count)
+        }
+        if dateWindow.rows != dateRows {
+            dateWindow.rows = max(1, dateRows)
+            dateWindow.follow(dateIndex, count: days.count)
+        }
         if channelWindow.rows != channelRows {
             channelWindow.rows = max(1, channelRows)
             channelWindow.follow(channelIndex, count: channels.count)
@@ -110,6 +162,18 @@ final class LiveTVOverlayModel: ObservableObject {
         case (.groups, .right):
             applyPendingGroup()
             level = .channels
+        case (.channels, .right): openSchedule()
+        case (.schedule, .up): moveShow(by: -1)
+        case (.schedule, .down): moveShow(by: 1)
+        case (.schedule, .left): level = .channels
+        case (.schedule, .right):
+            if !days.isEmpty {
+                dateWindow.follow(dateIndex, count: days.count)
+                level = .dates
+            }
+        case (.dates, .up): jumpToDate(dateIndex - 1)
+        case (.dates, .down): jumpToDate(dateIndex + 1)
+        case (.dates, .left): level = .schedule
         default:
             break
         }
@@ -123,25 +187,34 @@ final class LiveTVOverlayModel: ObservableObject {
         switch level {
         case .channels: moveChannel(by: delta, wraps: false)
         case .groups: moveGroup(by: delta)
+        case .schedule: moveShow(by: delta)
+        case .dates: jumpToDate(dateIndex + delta)
         }
     }
 
-    /// OK: plays the highlighted channel (OK on the one playing closes);
-    /// in the groups, shows that group's channels.
+    /// OK: plays the highlighted channel (OK on the one playing live
+    /// closes); in the groups, shows that group's channels; in the schedule,
+    /// plays the show on now live or a past one again.
     func select(playing: XtreamLiveChannel?) {
         touched()
         switch level {
         case .channels:
             guard let channel = highlighted else { return }
-            if channel.streamID != playing?.streamID { onPlay(channel, channels, groupID) }
+            if channel.streamID != playing?.streamID || LiveTVPlayer.shared.replay != nil {
+                onPlay(channel, channels, groupID)
+            }
             close()
         case .groups:
             applyPendingGroup()
             level = .channels
+        case .schedule:
+            activateShow(playing: playing)
+        case .dates:
+            level = .schedule
         }
     }
 
-    /// Menu: from the groups back to the channels, from the channels out.
+    /// Menu: one level back (dates, schedule, groups), from the channels out.
     func back() {
         touched()
         switch level {
@@ -149,6 +222,118 @@ final class LiveTVOverlayModel: ObservableObject {
         case .groups:
             applyPendingGroup()
             level = .channels
+        case .schedule: level = .channels
+        case .dates: level = .schedule
+        }
+    }
+
+    // MARK: Schedule
+
+    /// Right on a channel: its shows by day, on the one on now.
+    private func openSchedule() {
+        guard let channel = highlighted else { return }
+        scheduleTask?.cancel()
+        settleTask?.cancel()
+        scheduleChannel = channel
+        let known = settledChannel?.streamID == channel.streamID ? settledProgrammes : nil
+        buildSchedule(known ?? LiveTVGuideRows.shared.cached(channel) ?? [], keep: nil)
+        level = .schedule
+        scheduleTask = Task { [weak self] in
+            let list = await LiveTVGuideRows.shared.programmes(for: channel)
+            guard !Task.isCancelled, let self, self.scheduleChannel?.streamID == channel.streamID else { return }
+            self.buildSchedule(list, keep: self.focusedShow)
+        }
+    }
+
+    private func buildSchedule(_ list: [XtreamProgram], keep: XtreamProgram?) {
+        let calendar = Calendar.current
+        var rows: [ScheduleRow] = []
+        var dayList: [Date] = []
+        for programme in list {
+            let day = calendar.startOfDay(for: programme.start)
+            if dayList.last != day {
+                dayList.append(day)
+                rows.append(.day(day))
+            }
+            rows.append(.show(programme))
+        }
+        scheduleRows = rows
+        days = dayList
+        let now = Date()
+        func first(_ test: (XtreamProgram) -> Bool) -> Int? {
+            rows.firstIndex { row in
+                if case .show(let programme) = row { return test(programme) }
+                return false
+            }
+        }
+        let lastShow = rows.lastIndex { row in
+            if case .show = row { return true }
+            return false
+        }
+        showIndex = keep.flatMap { kept in first { $0 == kept } }
+            ?? first { $0.start <= now && now < $0.end }
+            ?? first { $0.start >= now }
+            ?? lastShow
+            ?? 0
+        scheduleWindow.land(on: showIndex, count: rows.count)
+        followDate()
+        dateWindow.follow(dateIndex, count: days.count)
+    }
+
+    /// Up / Down in the schedule: the next show, over the day headings;
+    /// it stops at the ends.
+    private func moveShow(by delta: Int) {
+        guard !scheduleRows.isEmpty, delta != 0 else { return }
+        let step = delta > 0 ? 1 : -1
+        var index = showIndex
+        for _ in 0..<abs(delta) {
+            var next = index + step
+            while scheduleRows.indices.contains(next), case .day = scheduleRows[next] { next += step }
+            guard scheduleRows.indices.contains(next) else { break }
+            index = next
+        }
+        showIndex = index
+        scheduleWindow.follow(index, count: scheduleRows.count)
+        followDate()
+    }
+
+    /// A day in the dates: the schedule goes to its first show, the
+    /// heading on top.
+    private func jumpToDate(_ index: Int) {
+        guard days.indices.contains(index) else { return }
+        dateIndex = index
+        dateWindow.follow(index, count: days.count)
+        let day = days[index]
+        guard let heading = scheduleRows.firstIndex(where: { row in
+            if case .day(let start) = row { return start == day }
+            return false
+        }) else { return }
+        showIndex = min(heading + 1, scheduleRows.count - 1)
+        scheduleWindow.begin(at: heading, count: scheduleRows.count)
+    }
+
+    /// The dates follow the highlighted show's day.
+    private func followDate() {
+        guard let show = focusedShow else { return }
+        let day = Calendar.current.startOfDay(for: show.start)
+        dateIndex = days.firstIndex(of: day) ?? 0
+        dateWindow.follow(dateIndex, count: days.count)
+    }
+
+    /// OK on a show: on now plays the channel live, a past one with an
+    /// archive plays again. Shows to come wait for reminders (step 7).
+    private func activateShow(playing: XtreamLiveChannel?) {
+        guard let channel = scheduleChannel, let programme = focusedShow else { return }
+        let now = Date()
+        if programme.start <= now && now < programme.end {
+            if channel.streamID != playing?.streamID || LiveTVPlayer.shared.replay != nil {
+                onPlay(channel, channels, groupID)
+            }
+            close()
+        } else if programme.end <= now,
+                  LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
+            onCatchup(channel, programme, channels, groupID)
+            close()
         }
     }
 
@@ -353,6 +538,8 @@ struct LiveTVOverlayView: View {
 
     static let channelRowHeight: CGFloat = 86
     static let groupRowHeight: CGFloat = 62
+    static let scheduleRowHeight: CGFloat = 52
+    static let dateRowHeight: CGFloat = 84
     private static let headerHeight: CGFloat = 76
     private static let panelPadding: CGFloat = 50
     /// Where the backdrop fades out into the picture.
@@ -373,9 +560,19 @@ struct LiveTVOverlayView: View {
                 if overlay.level == .groups {
                     groupsPanel
                 }
-                channelsPanel(now: now)
-                if overlay.level == .channels, let channel = overlay.settledChannel {
-                    schedulePanel(channel, now: now)
+                switch overlay.level {
+                case .groups:
+                    channelsPanel(now: now)
+                case .channels:
+                    channelsPanel(now: now)
+                    if let channel = overlay.settledChannel {
+                        schedulePanel(channel, now: now)
+                    }
+                case .schedule, .dates:
+                    if let channel = overlay.scheduleChannel {
+                        scheduleList(channel, now: now)
+                        datesPanel(now: now)
+                    }
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -395,10 +592,12 @@ struct LiveTVOverlayView: View {
                 let body = height - Self.headerHeight - 2 * Self.panelPadding
                 overlay.setRows(
                     channels: Int(body / Self.channelRowHeight),
-                    groups: Int((height - 2 * Self.panelPadding) / Self.groupRowHeight))
+                    groups: Int((height - 2 * Self.panelPadding) / Self.groupRowHeight),
+                    schedule: Int(body / Self.scheduleRowHeight),
+                    dates: Int(body / Self.dateRowHeight))
             }
-            if overlay.level == .channels, let channel = overlay.settledChannel {
-                detailsCard(channel, now: now)
+            if let card = cardProgramme(now: now), let channel = cardChannel {
+                detailsCard(card, channel: channel, now: now)
                     .frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(.top, Self.panelPadding)
                     .padding(.trailing, 60)
@@ -643,14 +842,161 @@ struct LiveTVOverlayView: View {
         return rows
     }
 
+    // MARK: Schedule (Right)
+
+    private func scheduleList(_ channel: XtreamLiveChannel, now: Date) -> some View {
+        let rows = overlay.scheduleRows
+        let range = overlay.scheduleWindow.range(count: rows.count)
+        let active = overlay.level == .schedule
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                LiveTVCachedLogo(url: channel.logoURL.flatMap(URL.init(string:)))
+                    .frame(width: 44, height: 44)
+                Text(channel.name)
+                    .font(.system(size: LiveTVTheme.Font.small, weight: .semibold))
+                    .foregroundColor(LiveTVTheme.primaryText)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 20)
+            .frame(height: Self.headerHeight, alignment: .leading)
+            if rows.isEmpty {
+                Text(L10n.string("livetv_info_none", fallback: "No information"))
+                    .font(.system(size: LiveTVTheme.Font.small))
+                    .foregroundColor(LiveTVTheme.secondaryText)
+                    .padding(20)
+            }
+            ForEach(Array(range), id: \.self) { index in
+                switch rows[index] {
+                case .day(let day):
+                    Text(Self.dayLabel(day, now: now))
+                        .font(.system(size: LiveTVTheme.Font.badge, weight: .bold))
+                        .foregroundColor(LiveTVTheme.markColor)
+                        .padding(.horizontal, 20)
+                        .frame(height: Self.scheduleRowHeight, alignment: .bottomLeading)
+                case .show(let programme):
+                    scheduleShowRow(
+                        programme, channel: channel,
+                        highlighted: index == overlay.showIndex, active: active, now: now)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, Self.panelPadding)
+        .frame(width: 600, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func scheduleShowRow(
+        _ programme: XtreamProgram, channel: XtreamLiveChannel, highlighted: Bool, active: Bool, now: Date
+    ) -> some View {
+        let solid = highlighted && active
+        let isLive = programme.start <= now && now < programme.end
+        let past = programme.end <= now
+        let replayable = past
+            && LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now)
+        let playingLive = isLive && channel.streamID == player.channel?.streamID && player.replay == nil
+        let color: Color = solid ? .black
+            : (isLive ? LiveTVTheme.accent : (past ? LiveTVTheme.secondaryText : LiveTVTheme.primaryText))
+        return HStack(spacing: 14) {
+            Text(LiveTVInfoPanel.clock(programme.start, now: now, withDay: false))
+                .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
+                .frame(minWidth: 100, alignment: .leading)
+            Text((replayable ? "↺ " : "") + programme.title)
+                .font(.system(size: LiveTVTheme.Font.badge, weight: isLive ? .semibold : .regular))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if playingLive {
+                Image(systemName: "play.fill")
+                    .font(.system(size: LiveTVTheme.Font.badge))
+            }
+            if isLive {
+                Text(L10n.string("livetv_info_live", fallback: "LIVE"))
+                    .font(.system(size: LiveTVTheme.Font.badge - 4, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.7), lineWidth: 1.5))
+            }
+        }
+        .foregroundColor(color)
+        .padding(.horizontal, 14)
+        .frame(height: Self.scheduleRowHeight - 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(solid ? Color.white : (highlighted ? Color.white.opacity(0.12) : Color.clear))
+        )
+        .frame(height: Self.scheduleRowHeight)
+    }
+
+    private func datesPanel(now: Date) -> some View {
+        let range = overlay.dateWindow.range(count: overlay.days.count)
+        let active = overlay.level == .dates
+        return VStack(spacing: 0) {
+            Color.clear.frame(height: Self.headerHeight)
+            ForEach(Array(range), id: \.self) { index in
+                let day = overlay.days[index]
+                let selected = index == overlay.dateIndex
+                let solid = selected && active
+                let today = LiveTVProgrammeInfo.dayOffset(of: day, from: now) == 0
+                VStack(spacing: 2) {
+                    Text(day.formatted(.dateTime.weekday(.abbreviated)))
+                        .font(.system(size: LiveTVTheme.Font.badge, weight: .bold))
+                    Text(day.formatted(.dateTime.day().month(.abbreviated)))
+                        .font(.system(size: LiveTVTheme.Font.badge))
+                }
+                .foregroundColor(solid ? .black : (today ? LiveTVTheme.markColor : LiveTVTheme.primaryText))
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.dateRowHeight - 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(solid ? Color.white : (selected ? Color.white.opacity(0.12) : Color.clear))
+                )
+                .frame(height: Self.dateRowHeight)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, Self.panelPadding)
+        .frame(width: 170, alignment: .top)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color.black.opacity(0.35))
+    }
+
+    /// "Today", "Yesterday", "Tomorrow", else "Friday 13 Nov".
+    private static func dayLabel(_ day: Date, now: Date) -> String {
+        switch LiveTVProgrammeInfo.dayOffset(of: day, from: now) {
+        case 0: return L10n.string("livetv_info_today", fallback: "Today")
+        case -1: return L10n.string("livetv_info_yesterday", fallback: "Yesterday")
+        case 1: return L10n.string("livetv_info_tomorrow", fallback: "Tomorrow")
+        default: return day.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))
+        }
+    }
+
     // MARK: Details
 
-    @ViewBuilder
-    private func detailsCard(_ channel: XtreamLiveChannel, now: Date) -> some View {
-        if let current = overlay.settledProgrammes.first(where: { $0.start <= now && now < $0.end }) {
-            let info = LiveTVProgrammeInfo(
-                start: current.start, end: current.end, title: current.title, description: current.description)
-            VStack(alignment: .leading, spacing: 10) {
+    /// The card follows the channel's show on now, in the schedule the
+    /// highlighted show; none over the groups.
+    private var cardChannel: XtreamLiveChannel? {
+        switch overlay.level {
+        case .channels: return overlay.settledChannel
+        case .schedule, .dates: return overlay.scheduleChannel
+        case .groups: return nil
+        }
+    }
+
+    private func cardProgramme(now: Date) -> XtreamProgram? {
+        switch overlay.level {
+        case .channels: return overlay.settledProgrammes.first { $0.start <= now && now < $0.end }
+        case .schedule, .dates: return overlay.focusedShow
+        case .groups: return nil
+        }
+    }
+
+    private func detailsCard(_ current: XtreamProgram, channel: XtreamLiveChannel, now: Date) -> some View {
+        let info = LiveTVProgrammeInfo(
+            start: current.start, end: current.end, title: current.title, description: current.description)
+        let isLive = current.start <= now && now < current.end
+        let replayable = current.end <= now
+            && LiveTVCatchup.isAvailable(start: current.start, archiveDays: channel.archiveDays, now: now)
+        return VStack(alignment: .leading, spacing: 10) {
                 Text(current.title)
                     .font(.system(size: 30, weight: .bold))
                     .foregroundColor(LiveTVTheme.primaryText)
@@ -658,12 +1004,19 @@ struct LiveTVOverlayView: View {
                 HStack(spacing: 12) {
                     Text(LiveTVInfoPanel.clock(info.start, now: now) + " – "
                          + LiveTVInfoPanel.clock(info.end, now: now, withDay: false))
-                    progress(info.progress(at: now), solid: false)
-                        .frame(width: 90)
-                    Text(LiveTVInfoPanel.timeLeft(info.minutesLeft(at: now)))
+                    if isLive {
+                        progress(info.progress(at: now), solid: false)
+                            .frame(width: 90)
+                        Text(LiveTVInfoPanel.timeLeft(info.minutesLeft(at: now)))
+                    }
                 }
                 .font(.system(size: LiveTVTheme.Font.badge))
                 .foregroundColor(LiveTVTheme.secondaryText)
+                if replayable, overlay.level != .channels {
+                    Text(L10n.string("livetv_catchup_ok_hint", fallback: "↺ OK: watch again"))
+                        .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
+                        .foregroundColor(LiveTVTheme.markColor)
+                }
                 if let description = current.description?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !description.isEmpty {
                     Text(description)
@@ -678,7 +1031,6 @@ struct LiveTVOverlayView: View {
                 RoundedRectangle(cornerRadius: LiveTVTheme.Metric.cornerRadius, style: .continuous)
                     .fill(Color.black.opacity(0.6))
             )
-        }
     }
 }
 

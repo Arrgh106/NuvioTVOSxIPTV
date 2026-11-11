@@ -46,6 +46,11 @@ struct LiveTVPlayerBar: View {
                             .font(.system(size: LiveTVTheme.Font.small))
                             .foregroundColor(LiveTVTheme.secondaryText)
                         progressBar(info.progress(at: now))
+                        if channel.archiveDays > 0 {
+                            Text(L10n.string("livetv_restart_hint", fallback: "▶︎❚❚ watch from the beginning"))
+                                .font(.system(size: LiveTVTheme.Font.badge))
+                                .foregroundColor(LiveTVTheme.tertiaryText)
+                        }
                         if let description = current.description?.trimmingCharacters(in: .whitespacesAndNewlines),
                            !description.isEmpty {
                             Text(description)
