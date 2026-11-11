@@ -99,6 +99,8 @@ struct XtreamUserInfo: Decodable, Equatable, Sendable {
     let maxConnections: Int?
     let isTrial: Bool
     let allowedOutputFormats: [String]
+    /// The panel's time zone (`server_info.timezone`), set by the login.
+    var serverTimeZone: String?
 
     enum CodingKeys: String, CodingKey {
         case auth, status
@@ -128,9 +130,15 @@ struct XtreamUserInfo: Decodable, Equatable, Sendable {
 
 struct XtreamLoginResponse: Decodable, Sendable {
     let userInfo: XtreamUserInfo?
+    let serverInfo: ServerInfo?
+
+    struct ServerInfo: Decodable, Sendable {
+        let timezone: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case userInfo = "user_info"
+        case serverInfo = "server_info"
     }
 }
 

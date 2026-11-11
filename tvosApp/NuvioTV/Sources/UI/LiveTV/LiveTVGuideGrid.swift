@@ -16,6 +16,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     /// comes back from the player, instead of focus landing on the groups.
     var focusChannelID: Int?
     let onSelect: (XtreamLiveChannel) -> Void
+    /// OK on a past show of a channel with catch-up.
+    var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
     /// Told what's in focus, for the info panel.
     var info: LiveTVInfoModel?
@@ -27,6 +29,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.attach(to: view)
         context.coordinator.infoModel = info
         context.coordinator.pendingFocusID = focusChannelID
+        context.coordinator.onCatchup = onCatchup
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         return view
@@ -34,6 +37,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
     func updateUIView(_ view: LiveTVGuideGridView, context: Context) {
         context.coordinator.infoModel = info
+        context.coordinator.onCatchup = onCatchup
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
     }
@@ -45,11 +49,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
         private weak var view: LiveTVGuideGridView?
         private var listID: String?
         private var channels: [XtreamLiveChannel] = []
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
+        var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
         private var favoriteIDs: Set<Int> = []
         private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
         private var timeline = LiveTVTimeline(now: Date())
@@ -97,6 +102,13 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let pressLeft = UITapGestureRecognizer(target: self, action: #selector(handleLeft))
             pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
             collection.addGestureRecognizer(pressLeft)
+            // Menu away from now (past or future): back on the channel, so
+            // one more Left reaches the groups. On now, Menu works as always.
+            let pressMenu = UITapGestureRecognizer(target: self, action: #selector(backToChannel))
+            pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+            pressMenu.delegate = self
+            menuRecognizer = pressMenu
+            collection.addGestureRecognizer(pressMenu)
             // Tells one swipe from the next (a fast swipe keeps moving focus
             // after the swipe itself was handled).
             LiveTVFocusLinks.trackTouches(on: collection)
@@ -285,13 +297,29 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let cell = focusedRow else { return }
             let now = Date()
             let before = timeline
-            let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now)
+            // Channels with catch-up: back through the past first.
+            let earliest = LiveTVCatchup.earliest(archiveDays: cell.channel?.archiveDays ?? 0, now: now)
+            let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now, earliest: earliest)
             if !moved {
                 setOnChannel(true)
                 // From the channel the groups are the next step.
                 LiveTVFocusLinks.endReturn("left on now")
             }
             if timeline != before || !moved { refreshAll(now: now) }
+        }
+
+        private weak var menuRecognizer: UIGestureRecognizer?
+
+        @objc private func backToChannel() {
+            let now = Date()
+            timeline.resetToNow(now)
+            setOnChannel(true)
+            refreshAll(now: now)
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === menuRecognizer else { return true }
+            return focusedRow != nil && timeline.cursor != nil
         }
 
         /// The cursor sits on the channel (number, logo, name) instead of a
@@ -406,8 +434,19 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < channels.count else { return }
+            let channel = channels[indexPath.item]
+            // On a show that's over, on a channel with catch-up: watch it again.
+            let now = Date()
+            if !onChannel, let cursor = timeline.cursor,
+               let cell = collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell,
+               let programme = LiveTVTimeline.block(at: cursor, in: cell.strip.programmes ?? []).programme,
+               programme.end <= now,
+               LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
+                onCatchup(channel, programme)
+                return
+            }
             // Back from the player focus comes back here, on the channel.
-            onSelect(channels[indexPath.item])
+            onSelect(channel)
         }
 
         func collectionView(
@@ -418,6 +457,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let indexPath = indexPaths.first, indexPath.item < channels.count else { return nil }
             let channel = channels[indexPath.item]
             let isFavorite = favoriteIDs.contains(channel.streamID)
+            // Channels with an archive: the show on now from its beginning.
+            let now = Date()
+            let shows = (collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell)?.strip.programmes ?? []
+            let current = channel.archiveDays > 0 ? shows.first { $0.start <= now && now < $0.end } : nil
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 let title = isFavorite
                     ? L10n.string("livetv_remove_favorite", fallback: "Remove from Favorites")
@@ -425,7 +468,15 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 let action = UIAction(title: title, image: UIImage(systemName: isFavorite ? "star.slash" : "star")) { _ in
                     self?.onToggleFavorite(channel)
                 }
-                return UIMenu(title: channel.name, children: [action])
+                var children: [UIMenuElement] = []
+                if let current {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_restart", fallback: "Watch from the beginning"),
+                        image: UIImage(systemName: "backward.end.fill")
+                    ) { _ in self?.onCatchup(channel, current) })
+                }
+                children.append(action)
+                return UIMenu(title: channel.name, children: children)
             }
         }
     }

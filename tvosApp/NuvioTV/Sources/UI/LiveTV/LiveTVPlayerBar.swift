@@ -10,7 +10,8 @@ struct LiveTVPlayerBar: View {
 
     var body: some View {
         if let channel = player.channel, player.bar != .hidden {
-            TimelineView(.periodic(from: .now, by: 30)) { context in
+            // A replay's position moves every second; live, the clock.
+            TimelineView(.periodic(from: .now, by: player.replay == nil ? 30 : 1)) { context in
                 card(channel, now: context.date)
             }
             .padding(.horizontal, 60)
@@ -21,8 +22,10 @@ struct LiveTVPlayerBar: View {
     }
 
     private func card(_ channel: XtreamLiveChannel, now: Date) -> some View {
-        let current = player.programmes.first { $0.start <= now && now < $0.end }
-        let next = player.programmes.first { $0.start >= (current?.end ?? now) }
+        let replay = player.replay
+        let live = player.programmes.first(where: { $0.start <= now && now < $0.end })
+        let current = replay ?? live
+        let next = replay == nil ? player.programmes.first(where: { $0.start >= (live?.end ?? now) }) : nil
         return VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 24) {
                 LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
@@ -33,7 +36,9 @@ struct LiveTVPlayerBar: View {
                         .font(.system(size: 34, weight: .bold))
                         .foregroundColor(LiveTVTheme.primaryText)
                         .lineLimit(1)
-                    if let current {
+                    if replay != nil {
+                        replayLine()
+                    } else if let current {
                         let info = LiveTVProgrammeInfo(
                             start: current.start, end: current.end, title: current.title, description: current.description)
                         Text(LiveTVInfoPanel.clock(info.start, now: now) + " – " + LiveTVInfoPanel.clock(info.end, now: now, withDay: false)
@@ -88,8 +93,17 @@ struct LiveTVPlayerBar: View {
                 .font(.system(size: LiveTVTheme.Font.small))
                 .foregroundColor(LiveTVTheme.secondaryText)
                 .lineLimit(1)
-            tag("● " + L10n.string("livetv_info_live", fallback: "LIVE"), fill: LiveTVTheme.liveRed)
-            if channel.archiveDays > 0 {
+            if let replay = player.replay {
+                // What's replayed and when it was on.
+                tag("↺ " + L10n.string("livetv_info_catchup", fallback: "CATCH-UP"), fill: LiveTVTheme.markColor)
+                Text(LiveTVInfoPanel.clock(replay.start, now: Date()) + " – "
+                     + LiveTVInfoPanel.clock(replay.end, now: Date(), withDay: false))
+                    .font(.system(size: LiveTVTheme.Font.badge))
+                    .foregroundColor(LiveTVTheme.secondaryText)
+            } else {
+                tag("● " + L10n.string("livetv_info_live", fallback: "LIVE"), fill: LiveTVTheme.liveRed)
+            }
+            if player.replay == nil, channel.archiveDays > 0 {
                 tag(L10n.string("livetv_info_catchup", fallback: "CATCH-UP"), fill: Color.white.opacity(0.18))
             }
         }
@@ -102,6 +116,36 @@ struct LiveTVPlayerBar: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(fill, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// A replay: position of length, paused, and the keys for it.
+    private func replayLine() -> some View {
+        let engine = player.session.activeEngine
+        let position = Double(engine.positionMs) / 1000
+        let duration = Double(engine.durationMs) / 1000
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                if player.isPaused {
+                    Image(systemName: "pause.fill")
+                        .foregroundColor(LiveTVTheme.primaryText)
+                }
+                Text(Self.duration(position) + (duration > 0 ? " / " + Self.duration(duration) : ""))
+                    .font(.system(size: LiveTVTheme.Font.small).monospacedDigit())
+                    .foregroundColor(LiveTVTheme.secondaryText)
+                Text(L10n.string("livetv_catchup_keys", fallback: "◀ 10 s  ·  30 s ▶  ·  ▶︎❚❚ pause, again: continue or live"))
+                    .font(.system(size: LiveTVTheme.Font.badge))
+                    .foregroundColor(LiveTVTheme.tertiaryText)
+            }
+            progressBar(duration > 0 ? min(1, max(0, position / duration)) : 0)
+        }
+    }
+
+    static func duration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let rest = total % 60
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, rest) : String(format: "%d:%02d", minutes, rest)
     }
 
     private func progressBar(_ fraction: Double) -> some View {

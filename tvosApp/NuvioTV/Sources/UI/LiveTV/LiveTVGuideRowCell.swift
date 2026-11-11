@@ -113,6 +113,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         numberLabel.text = channel.number.map(String.init) ?? ""
         nameLabel.text = channel.name
         archiveIcon.isHidden = channel.archiveDays == 0
+        strip.archiveDays = channel.archiveDays
         setFavorite(favorite)
         loadLogo(channel.logoURL.flatMap(URL.init(string:)))
         strip.update(timeline: timeline, now: now)
@@ -161,6 +162,7 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         placeholder.isHidden = false
         strip.programmes = nil
         strip.cursor = nil
+        strip.archiveDays = 0
         setChannelHighlighted(false)
     }
 
@@ -226,6 +228,10 @@ final class LiveTVProgrammeStrip: UIView {
     var cursor: Date? {
         didSet { if cursor != oldValue { setNeedsDisplay() } }
     }
+    /// The channel's catch-up: past shows in it can be watched again.
+    var archiveDays = 0 {
+        didSet { if archiveDays != oldValue { setNeedsDisplay() } }
+    }
     private var timeline = LiveTVTimeline(now: Date())
     private var now = Date()
 
@@ -276,6 +282,9 @@ final class LiveTVProgrammeStrip: UIView {
             let isCursor = cursorBlockStart == block.start
             let isNow = block.contains(now)
             let isPast = block.end <= now
+            let replayable = isPast && block.programme.map {
+                LiveTVCatchup.isAvailable(start: $0.start, archiveDays: archiveDays, now: now)
+            } == true
             let path = UIBezierPath(roundedRect: tile, cornerRadius: 10)
 
             let fill: UIColor
@@ -308,10 +317,12 @@ final class LiveTVProgrammeStrip: UIView {
             guard textWidth > 24 else { continue }
             context.saveGState()
             context.clip(to: tile.insetBy(dx: 12, dy: 0))
-            let primary: UIColor = isCursor ? .black : UIColor.white.withAlphaComponent(isPast ? 0.5 : 0.92)
+            let primary: UIColor = isCursor ? .black
+                : UIColor.white.withAlphaComponent(replayable ? 0.75 : isPast ? 0.5 : 0.92)
             let secondary: UIColor = isCursor ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.5)
             if let programme = block.programme {
-                let title = programme.title as NSString
+                // ↺: OK watches it again.
+                let title = (replayable ? "↺ " + programme.title : programme.title) as NSString
                 title.draw(in: CGRect(x: tile.minX + 12, y: tile.minY + 10, width: textWidth, height: 28), withAttributes: [
                     .font: Self.titleFont, .foregroundColor: primary, .paragraphStyle: Self.paragraph,
                 ])

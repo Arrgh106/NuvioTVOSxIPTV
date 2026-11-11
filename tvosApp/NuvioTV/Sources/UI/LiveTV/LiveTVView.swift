@@ -205,6 +205,7 @@ struct LiveTVView: View {
                 // after zapping), not on the groups.
                 focusChannelID: LiveTVZapper.shared.currentChannel?.streamID,
                 onSelect: play,
+                onCatchup: playCatchup,
                 onToggleFavorite: { store.toggleFavorite($0) },
                 info: info
             )
@@ -213,8 +214,24 @@ struct LiveTVView: View {
 
     /// OK on a channel, as on Android: plays it in the preview window; OK on
     /// the channel already playing there makes it full screen (same stream).
+    /// A past show on a channel with catch-up: straight to full screen.
+    private func playCatchup(_ channel: XtreamLiveChannel, _ programme: XtreamProgram) {
+        guard let links = store.catchupLinks(for: channel, programme: programme) else { return }
+        // Up/down from the replay go back to live channels of this group.
+        let liveStore = store
+        LiveTVZapper.shared.begin(channel: channel, in: liveStore.visibleChannels) { [weak liveStore] in
+            liveStore?.playbackItem(for: $0)
+        }
+        store.recordWatched(channel)
+        player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+        LiveTVFocusLinks.beginReturn()
+        player.isFullscreen = true
+        player.showBar(.compact)
+    }
+
     private func play(_ channel: XtreamLiveChannel) {
-        if player.channel?.streamID == channel.streamID {
+        // OK on the channel while it replays a show: live again.
+        if player.channel?.streamID == channel.streamID, player.replay == nil {
             switch player.status {
             case .loading, .playing:
                 // Back from full screen: on this channel, in the guide.
@@ -282,6 +299,21 @@ struct LiveTVView: View {
             liveStore.recordWatched(channel)
             player.play(channel, item: item)
             player.showBar(.compact)
+        }
+        player.startReplay = { [weak liveStore, weak player] channel, programme in
+            guard let liveStore, let player,
+                  let links = liveStore.catchupLinks(for: channel, programme: programme) else { return }
+            liveStore.recordWatched(channel)
+            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+            player.showBar(.compact)
+        }
+        player.overlay.onCatchup = { [weak liveStore, weak player] channel, programme, list, groupID in
+            guard let liveStore, let player else { return }
+            if liveStore.selectedGroupID != groupID { liveStore.selectedGroupID = groupID }
+            LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
+                liveStore?.playbackItem(for: $0)
+            }
+            player.startReplay(channel, programme)
         }
     }
 }

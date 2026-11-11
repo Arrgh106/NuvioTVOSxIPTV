@@ -22,7 +22,7 @@ func check(_ condition: Bool, _ message: String, line: Int = #line) {
     }
 }
 
-/// 2026-11-09 20:00 UTC as the base; minutes from there.
+/// 2026-11-04 20:00 UTC as the base; minutes from there.
 let base = Date(timeIntervalSince1970: 1_793_822_400)
 func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
 func show(_ title: String, _ from: Double, _ to: Double) -> Show { Show(title: title, start: at(from), end: at(to)) }
@@ -139,6 +139,48 @@ for index in 0..<100 {
 }
 check(alwaysContext, "stepping down: on screen, never on the last row before the end")
 check(LiveTVListWindow(rows: 10).range(count: 0).isEmpty, "empty list")
+var dates = LiveTVListWindow(rows: 10)
+dates.begin(at: 40, count: 100)
+check(dates.range(count: 100) == 40..<50, "a date: its heading on the top row")
+dates.begin(at: 95, count: 100)
+check(dates.range(count: 100) == 90..<100, "a date near the end: the last rows")
+
+// MARK: Catch-up
+
+// The row again (20:00 News, 20:15–21:45 Film, 22:00 Late), now 21:00 on Film.
+var past = LiveTVTimeline(now: at(60))
+let earliest = at(-60)
+check(past.moveLeft(in: row, now: at(60), earliest: earliest), "catch-up: left from now goes back")
+check(LiveTVTimeline.block(at: past.cursorTime(now: at(60)), in: row).programme?.title == "News", "onto News")
+check(past.windowStart <= at(0), "the window follows into the past")
+check(past.moveLeft(in: row, now: at(60), earliest: earliest), "before News: the slot before the first listing")
+check(!past.moveLeft(in: row, now: at(60), earliest: at(-10)), "nothing before the earliest: leaves the grid")
+check(past.cursor == nil, "and rests on now again")
+var noArchive = LiveTVTimeline(now: at(60))
+check(!noArchive.moveLeft(in: row, now: at(60)), "without catch-up Left on now still leaves")
+
+check(LiveTVCatchup.isAvailable(start: at(0), archiveDays: 1, now: at(60)), "an hour ago, one day archive")
+check(!LiveTVCatchup.isAvailable(start: at(0), archiveDays: 0, now: at(60)), "no archive")
+check(!LiveTVCatchup.isAvailable(start: at(90), archiveDays: 3, now: at(60)), "not started yet")
+check(!LiveTVCatchup.isAvailable(start: at(-3000), archiveDays: 1, now: at(60)), "older than the archive")
+check(LiveTVCatchup.earliest(archiveDays: 7, now: at(60)) == at(60 - 24 * 60), "the guide keeps 24 h back")
+check(LiveTVCatchup.earliest(archiveDays: 0, now: at(60)) == nil, "no archive, no past")
+
+let berlin = TimeZone(identifier: "Europe/Berlin")!
+// 2026-11-04 20:00 UTC is 21:00 in Berlin.
+check(LiveTVCatchup.stamp(at(0), in: berlin) == "2026-11-04:21-00", "server time")
+let links = LiveTVCatchup.xtreamURLs(
+    server: "http://example.test:8080", username: "user", password: "p+ss", streamID: 42,
+    start: at(15), end: at(105), now: at(200), fileExtension: "m3u8", serverTimeZone: berlin)
+check(links.first?.absoluteString == "http://example.test:8080/timeshift/user/p%2Bss/90/2026-11-04:21-15/42.m3u8", "timeshift link first")
+check(links.count > 1 && links[1].absoluteString.hasSuffix("/42.ts"), "then the other extension")
+check(links.contains { $0.absoluteString.contains("timeshift.php?") && $0.absoluteString.contains("password=p%2Bss") }, "timeshift.php form")
+check(!links.contains { $0.absoluteString.contains("2026-11-04:20-15") }, "server zone known: no other-clock guess")
+let onAir = LiveTVCatchup.xtreamURLs(
+    server: "http://example.test", username: "u", password: "p", streamID: 1,
+    start: at(15), end: at(105), now: at(45), fileExtension: "ts", serverTimeZone: nil)
+check(onAir.contains { $0.absoluteString.contains("/30/") }, "on air: the aired 30 minutes")
+check(Set(onAir.map(\.absoluteString)).count == onAir.count, "no link twice")
 
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

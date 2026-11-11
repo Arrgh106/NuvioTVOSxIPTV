@@ -60,7 +60,23 @@ struct LiveTVTimeline: Equatable {
 
     /// Left: back one block. Returns false when the cursor is on what's on
     /// now (or earliest reachable), so the caller can move focus out.
+    /// `earliest` (channels with catch-up): Left goes on into the past, down
+    /// to that point, before it leaves the grid.
     mutating func moveLeft<P: LiveTVTimed & Equatable>(in programmes: [P], now: Date, earliest: Date? = nil) -> Bool {
+        if let earliest {
+            let block = Self.block(at: cursorTime(now: now), in: programmes)
+            // Nothing earlier to reach: leave the grid.
+            guard block.start > earliest, block.start.addingTimeInterval(-1) >= earliest else {
+                resetToNow(now)
+                return false
+            }
+            let target = block.start.addingTimeInterval(-1)
+            cursor = target
+            while target < windowStart {
+                windowStart = windowStart.addingTimeInterval(-Self.slot)
+            }
+            return true
+        }
         guard let cursor else { return false }
         let block = Self.block(at: cursor, in: programmes)
         let floor = earliest ?? now
@@ -75,7 +91,7 @@ struct LiveTVTimeline: Equatable {
             windowStart = windowStart.addingTimeInterval(-Self.slot)
         }
         // Stepped back onto what's on now: rest there (follow the clock).
-        if Self.block(at: target, in: programmes).contains(now), earliest == nil {
+        if Self.block(at: target, in: programmes).contains(now) {
             resetToNow(now)
         }
         return true

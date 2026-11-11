@@ -43,6 +43,11 @@ struct LiveTVListWindow: Equatable {
         top = min(max(0, top), maxTop)
     }
 
+    /// Puts `index` on the top row (a day's heading, picking a date).
+    mutating func begin(at index: Int, count: Int) {
+        top = min(max(0, index), max(0, count - rows))
+    }
+
     /// Puts `index` near the top (opening a list).
     mutating func land(on index: Int, count: Int) {
         top = min(max(0, index - min(3, rows / 2)), max(0, count - rows))

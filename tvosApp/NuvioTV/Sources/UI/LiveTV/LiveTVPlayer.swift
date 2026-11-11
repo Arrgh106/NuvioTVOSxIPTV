@@ -76,6 +76,8 @@ final class LiveTVPlayer: ObservableObject {
     /// from the row (it knows the store and the zapping list).
     var recentChannels: () -> [XtreamLiveChannel] = { [] }
     var startChannel: (XtreamLiveChannel) -> Void = { _ in }
+    /// Set by Live TV: plays a show of a channel again (it knows the links).
+    var startReplay: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     private var barTimer: Timer?
     private var programmesTask: Task<Void, Never>?
 
@@ -83,27 +85,124 @@ final class LiveTVPlayer: ObservableObject {
     private var loadStarted = Date.distantPast
     private var triedFallback = false
 
+    /// A show played again (catch-up, step 6); nil: live.
+    @Published private(set) var replay: XtreamProgram?
+    /// The replay links not tried yet (panels differ, see LiveTVCatchup).
+    private var replayLinks: [URL] = []
+    private var replayHeaders: [String: String] = [:]
+    /// The replay link playing (1-based) of how many, shown while it loads.
+    @Published private(set) var replayAttempt: (index: Int, of: Int) = (0, 0)
+    /// A replay's first picture: make sure it plays (a Play/Pause press
+    /// during the switch could leave it paused).
+    private var playOnFirstFrame = false
+    /// A replay paused, Play/Pause again: continue it, or back to live?
+    @Published private(set) var resumeChoice = false
+
     /// Starts `channel` (or switches to it). The picture stays where it is:
     /// in the preview window or full screen.
     func play(_ channel: XtreamLiveChannel, item: LiveTVStore.PlaybackItem) {
+        resumeChoice = false
+        replay = nil
+        replayLinks = []
+        start(channel, url: item.url, headers: item.headers, live: true)
+    }
+
+    /// Plays a past show of `channel` from its start, trying the links in turn.
+    func playCatchup(_ channel: XtreamLiveChannel, programme: XtreamProgram, urls: [URL], headers: [String: String]) {
+        guard let first = urls.first else { return }
+        resumeChoice = false
+        replay = programme
+        replayLinks = Array(urls.dropFirst())
+        replayHeaders = headers
+        replayAttempt = (1, urls.count)
+        playOnFirstFrame = true
+        start(channel, url: first, headers: headers, live: false)
+    }
+
+    private func start(_ channel: XtreamLiveChannel, url: URL, headers: [String: String], live: Bool) {
         self.channel = channel
         status = .loading
         loadStarted = Date()
         loadProgrammes(for: channel)
-        triedFallback = false
+        triedFallback = !live
         session.load(PlaybackLoadRequest(
-            videoURL: item.url,
-            httpHeaders: item.headers,
+            videoURL: url,
+            httpHeaders: headers,
             // A preview must not switch the TV's display mode.
             matchContentEnabled: false,
             cacheProfile: .fromSettings(ProfileSettings.current.string(forKey: SettingsKey.networkCache)),
-            isLiveStream: true,
+            isLiveStream: live,
             streamName: channel.name,
             filename: channel.name,
-            nowPlayingTitle: channel.name
+            nowPlayingTitle: replay?.title ?? channel.name,
+            nowPlayingSubtitle: replay == nil ? nil : channel.name
         ))
         PlaybackWakeLock.acquire(ownerID: session.wakeLockOwnerID)
         startWatching()
+    }
+
+    /// The next replay link, when the one playing failed.
+    private func tryNextReplayLink() -> Bool {
+        guard let channel, replay != nil, !replayLinks.isEmpty else { return false }
+        let next = replayLinks.removeFirst()
+        replayAttempt = (replayAttempt.index + 1, replayAttempt.of)
+        start(channel, url: next, headers: replayHeaders, live: false)
+        return true
+    }
+
+    // MARK: Replay controls
+
+    var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
+
+    /// Play/Pause pauses and plays on. Live that's all; a replay paused
+    /// asks: continue it, or back to the live feed?
+    func togglePause() {
+        // The choice open: Play/Pause continues.
+        if resumeChoice {
+            resumeReplay()
+            return
+        }
+        let engine = session.activeEngine
+        if engine.isPlayerPlaying {
+            engine.pausePlayback()
+        } else if replay != nil {
+            resumeChoice = true
+            return
+        } else {
+            engine.playPlayback()
+        }
+        showBar(.compact)
+    }
+
+    /// The choice: the replay goes on where it paused.
+    func resumeReplay() {
+        resumeChoice = false
+        session.activeEngine.playPlayback()
+        showBar(.compact)
+    }
+
+    /// The choice: the channel's live feed.
+    func backToLive() {
+        resumeChoice = false
+        guard let channel else { return }
+        startChannel(channel)
+        showBar(.compact)
+    }
+
+    /// The choice closed with Menu: stays paused.
+    func dismissResumeChoice() {
+        resumeChoice = false
+    }
+
+    /// Left / Right in a replay: back 10 s, on 30 s.
+    func skip(by seconds: Double) {
+        guard replay != nil else { return }
+        let engine = session.activeEngine
+        let duration = engine.durationMs
+        var target = engine.positionMs + Int64(seconds * 1000)
+        target = max(0, duration > 0 ? min(target, duration - 1000) : target)
+        engine.seekToMs(target)
+        showBar(.compact)
     }
 
     /// Ends playback and frees the provider connection.
@@ -114,6 +213,9 @@ final class LiveTVPlayer: ObservableObject {
         PlaybackWakeLock.release(ownerID: session.wakeLockOwnerID)
         programmesTask?.cancel()
         channel = nil
+        replay = nil
+        replayLinks = []
+        resumeChoice = false
         programmes = []
         status = .idle
         isFullscreen = false
@@ -156,7 +258,8 @@ final class LiveTVPlayer: ObservableObject {
     func playRowSelection() {
         guard rowChannels.indices.contains(rowIndex) else { return }
         let target = rowChannels[rowIndex]
-        if target.streamID != channel?.streamID { startChannel(target) }
+        // The channel replaying a show: live again.
+        if target.streamID != channel?.streamID || replay != nil { startChannel(target) }
         showBar(.compact)
     }
 
@@ -193,15 +296,26 @@ final class LiveTVPlayer: ObservableObject {
         let error = session.lastLoadError ?? engine.currentErrorMessage
         if engine.hasFirstFrameReadyForDisplay {
             if status != .playing { status = .playing }
+            if playOnFirstFrame {
+                playOnFirstFrame = false
+                if replay != nil, !engine.isPlayerPlaying { engine.playPlayback() }
+            }
             return
         }
         if !error.isEmpty {
+            // A replay link the panel refused: the next form.
+            if replay != nil, tryNextReplayLink() { return }
             // Live streams that don't start natively get one try with MPV.
             if !triedFallback, session.requestLiveStartupFallback(generation: session.loadGeneration) {
                 triedFallback = true
                 return
             }
             status = .failed(error)
+            return
+        }
+        // A replay without a picture after 12 s: the next link.
+        if replay != nil, Date().timeIntervalSince(loadStarted) > 12 {
+            if !tryNextReplayLink() { status = .failed(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")) }
             return
         }
         // No picture after 10 s: the same fallback, once.
@@ -333,7 +447,22 @@ struct LiveTVPlayerStatus: View {
                 .multilineTextAlignment(.center)
                 .padding(12)
         case .loading:
-            ProgressView()
+            if let replay = player.replay {
+                // What's being tried, so a failing replay isn't a mystery.
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("↺ " + replay.title)
+                        .font(.system(size: LiveTVTheme.Font.small, weight: .semibold))
+                    Text(String(
+                        format: L10n.string("livetv_catchup_trying", fallback: "Replay link %d of %d"),
+                        player.replayAttempt.index, player.replayAttempt.of))
+                        .font(.system(size: LiveTVTheme.Font.badge))
+                        .foregroundColor(LiveTVTheme.secondaryText)
+                }
+                .foregroundColor(.white)
+            } else {
+                ProgressView()
+            }
         case .playing:
             EmptyView()
         case .failed(let message):
@@ -361,6 +490,7 @@ struct LiveTVFullscreenHost: View {
             LiveTVPlayerBar(player: player)
                 .allowsHitTesting(false)
             LiveTVOverlayView(overlay: player.overlay, player: player)
+            LiveTVResumeChoice(player: player)
         }
         .ignoresSafeArea()
     }
@@ -391,7 +521,20 @@ struct LiveTVFullscreenControls: View {
                     onExit()
                 }
             }
-            .onAppear { focused = true }
+            .onAppear {
+                focused = true
+                LiveTVPlayPausePress.shared.install { LiveTVPlayer.shared.togglePause() }
+            }
+            .onDisappear { LiveTVPlayPausePress.shared.remove() }
+            // A replay started or the overlay closed: the controls take the
+            // remote again (without focus tvOS sent OK and Play/Pause to the
+            // player itself, which only paused).
+            .onChange(of: player.replay) { _, _ in focused = true }
+            .onChange(of: player.status) { _, _ in focused = true }
+            .onChange(of: overlay.isOpen) { _, _ in focused = true }
+            .onChange(of: player.resumeChoice) { _, open in if !open { focused = true } }
+            // The choice takes the remote while it's open.
+            .disabled(player.resumeChoice)
     }
 
     private func select() {
@@ -408,6 +551,14 @@ struct LiveTVFullscreenControls: View {
         if overlay.isOpen {
             overlay.move(direction)
             return
+        }
+        // A replay: Left / Right skip back and on (Up / Down: live channels).
+        if player.replay != nil, player.bar != .expanded {
+            switch direction {
+            case .left: player.skip(by: -10); return
+            case .right: player.skip(by: 30); return
+            default: break
+            }
         }
         let inRow = player.bar == .expanded
         switch direction {
@@ -427,6 +578,89 @@ struct LiveTVFullscreenControls: View {
         @unknown default:
             break
         }
+    }
+}
+
+/// A replay paused, Play/Pause again: continue it or back to live.
+struct LiveTVResumeChoice: View {
+    @ObservedObject var player: LiveTVPlayer
+    @FocusState private var focus: Choice?
+
+    private enum Choice {
+        case resume
+        case live
+    }
+
+    var body: some View {
+        if player.resumeChoice {
+            VStack(spacing: 28) {
+                if let show = player.replay {
+                    Text(show.title)
+                        .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
+                        .foregroundColor(LiveTVTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    Text(LiveTVInfoPanel.clock(show.start, now: Date()) + " – "
+                         + LiveTVInfoPanel.clock(show.end, now: Date(), withDay: false))
+                        .font(.system(size: LiveTVTheme.Font.small))
+                        .foregroundColor(LiveTVTheme.secondaryText)
+                }
+                HStack(spacing: 30) {
+                    Button(action: { player.resumeReplay() }) {
+                        Label(L10n.string("livetv_resume", fallback: "Continue watching"), systemImage: "play.fill")
+                    }
+                    .focused($focus, equals: .resume)
+                    Button(action: { player.backToLive() }) {
+                        Label(L10n.string("livetv_back_to_live", fallback: "Back to live"),
+                              systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    .focused($focus, equals: .live)
+                }
+            }
+            .padding(44)
+            .frame(maxWidth: 1000)
+            .liveTVGlass()
+            .onAppear { focus = .resume }
+            .onExitCommand { player.dismissResumeChoice() }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.opacity)
+        }
+    }
+}
+
+/// Play/Pause in full screen, caught on the window: as a focused view's
+/// command it often never reached Live TV (tvOS gave it to the player as a
+/// system play/pause, so it only paused and the choice never came).
+@MainActor
+final class LiveTVPlayPausePress: NSObject {
+    static let shared = LiveTVPlayPausePress()
+
+    private var recognizer: UITapGestureRecognizer?
+    private var action: () -> Void = {}
+
+    func install(action: @escaping () -> Void) {
+        self.action = action
+        guard recognizer == nil, let window = Self.keyWindow else { return }
+        let press = UITapGestureRecognizer(target: self, action: #selector(pressed))
+        press.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
+        window.addGestureRecognizer(press)
+        recognizer = press
+    }
+
+    func remove() {
+        if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+        recognizer = nil
+    }
+
+    @objc private func pressed() {
+        action()
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
     }
 }
 
