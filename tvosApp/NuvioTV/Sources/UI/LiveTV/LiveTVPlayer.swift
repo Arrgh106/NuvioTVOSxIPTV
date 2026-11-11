@@ -88,6 +88,8 @@ final class LiveTVPlayer: ObservableObject {
     /// The replay links not tried yet (panels differ, see LiveTVCatchup).
     private var replayLinks: [URL] = []
     private var replayHeaders: [String: String] = [:]
+    /// The replay link playing (1-based) of how many, shown while it loads.
+    @Published private(set) var replayAttempt: (index: Int, of: Int) = (0, 0)
 
     /// Starts `channel` (or switches to it). The picture stays where it is:
     /// in the preview window or full screen.
@@ -103,6 +105,7 @@ final class LiveTVPlayer: ObservableObject {
         replay = programme
         replayLinks = Array(urls.dropFirst())
         replayHeaders = headers
+        replayAttempt = (1, urls.count)
         start(channel, url: first, headers: headers, live: false)
     }
 
@@ -132,6 +135,7 @@ final class LiveTVPlayer: ObservableObject {
     private func tryNextReplayLink() -> Bool {
         guard let channel, replay != nil, !replayLinks.isEmpty else { return false }
         let next = replayLinks.removeFirst()
+        replayAttempt = (replayAttempt.index + 1, replayAttempt.of)
         start(channel, url: next, headers: replayHeaders, live: false)
         return true
     }
@@ -394,7 +398,22 @@ struct LiveTVPlayerStatus: View {
                 .multilineTextAlignment(.center)
                 .padding(12)
         case .loading:
-            ProgressView()
+            if let replay = player.replay {
+                // What's being tried, so a failing replay isn't a mystery.
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("↺ " + replay.title)
+                        .font(.system(size: LiveTVTheme.Font.small, weight: .semibold))
+                    Text(String(
+                        format: L10n.string("livetv_catchup_trying", fallback: "Replay link %d of %d"),
+                        player.replayAttempt.index, player.replayAttempt.of))
+                        .font(.system(size: LiveTVTheme.Font.badge))
+                        .foregroundColor(LiveTVTheme.secondaryText)
+                }
+                .foregroundColor(.white)
+            } else {
+                ProgressView()
+            }
         case .playing:
             EmptyView()
         case .failed(let message):

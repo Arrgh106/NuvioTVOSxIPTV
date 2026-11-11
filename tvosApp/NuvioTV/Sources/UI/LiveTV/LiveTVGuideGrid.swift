@@ -49,7 +49,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
         private weak var view: LiveTVGuideGridView?
         private var listID: String?
         private var channels: [XtreamLiveChannel] = []
@@ -102,6 +102,13 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let pressLeft = UITapGestureRecognizer(target: self, action: #selector(handleLeft))
             pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
             collection.addGestureRecognizer(pressLeft)
+            // Menu away from now (past or future): back on the channel, so
+            // one more Left reaches the groups. On now, Menu works as always.
+            let pressMenu = UITapGestureRecognizer(target: self, action: #selector(backToChannel))
+            pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+            pressMenu.delegate = self
+            menuRecognizer = pressMenu
+            collection.addGestureRecognizer(pressMenu)
             // Tells one swipe from the next (a fast swipe keeps moving focus
             // after the swipe itself was handled).
             LiveTVFocusLinks.trackTouches(on: collection)
@@ -299,6 +306,20 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 LiveTVFocusLinks.endReturn("left on now")
             }
             if timeline != before || !moved { refreshAll(now: now) }
+        }
+
+        private weak var menuRecognizer: UIGestureRecognizer?
+
+        @objc private func backToChannel() {
+            let now = Date()
+            timeline.resetToNow(now)
+            setOnChannel(true)
+            refreshAll(now: now)
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === menuRecognizer else { return true }
+            return focusedRow != nil && timeline.cursor != nil
         }
 
         /// The cursor sits on the channel (number, logo, name) instead of a
