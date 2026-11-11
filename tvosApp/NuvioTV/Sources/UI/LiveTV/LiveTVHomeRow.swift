@@ -129,6 +129,8 @@ final class LiveTVHomeRowNow: ObservableObject {
 
     @Published private(set) var programmes: [Int: [XtreamProgram]] = [:]
     @Published private(set) var now = Date()
+    /// The card in focus, for the header above the rows.
+    @Published var focusedID: Int?
     private var channels: [XtreamLiveChannel] = []
     private var loadTask: Task<Void, Never>?
     private var timer: Timer?
@@ -245,6 +247,10 @@ struct LiveTVHomeRow: View {
                     externalFocus: externalFocus,
                     focusKey: key,
                     onFocus: {
+                        if let channel = LiveTVHomeRowModel.shared.channel(for: meta),
+                           LiveTVHomeRowNow.shared.focusedID != channel.streamID {
+                            LiveTVHomeRowNow.shared.focusedID = channel.streamID
+                        }
                         if scrollIndex != index {
                             scrollIndex = index
                             onScrollIndexChange(index)
@@ -262,6 +268,79 @@ struct LiveTVHomeRow: View {
         .clipped()
         .offset(x: -horizontalEdgeInset)
         .animation(smoothFocus && !fastNavigation ? TVHomeLayout.scrollAnimation : nil, value: effectiveScrollIndex)
+    }
+}
+
+/// The header above Home's rows while a channel card has focus: the
+/// channel, what's on with time and progress, what's next, the description.
+/// Same height and insets as Home's title header, so the rows stay put.
+struct LiveTVHomeHero: View {
+    @ObservedObject private var live = LiveTVHomeRowNow.shared
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+
+    var body: some View {
+        let channel = live.focusedID.flatMap { id in
+            LiveTVHomeRowModel.shared.channels.first { $0.streamID == id }
+        }
+        let shows = channel.map { live.current($0) }
+        let now = live.now
+        VStack(alignment: .leading, spacing: 16) {
+            if let channel {
+                HStack(spacing: 20) {
+                    LiveTVLogo(url: channel.logoURL.flatMap(URL.init(string:)))
+                        .frame(width: 150, height: 96)
+                    Text([channel.number.map(String.init), channel.name].compactMap { $0 }.joined(separator: "  "))
+                        .font(.appFont(size: 26, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
+                Text(shows?.now?.title ?? channel.name)
+                    .font(.appFont(size: 50, weight: .bold))
+                    .lineLimit(2)
+                if let current = shows?.now {
+                    let info = LiveTVProgrammeInfo(
+                        start: current.start, end: current.end, title: current.title, description: current.description)
+                    HStack(spacing: 14) {
+                        Text(L10n.string("livetv_info_live", fallback: "LIVE"))
+                            .font(.appFont(size: 18, weight: .bold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.7), lineWidth: 1.5))
+                        Text(LiveTVSettings.shared.time(current.start) + " – " + LiveTVSettings.shared.time(current.end))
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.2))
+                                Capsule().fill(LiveTVTheme.markColor)
+                                    .frame(width: proxy.size.width * CGFloat(info.progress(at: now)))
+                            }
+                        }
+                        .frame(width: 160, height: 5)
+                        Text(LiveTVInfoPanel.timeLeft(info.minutesLeft(at: now)))
+                        if let next = shows?.next {
+                            Text("·  " + L10n.string("livetv_next", fallback: "Next") + " "
+                                 + LiveTVSettings.shared.time(next.start) + "  " + next.title)
+                                .lineLimit(1)
+                        }
+                    }
+                    .font(.appFont(size: 22, weight: .medium))
+                    .foregroundColor(.white.opacity(0.75))
+                    if let description = current.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !description.isEmpty {
+                        Text(description)
+                            .font(.appFont(size: 24, weight: .regular))
+                            .lineSpacing(3)
+                            .lineLimit(3)
+                            .frame(maxWidth: 900, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.top, homeLayout == "Compact" ? 82 : 140)
+        .padding(.bottom, TVHomeLayout.heroBottomPadding)
+        .frame(height: homeLayout == "Compact" ? 390 : 500, alignment: .bottomLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

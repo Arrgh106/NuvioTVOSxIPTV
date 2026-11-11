@@ -5762,7 +5762,10 @@ struct TVHomeView: View {
                     // Header Hero Meta block (static, outside the rows). Folder
                     // focus swaps poster meta for emoji + folder title (browse-style).
                     if heroEnabled && homeLayout != "Grid View" {
-                        if let folder = focusedCollectionFolder {
+                        if focusedSectionId == LiveTVHomeRowModel.sectionID {
+                            // Fork: the channel and what's on, not the last title.
+                            LiveTVHomeHero()
+                        } else if let folder = focusedCollectionFolder {
                             TVCollectionFolderHeroView(folder: folder)
                                 .equatable()
                         } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
@@ -8462,9 +8465,9 @@ struct TVHomeView: View {
             title: L10n.string("livetv_title", fallback: "Live TV"),
             items: liveTVRow.metas
         )]
-        let pinnedSections = liveTVSections
-            + ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
+        let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
             + ((upcomingMetas.isEmpty || !continueWatchingVisible) ? [] : [upcomingSection])
+            + liveTVSections
             + ((calendarToday.isEmpty || !homeCalendarToday) ? [] : [calendarTodaySection])
             + [localTitlesSection].compactMap { $0 }
             + jellyfinSections
@@ -8611,6 +8614,8 @@ struct TVHomeView: View {
     }
 
     private var homeBackdropURL: String? {
+        // Fork: a Live TV channel has no artwork for the backdrop.
+        if focusedSectionId == LiveTVHomeRowModel.sectionID { return nil }
         // Collection folder focus uses its own hero backdrop (Android Modern
         // Home parity). Fall back to the focused/hero title poster otherwise.
         if let folder = focusedCollectionFolder {
