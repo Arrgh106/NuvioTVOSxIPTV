@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV guide, step 6: catch-up / restart** (see below).
+- 🚧 **Live TV guide, step 7: reminders & Home row** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -18,16 +18,15 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
 3. ✅ **Preview window**: OK plays a channel small in the info panel, OK again makes the same picture full screen (one player, one stream: fine for accounts with a single connection). Up/Down switch channels in full screen, Menu goes back to the guide on the channel playing. Leaving Live TV stops playback.
 4. ✅ **Player info bar & overlay**
    - ✅ 4a: info bar in full screen (channel line, what's on with time left and progress, clock, up next) and the channel row of recently watched channels. Full screen is an app-level screen like the film player: no sidebar, no tab bar, one picture layer shared with the preview. Remote: Up/Down switch channels, Right shows the bar, OK opens the channel row, Left/Menu go back to the guide on the channel playing. Entering the guide from the groups or the header lands on the channel.
-   - ✅ 4b: Left in full screen opens the guide over the picture (TiviMate's overlay mode): the group's channels with what's on, the highlighted channel's shows and the details; Left again the groups. OK plays a channel (its group becomes the one zapped through), Menu closes, it closes itself after 15 s. Swipes scroll by how far and fast the finger moves; only the rows on screen are drawn. The schedule and dates of one channel (Right) come with catch-up in step 6.
+   - ✅ 4b: Left in full screen opens the guide over the picture (TiviMate's overlay mode): the group's channels with what's on, the highlighted channel's shows and the details; Left again the groups. OK plays a channel (its group becomes the one zapped through), Menu closes, it closes itself after 15 s. Swipes scroll by how far and fast the finger moves; only the rows on screen are drawn. Right opens the highlighted channel's schedule, Right again its dates (step 6).
 5. ✅ **Quick menu & Settings → Live TV**: the gear in the header opens the guide's quick menu over the guide; Settings → Live TV in the app's settings style. Per profile, every change shows at once. Guide: info panel, description, preview window (off: OK goes straight to full screen), smaller top, channel counts, hide separator rows (off by default), clock (system, 24-hour, 12-hour). Playback: open on last group, info bar when switching, reverse channel up/down. Account and groups stay in Live TV's header for now; Integration comes with the Home row (step 7).
-6. 🚧 **Catch-up / restart** for channels with archive.
-7. ⏭ **Reminders & Home row**.
+6. ✅ **Catch-up / restart** for channels with archive: in the guide OK on a past show plays it from the archive (↺ marks the shows that can), long press OK on the show on now offers *Watch from the beginning*. In the full-screen overlay Right opens the channel's schedule (days with headings, lands on the show on now), Right again the dates; OK on a past show plays it, on the show on now goes live. In a replay ◀/▶ jump 10 s back / 30 s ahead, Up/Down go back to live channels. Play/Pause pauses live and replays; pressed again in a replay it asks: *Continue watching* or *Back to live*. Catch-up links follow the Android app (several URL forms tried in turn).
+7. 🚧 **Reminders & Home row**.
 
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
 - 💡 Guide matching by channel name for channels without a guide id (Android does this), and choosing a guide by hand per channel ("Assign EPG"); extra XMLTV sources.
-- 💡 Separator rows such as `##### AT&T #####`: make hiding them a setting (currently always hidden).
 - 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.
