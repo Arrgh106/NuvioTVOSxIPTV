@@ -46,11 +46,6 @@ struct LiveTVPlayerBar: View {
                             .font(.system(size: LiveTVTheme.Font.small))
                             .foregroundColor(LiveTVTheme.secondaryText)
                         progressBar(info.progress(at: now))
-                        if channel.archiveDays > 0 {
-                            Text(L10n.string("livetv_restart_hint", fallback: "▶︎❚❚ pause  ·  again: continue or from the beginning"))
-                                .font(.system(size: LiveTVTheme.Font.badge))
-                                .foregroundColor(LiveTVTheme.tertiaryText)
-                        }
                         if let description = current.description?.trimmingCharacters(in: .whitespacesAndNewlines),
                            !description.isEmpty {
                             Text(description)
@@ -137,7 +132,7 @@ struct LiveTVPlayerBar: View {
                 Text(Self.duration(position) + (duration > 0 ? " / " + Self.duration(duration) : ""))
                     .font(.system(size: LiveTVTheme.Font.small).monospacedDigit())
                     .foregroundColor(LiveTVTheme.secondaryText)
-                Text(L10n.string("livetv_catchup_keys", fallback: "◀ 10 s  ·  30 s ▶  ·  ▶︎❚❚ pause"))
+                Text(L10n.string("livetv_catchup_keys", fallback: "◀ 10 s  ·  30 s ▶  ·  ▶︎❚❚ pause, again: continue or live"))
                     .font(.system(size: LiveTVTheme.Font.badge))
                     .foregroundColor(LiveTVTheme.tertiaryText)
             }

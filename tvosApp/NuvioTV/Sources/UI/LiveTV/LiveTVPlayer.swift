@@ -95,7 +95,7 @@ final class LiveTVPlayer: ObservableObject {
     /// A replay's first picture: make sure it plays (a Play/Pause press
     /// during the switch could leave it paused).
     private var playOnFirstFrame = false
-    /// Live paused, Play/Pause again: continue, or the show from its start?
+    /// A replay paused, Play/Pause again: continue it, or back to live?
     @Published private(set) var resumeChoice = false
 
     /// Starts `channel` (or switches to it). The picture stays where it is:
@@ -154,18 +154,18 @@ final class LiveTVPlayer: ObservableObject {
 
     var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
 
-    /// Play/Pause pauses and plays on. Live and paused on a channel with an
-    /// archive, it asks: continue, or the show from its beginning?
+    /// Play/Pause pauses and plays on. Live that's all; a replay paused
+    /// asks: continue it, or back to the live feed?
     func togglePause() {
         // The choice open: Play/Pause continues.
         if resumeChoice {
-            resumeLive()
+            resumeReplay()
             return
         }
         let engine = session.activeEngine
         if engine.isPlayerPlaying {
             engine.pausePlayback()
-        } else if replay == nil, restartableShow != nil {
+        } else if replay != nil {
             resumeChoice = true
             return
         } else {
@@ -174,30 +174,24 @@ final class LiveTVPlayer: ObservableObject {
         showBar(.compact)
     }
 
-    /// The show on now, when it can start again (live, channel with an archive).
-    var restartableShow: XtreamProgram? {
-        let now = Date()
-        guard replay == nil, let channel, channel.archiveDays > 0 else { return nil }
-        return programmes.first { $0.start <= now && now < $0.end }
-    }
-
-    /// The choice: go on where it paused.
-    func resumeLive() {
+    /// The choice: the replay goes on where it paused.
+    func resumeReplay() {
         resumeChoice = false
         session.activeEngine.playPlayback()
+        showBar(.compact)
+    }
+
+    /// The choice: the channel's live feed.
+    func backToLive() {
+        resumeChoice = false
+        guard let channel else { return }
+        startChannel(channel)
         showBar(.compact)
     }
 
     /// The choice closed with Menu: stays paused.
     func dismissResumeChoice() {
         resumeChoice = false
-    }
-
-    /// The show on now, from its start (live channels with an archive).
-    func restartShow() {
-        resumeChoice = false
-        guard let channel, let current = restartableShow else { return }
-        startReplay(channel, current)
     }
 
     /// Left / Right in a replay: back 10 s, on 30 s.
@@ -587,20 +581,20 @@ struct LiveTVFullscreenControls: View {
     }
 }
 
-/// Live paused, Play/Pause again: continue or watch the show from its start.
+/// A replay paused, Play/Pause again: continue it or back to live.
 struct LiveTVResumeChoice: View {
     @ObservedObject var player: LiveTVPlayer
     @FocusState private var focus: Choice?
 
     private enum Choice {
         case resume
-        case restart
+        case live
     }
 
     var body: some View {
         if player.resumeChoice {
             VStack(spacing: 28) {
-                if let show = player.restartableShow {
+                if let show = player.replay {
                     Text(show.title)
                         .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
                         .foregroundColor(LiveTVTheme.primaryText)
@@ -612,15 +606,15 @@ struct LiveTVResumeChoice: View {
                         .foregroundColor(LiveTVTheme.secondaryText)
                 }
                 HStack(spacing: 30) {
-                    Button(action: { player.resumeLive() }) {
-                        Label(L10n.string("livetv_resume", fallback: "Continue"), systemImage: "play.fill")
+                    Button(action: { player.resumeReplay() }) {
+                        Label(L10n.string("livetv_resume", fallback: "Continue watching"), systemImage: "play.fill")
                     }
                     .focused($focus, equals: .resume)
-                    Button(action: { player.restartShow() }) {
-                        Label(L10n.string("livetv_restart", fallback: "Watch from the beginning"),
-                              systemImage: "backward.end.fill")
+                    Button(action: { player.backToLive() }) {
+                        Label(L10n.string("livetv_back_to_live", fallback: "Back to live"),
+                              systemImage: "dot.radiowaves.left.and.right")
                     }
-                    .focused($focus, equals: .restart)
+                    .focused($focus, equals: .live)
                 }
             }
             .padding(44)
