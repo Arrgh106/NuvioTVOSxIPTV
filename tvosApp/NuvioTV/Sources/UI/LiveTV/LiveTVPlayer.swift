@@ -83,27 +83,79 @@ final class LiveTVPlayer: ObservableObject {
     private var loadStarted = Date.distantPast
     private var triedFallback = false
 
+    /// A show played again (catch-up, step 6); nil: live.
+    @Published private(set) var replay: XtreamProgram?
+    /// The replay links not tried yet (panels differ, see LiveTVCatchup).
+    private var replayLinks: [URL] = []
+    private var replayHeaders: [String: String] = [:]
+
     /// Starts `channel` (or switches to it). The picture stays where it is:
     /// in the preview window or full screen.
     func play(_ channel: XtreamLiveChannel, item: LiveTVStore.PlaybackItem) {
+        replay = nil
+        replayLinks = []
+        start(channel, url: item.url, headers: item.headers, live: true)
+    }
+
+    /// Plays a past show of `channel` from its start, trying the links in turn.
+    func playCatchup(_ channel: XtreamLiveChannel, programme: XtreamProgram, urls: [URL], headers: [String: String]) {
+        guard let first = urls.first else { return }
+        replay = programme
+        replayLinks = Array(urls.dropFirst())
+        replayHeaders = headers
+        start(channel, url: first, headers: headers, live: false)
+    }
+
+    private func start(_ channel: XtreamLiveChannel, url: URL, headers: [String: String], live: Bool) {
         self.channel = channel
         status = .loading
         loadStarted = Date()
         loadProgrammes(for: channel)
-        triedFallback = false
+        triedFallback = !live
         session.load(PlaybackLoadRequest(
-            videoURL: item.url,
-            httpHeaders: item.headers,
+            videoURL: url,
+            httpHeaders: headers,
             // A preview must not switch the TV's display mode.
             matchContentEnabled: false,
             cacheProfile: .fromSettings(ProfileSettings.current.string(forKey: SettingsKey.networkCache)),
-            isLiveStream: true,
+            isLiveStream: live,
             streamName: channel.name,
             filename: channel.name,
-            nowPlayingTitle: channel.name
+            nowPlayingTitle: replay?.title ?? channel.name,
+            nowPlayingSubtitle: replay == nil ? nil : channel.name
         ))
         PlaybackWakeLock.acquire(ownerID: session.wakeLockOwnerID)
         startWatching()
+    }
+
+    /// The next replay link, when the one playing failed.
+    private func tryNextReplayLink() -> Bool {
+        guard let channel, replay != nil, !replayLinks.isEmpty else { return false }
+        let next = replayLinks.removeFirst()
+        start(channel, url: next, headers: replayHeaders, live: false)
+        return true
+    }
+
+    // MARK: Replay controls
+
+    var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
+
+    func togglePause() {
+        guard replay != nil else { return }
+        let engine = session.activeEngine
+        if engine.isPlayerPlaying { engine.pausePlayback() } else { engine.playPlayback() }
+        showBar(.compact)
+    }
+
+    /// Left / Right in a replay: back 10 s, on 30 s.
+    func skip(by seconds: Double) {
+        guard replay != nil else { return }
+        let engine = session.activeEngine
+        let duration = engine.durationMs
+        var target = engine.positionMs + Int64(seconds * 1000)
+        target = max(0, duration > 0 ? min(target, duration - 1000) : target)
+        engine.seekToMs(target)
+        showBar(.compact)
     }
 
     /// Ends playback and frees the provider connection.
@@ -114,6 +166,8 @@ final class LiveTVPlayer: ObservableObject {
         PlaybackWakeLock.release(ownerID: session.wakeLockOwnerID)
         programmesTask?.cancel()
         channel = nil
+        replay = nil
+        replayLinks = []
         programmes = []
         status = .idle
         isFullscreen = false
@@ -196,12 +250,19 @@ final class LiveTVPlayer: ObservableObject {
             return
         }
         if !error.isEmpty {
+            // A replay link the panel refused: the next form.
+            if replay != nil, tryNextReplayLink() { return }
             // Live streams that don't start natively get one try with MPV.
             if !triedFallback, session.requestLiveStartupFallback(generation: session.loadGeneration) {
                 triedFallback = true
                 return
             }
             status = .failed(error)
+            return
+        }
+        // A replay without a picture after 12 s: the next link.
+        if replay != nil, Date().timeIntervalSince(loadStarted) > 12 {
+            if !tryNextReplayLink() { status = .failed(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")) }
             return
         }
         // No picture after 10 s: the same fallback, once.
@@ -382,6 +443,7 @@ struct LiveTVFullscreenControls: View {
             .buttonStyle(LiveTVInvisibleButtonStyle())
             .focused($focused)
             .onMoveCommand(perform: move)
+            .onPlayPauseCommand { player.togglePause() }
             .onExitCommand {
                 if overlay.isOpen {
                     overlay.back()
@@ -408,6 +470,14 @@ struct LiveTVFullscreenControls: View {
         if overlay.isOpen {
             overlay.move(direction)
             return
+        }
+        // A replay: Left / Right skip back and on (Up / Down: live channels).
+        if player.replay != nil, player.bar != .expanded {
+            switch direction {
+            case .left: player.skip(by: -10); return
+            case .right: player.skip(by: 30); return
+            default: break
+            }
         }
         let inRow = player.bar == .expanded
         switch direction {

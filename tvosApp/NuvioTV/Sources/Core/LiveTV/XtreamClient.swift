@@ -36,9 +36,10 @@ struct XtreamClient: Sendable {
     func login() async throws -> XtreamUserInfo {
         let data = try await get(action: nil)
         guard let response = try? JSONDecoder().decode(XtreamLoginResponse.self, from: data),
-              let info = response.userInfo else {
+              var info = response.userInfo else {
             throw XtreamError.authenticationFailed
         }
+        info.serverTimeZone = response.serverInfo?.timezone?.trimmingCharacters(in: .whitespaces)
         guard info.auth == 1 else { throw XtreamError.authenticationFailed }
         if let status = info.status, status.lowercased() != "active" {
             throw XtreamError.accountInactive(status)

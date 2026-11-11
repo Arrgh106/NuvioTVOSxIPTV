@@ -16,6 +16,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     /// comes back from the player, instead of focus landing on the groups.
     var focusChannelID: Int?
     let onSelect: (XtreamLiveChannel) -> Void
+    /// OK on a past show of a channel with catch-up.
+    var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
     /// Told what's in focus, for the info panel.
     var info: LiveTVInfoModel?
@@ -27,6 +29,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.attach(to: view)
         context.coordinator.infoModel = info
         context.coordinator.pendingFocusID = focusChannelID
+        context.coordinator.onCatchup = onCatchup
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         return view
@@ -34,6 +37,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
     func updateUIView(_ view: LiveTVGuideGridView, context: Context) {
         context.coordinator.infoModel = info
+        context.coordinator.onCatchup = onCatchup
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
     }
@@ -50,6 +54,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var listID: String?
         private var channels: [XtreamLiveChannel] = []
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
+        var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
         private var favoriteIDs: Set<Int> = []
         private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
         private var timeline = LiveTVTimeline(now: Date())
@@ -285,7 +290,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             guard let cell = focusedRow else { return }
             let now = Date()
             let before = timeline
-            let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now)
+            // Channels with catch-up: back through the past first.
+            let earliest = LiveTVCatchup.earliest(archiveDays: cell.channel?.archiveDays ?? 0, now: now)
+            let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now, earliest: earliest)
             if !moved {
                 setOnChannel(true)
                 // From the channel the groups are the next step.
@@ -406,8 +413,19 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < channels.count else { return }
+            let channel = channels[indexPath.item]
+            // On a show that's over, on a channel with catch-up: watch it again.
+            let now = Date()
+            if !onChannel, let cursor = timeline.cursor,
+               let cell = collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell,
+               let programme = LiveTVTimeline.block(at: cursor, in: cell.strip.programmes ?? []).programme,
+               programme.end <= now,
+               LiveTVCatchup.isAvailable(start: programme.start, archiveDays: channel.archiveDays, now: now) {
+                onCatchup(channel, programme)
+                return
+            }
             // Back from the player focus comes back here, on the channel.
-            onSelect(channels[indexPath.item])
+            onSelect(channel)
         }
 
         func collectionView(

@@ -57,12 +57,13 @@ final class LiveTVGuideRows {
             task = Task { @MainActor in
                 if let epgID, !epgID.isEmpty, let reader {
                     let now = Date()
-                    // From the current half hour (no catch-up yet) to the end
-                    // of the stored guide.
-                    let from = LiveTVTimeline.floorSlot(now)
+                    // From the current half hour to the end of the stored
+                    // guide; channels with catch-up from as far back as it goes.
+                    let from = LiveTVCatchup.earliest(archiveDays: channel.archiveDays, now: now)
+                        ?? LiveTVTimeline.floorSlot(now)
                     let to = now.addingTimeInterval(LiveTVGuide.futureWindow)
                     let list = await Task.detached(priority: .userInitiated) {
-                        reader.programmes(channel: epgID, from: from, to: to, limit: 600)
+                        reader.programmes(channel: epgID, from: from, to: to, limit: 900)
                     }.value
                     if !list.isEmpty {
                         return Entry(programmes: list, loadedAt: Date(), partial: false)

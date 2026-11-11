@@ -128,7 +128,15 @@ final class LiveTVStore: ObservableObject {
     }
 
     @Published private(set) var account: XtreamAccount?
-    @Published private(set) var userInfo: XtreamUserInfo?
+    @Published private(set) var userInfo: XtreamUserInfo? {
+        didSet {
+            // Kept for replays before the next login.
+            if let zone = userInfo?.serverTimeZone, !zone.isEmpty {
+                ProfileSettings.current.set(zone, forKey: Self.serverTimeZoneKey)
+            }
+        }
+    }
+    private static let serverTimeZoneKey = "nuvio.tv.livetv.serverTimeZone"
     @Published private(set) var groups: [LiveTVGroup] = []
     @Published private(set) var state: LoadState = .idle {
         didSet {
@@ -634,6 +642,26 @@ final class LiveTVStore: ObservableObject {
         let url: URL
         let meta: NuvioMeta
         let headers: [String: String]
+    }
+
+    /// Replay links for a show on a channel with catch-up, the likeliest
+    /// first (`LiveTVCatchup.xtreamURLs`).
+    func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String])? {
+        guard let account, channel.archiveDays > 0 else { return nil }
+        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
+        let zoneID = userInfo?.serverTimeZone ?? ProfileSettings.current.string(forKey: Self.serverTimeZoneKey)
+        let urls = LiveTVCatchup.xtreamURLs(
+            server: client.server,
+            username: client.username,
+            password: client.password,
+            streamID: channel.streamID,
+            start: programme.start,
+            end: programme.end,
+            now: Date(),
+            fileExtension: XtreamClient.fileExtension(for: account.streamFormat, allowedFormats: allowedFormats),
+            serverTimeZone: zoneID.flatMap(TimeZone.init(identifier:)))
+        guard !urls.isEmpty else { return nil }
+        return (urls, client.httpHeaders)
     }
 
     func playbackItem(for channel: XtreamLiveChannel) -> PlaybackItem? {
