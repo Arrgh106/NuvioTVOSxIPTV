@@ -92,6 +92,9 @@ final class LiveTVPlayer: ObservableObject {
     private var replayHeaders: [String: String] = [:]
     /// The replay link playing (1-based) of how many, shown while it loads.
     @Published private(set) var replayAttempt: (index: Int, of: Int) = (0, 0)
+    /// A replay's first picture: make sure it plays (a Play/Pause press
+    /// during the switch could leave it paused).
+    private var playOnFirstFrame = false
 
     /// Starts `channel` (or switches to it). The picture stays where it is:
     /// in the preview window or full screen.
@@ -108,6 +111,7 @@ final class LiveTVPlayer: ObservableObject {
         replayLinks = Array(urls.dropFirst())
         replayHeaders = headers
         replayAttempt = (1, urls.count)
+        playOnFirstFrame = true
         start(channel, url: first, headers: headers, live: false)
     }
 
@@ -267,6 +271,10 @@ final class LiveTVPlayer: ObservableObject {
         let error = session.lastLoadError ?? engine.currentErrorMessage
         if engine.hasFirstFrameReadyForDisplay {
             if status != .playing { status = .playing }
+            if playOnFirstFrame {
+                playOnFirstFrame = false
+                if replay != nil, !engine.isPlayerPlaying { engine.playPlayback() }
+            }
             return
         }
         if !error.isEmpty {
@@ -489,6 +497,12 @@ struct LiveTVFullscreenControls: View {
                 }
             }
             .onAppear { focused = true }
+            // A replay started or the overlay closed: the controls take the
+            // remote again (without focus tvOS sent OK and Play/Pause to the
+            // player itself, which only paused).
+            .onChange(of: player.replay) { _, _ in focused = true }
+            .onChange(of: player.status) { _, _ in focused = true }
+            .onChange(of: overlay.isOpen) { _, _ in focused = true }
     }
 
     private func select() {

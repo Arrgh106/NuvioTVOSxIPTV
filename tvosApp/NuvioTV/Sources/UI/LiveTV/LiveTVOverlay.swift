@@ -439,8 +439,9 @@ final class LiveTVOverlayModel: ObservableObject {
 final class LiveTVOverlayPan: NSObject, UIGestureRecognizerDelegate {
     static let shared = LiveTVOverlayPan()
 
-    /// Finger travel per row; faster swipes count more.
-    private static let step: CGFloat = 55
+    /// Finger travel per row; faster swipes count a little more (about as
+    /// fast as the groups list in the guide; more skipped whole channels).
+    private static let step: CGFloat = 90
 
     private var recognizer: UIPanGestureRecognizer?
     private var onStep: (Int) -> Void = { _ in }
@@ -493,7 +494,7 @@ final class LiveTVOverlayPan: NSObject, UIGestureRecognizerDelegate {
             let moved = recognizer.translation(in: view).y
             recognizer.setTranslation(.zero, in: view)
             let speed = abs(recognizer.velocity(in: view).y)
-            let gain: CGFloat = speed > 3000 ? 5 : speed > 1500 ? 2.5 : 1
+            let gain: CGFloat = speed > 3000 ? 2 : speed > 1500 ? 1.4 : 1
             travel += moved * gain
             while abs(travel) >= Self.step {
                 let direction = travel > 0 ? 1 : -1
