@@ -66,8 +66,12 @@ enum LiveTVCatchup {
             URLQueryItem(name: "start", value: stamp),
             URLQueryItem(name: "duration", value: String(minutes)),
         ]
-        php?.percentEncodedQuery = php?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-        if let php = php?.string { links.append(php) }
+        if var components = php {
+            // URLComponents leaves "+" unescaped, which servers read as a space.
+            let query = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+            components.percentEncodedQuery = query
+            if let link = components.string { links.append(link) }
+        }
         if serverTimeZone == nil, let utc = TimeZone(identifier: "UTC") {
             let utcStamp = Self.stamp(start, in: utc)
             if utcStamp != stamp { links.append(timeshift(minutes, utcStamp, fileExtension)) }
