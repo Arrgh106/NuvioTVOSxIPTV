@@ -157,6 +157,11 @@ final class LiveTVPlayer: ObservableObject {
     /// Play/Pause pauses and plays on. Live and paused on a channel with an
     /// archive, it asks: continue, or the show from its beginning?
     func togglePause() {
+        // The choice open: Play/Pause continues.
+        if resumeChoice {
+            resumeLive()
+            return
+        }
         let engine = session.activeEngine
         if engine.isPlayerPlaying {
             engine.pausePlayback()
@@ -513,7 +518,6 @@ struct LiveTVFullscreenControls: View {
             .buttonStyle(LiveTVInvisibleButtonStyle())
             .focused($focused)
             .onMoveCommand(perform: move)
-            .onPlayPauseCommand { player.togglePause() }
             .onExitCommand {
                 if overlay.isOpen {
                     overlay.back()
@@ -523,7 +527,11 @@ struct LiveTVFullscreenControls: View {
                     onExit()
                 }
             }
-            .onAppear { focused = true }
+            .onAppear {
+                focused = true
+                LiveTVPlayPausePress.shared.install { LiveTVPlayer.shared.togglePause() }
+            }
+            .onDisappear { LiveTVPlayPausePress.shared.remove() }
             // A replay started or the overlay closed: the controls take the
             // remote again (without focus tvOS sent OK and Play/Pause to the
             // player itself, which only paused).
@@ -620,10 +628,45 @@ struct LiveTVResumeChoice: View {
             .liveTVGlass()
             .onAppear { focus = .resume }
             .onExitCommand { player.dismissResumeChoice() }
-            .onPlayPauseCommand { player.resumeLive() }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.opacity)
         }
+    }
+}
+
+/// Play/Pause in full screen, caught on the window: as a focused view's
+/// command it often never reached Live TV (tvOS gave it to the player as a
+/// system play/pause, so it only paused and the choice never came).
+@MainActor
+final class LiveTVPlayPausePress: NSObject {
+    static let shared = LiveTVPlayPausePress()
+
+    private var recognizer: UITapGestureRecognizer?
+    private var action: () -> Void = {}
+
+    func install(action: @escaping () -> Void) {
+        self.action = action
+        guard recognizer == nil, let window = Self.keyWindow else { return }
+        let press = UITapGestureRecognizer(target: self, action: #selector(pressed))
+        press.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
+        window.addGestureRecognizer(press)
+        recognizer = press
+    }
+
+    func remove() {
+        if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+        recognizer = nil
+    }
+
+    @objc private func pressed() {
+        action()
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
     }
 }
 
