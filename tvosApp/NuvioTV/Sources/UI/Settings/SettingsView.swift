@@ -12347,7 +12347,8 @@ private struct JellyfinServerEditSheet: View {
         let storedToken = server.map { JellyfinCredentialStore.token(forServerID: $0.id) } ?? ""
         _password = State(initialValue: server?.authKind == .login ? storedToken : "")
         _apiKey = State(initialValue: server?.authKind == .apiKey ? storedToken : "")
-        _syncAutomatically = State(initialValue: server?.syncAutomatically ?? true)
+        // Fork: off for new servers.
+        _syncAutomatically = State(initialValue: server?.syncAutomatically ?? false)
     }
 
     var body: some View {

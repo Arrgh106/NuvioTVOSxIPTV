@@ -567,7 +567,7 @@ final class LiveTVStore: ObservableObject {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
-        // Separator rows stay in: Live TV's option hides them (on by default).
+        // Separator rows stay in: Live TV's option hides them.
         var byGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
         let byID = Dictionary(sorted.map { ($0.streamID, $0) }, uniquingKeysWith: { first, _ in first })
 
