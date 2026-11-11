@@ -15,6 +15,12 @@ final class LiveTVSettings: ObservableObject {
         case hours12 = "12h"
     }
 
+    /// The channels in Home's Live TV row (as Android's `homeRowSource`).
+    enum HomeRowSource: String, CaseIterable {
+        case favorites
+        case recent
+    }
+
     // Guide
     @Published var showInfoPanel = true { didSet { save(showInfoPanel, Key.showInfoPanel) } }
     @Published var showDescription = true { didSet { save(showDescription, Key.showDescription) } }
@@ -36,6 +42,12 @@ final class LiveTVSettings: ObservableObject {
     @Published var infoBarOnZap = true { didSet { save(infoBarOnZap, Key.infoBarOnZap) } }
     @Published var reverseZap = false { didSet { save(reverseZap, Key.reverseZap) } }
 
+    // Integration
+    @Published var homeRow = true { didSet { save(homeRow, Key.homeRow) } }
+    @Published var homeRowSource: HomeRowSource = .favorites {
+        didSet { if !loading { ProfileSettings.current.set(homeRowSource.rawValue, forKey: Key.homeRowSource) } }
+    }
+
     static let clockChangedNotification = Notification.Name("nuvio.tv.livetv.settings.clock")
 
     /// OK on a channel plays it small in the info panel (else full screen).
@@ -53,6 +65,8 @@ final class LiveTVSettings: ObservableObject {
         static let rememberLastGroup = prefix + "rememberLastGroup"
         static let infoBarOnZap = prefix + "infoBarOnZap"
         static let reverseZap = prefix + "reverseZap"
+        static let homeRow = prefix + "homeRow"
+        static let homeRowSource = prefix + "homeRowSource"
     }
 
     private var loading = false
@@ -90,6 +104,9 @@ final class LiveTVSettings: ObservableObject {
         assign(\.rememberLastGroup, bool(Key.rememberLastGroup, true))
         assign(\.infoBarOnZap, bool(Key.infoBarOnZap, true))
         assign(\.reverseZap, bool(Key.reverseZap, false))
+        assign(\.homeRow, bool(Key.homeRow, true))
+        let source = store.string(forKey: Key.homeRowSource).flatMap(HomeRowSource.init(rawValue:)) ?? .favorites
+        if source != homeRowSource { homeRowSource = source }
         let clock = store.string(forKey: Key.clock).flatMap(Clock.init(rawValue:)) ?? .system
         if clock != self.clock { self.clock = clock }
     }

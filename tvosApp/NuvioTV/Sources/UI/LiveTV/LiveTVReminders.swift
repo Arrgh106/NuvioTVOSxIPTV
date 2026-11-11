@@ -16,13 +16,10 @@ final class LiveTVReminders: ObservableObject {
     static let changedNotification = Notification.Name("nuvio.tv.livetv.reminders.changed")
 
     @Published private(set) var list = LiveTVReminderList()
-    /// Watch on a prompt: Live TV plays this channel full screen.
-    @Published var pendingWatch: LiveTVReminder?
 
     private static let key = "nuvio.tv.livetv.reminders"
     private var canPrompt: () -> Bool = { false }
     private var canWatch: () -> Bool = { false }
-    private var openLiveTV: () -> Void = {}
     private var shown: Set<String> = []
     private var timer: Timer?
     private var observer: NSObjectProtocol?
@@ -42,7 +39,7 @@ final class LiveTVReminders: ObservableObject {
     func start(canPrompt: @escaping () -> Bool, canWatch: @escaping () -> Bool, openLiveTV: @escaping () -> Void) {
         self.canPrompt = canPrompt
         self.canWatch = canWatch
-        self.openLiveTV = openLiveTV
+        LiveTVWatch.shared.openLiveTV = openLiveTV
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
@@ -113,8 +110,7 @@ final class LiveTVReminders: ObservableObject {
             ) { [weak self] in
                 guard let self else { return }
                 self.remove(reminder)
-                self.pendingWatch = reminder
-                self.openLiveTV()
+                LiveTVWatch.shared.watch(LiveTVWatchRequest(channelID: reminder.channelID))
             })
         }
         actions.append(.init(title: L10n.string("livetv_reminder_dismiss", fallback: "Dismiss"), style: .cancel) {

@@ -18,9 +18,9 @@ struct LiveTVView: View {
     @ObservedObject private var settings = LiveTVSettings.shared
     /// The quick menu (gear in the header).
     @State private var showsQuickMenu = false
-    /// Watch on a reminder: the channel full screen. Not observed: the
-    /// guide doesn't redraw when a reminder is set.
-    private var reminders: LiveTVReminders { LiveTVReminders.shared }
+    /// Watch from outside Live TV (reminder, Home row): the channel full
+    /// screen. Not observed: nothing here redraws for it.
+    private var watch: LiveTVWatch { LiveTVWatch.shared }
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -86,9 +86,9 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
-        // Watch on a reminder, from anywhere in the app; the channels may
-        // still be loading when Live TV opens for it.
-        .onReceive(reminders.$pendingWatch) { _ in
+        // Watch from a reminder or the Home row, from anywhere in the app;
+        // the channels may still be loading when Live TV opens for it.
+        .onReceive(watch.$pending) { _ in
             // Sent before the value is stored: look once it is.
             Task { @MainActor in watchReminder() }
         }
@@ -265,14 +265,25 @@ struct LiveTVView: View {
         }
     }
 
-    /// Watch on a reminder: the channel full screen, zapping through the
-    /// group shown when the channel is in it.
+    /// Watch from outside: the channel full screen, zapping through the
+    /// request's channels (Home row) or the group shown when it's in it.
     private func watchReminder() {
-        guard let reminder = reminders.pendingWatch,
-              let channel = store.channel(id: reminder.channelID) else { return }
-        reminders.pendingWatch = nil
-        let list = store.visibleChannels.contains { $0.streamID == channel.streamID }
-            ? store.visibleChannels : [channel]
+        guard let request = watch.pending,
+              let channel = store.channel(id: request.channelID) else { return }
+        watch.pending = nil
+        if let groupID = request.groupID, store.selectedGroupID != groupID,
+           store.groups.contains(where: { $0.id == groupID }) {
+            store.selectedGroupID = groupID
+        }
+        let requested = request.listIDs.compactMap { store.channel(id: $0) }
+        let list: [XtreamLiveChannel]
+        if requested.contains(where: { $0.streamID == channel.streamID }) {
+            list = requested
+        } else if store.visibleChannels.contains(where: { $0.streamID == channel.streamID }) {
+            list = store.visibleChannels
+        } else {
+            list = [channel]
+        }
         let liveStore = store
         LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
             liveStore?.playbackItem(for: $0)

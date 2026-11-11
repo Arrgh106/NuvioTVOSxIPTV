@@ -5041,6 +5041,8 @@ private final class TVHomeFocusWork {
         let cwLandscape: Bool
         let landscapePosters: Bool
         let calendarToday: [NuvioMeta]
+        /// Fork: Home's Live TV row.
+        var liveTV: [NuvioMeta] = []
     }
     struct CachedVisibleSections {
         let signature: VisibleSectionsSignature
@@ -5484,6 +5486,8 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.homeCalendarToday) private var homeCalendarToday = true
+    /// Fork: Home's Live TV row; changes only when its channels do.
+    @ObservedObject private var liveTVRow = LiveTVHomeRowModel.shared
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
@@ -6582,7 +6586,32 @@ struct TVHomeView: View {
                     }
 
                     ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        if !section.collectionFolders.isEmpty {
+                        if section.id == LiveTVHomeRowModel.sectionID {
+                            // Fork: Live TV channels with what's on.
+                            LiveTVHomeRow(
+                                id: section.id,
+                                title: section.title,
+                                horizontalEdgeInset: heroBleed,
+                                items: section.items,
+                                externalFocus: $focusedCardID,
+                                initialFocusCardKey: initialFocusCardKey,
+                                initialScrollIndex: rowScrollStore.index(for: section.id),
+                                onScrollIndexChange: { rowScrollStore.setIndex($0, for: section.id) },
+                                onFocus: { meta in
+                                    recordFocusTransition()
+                                    let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                                    acknowledgeNativeProfileCardFocus(cardKey)
+                                    acknowledgeNativeOverlayFocusRestore(for: cardKey)
+                                    focusedRowIndex = index
+                                    focusedSectionId = section.id
+                                    focusedCardID = cardKey
+                                },
+                                onBlur: { meta in
+                                    clearNativeProfileCardFocus(TVHomeCardIdentity.key(rowID: section.id, item: meta))
+                                }
+                            )
+                            .id(section.id)
+                        } else if !section.collectionFolders.isEmpty {
                             TVCollectionFolderRow(
                                 id: section.id,
                                 title: section.title,
@@ -6834,7 +6863,8 @@ struct TVHomeView: View {
             } else if homeLayout == "Grid View",
                       section.id != TVHomeSection.continueWatchingId,
                       section.id != TVHomeSection.upcomingId,
-                      section.id != TVHomeSection.calendarTodayId {
+                      section.id != TVHomeSection.calendarTodayId,
+                      section.id != LiveTVHomeRowModel.sectionID {
                 keys = section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows)).map {
                     TVHomeCardIdentity.key(rowID: section.id, item: $0)
                 } + ["\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"]
@@ -6867,6 +6897,7 @@ struct TVHomeView: View {
             && section.id != TVHomeSection.continueWatchingId
             && section.id != TVHomeSection.upcomingId
             && section.id != TVHomeSection.calendarTodayId
+            && section.id != LiveTVHomeRowModel.sectionID
         let layout: TVHomeRestoreLeftNeighbor.RowLayout = isGridCatalog
             ? .grid(columns: TVHomeGridLayout.columns)
             : .horizontal
@@ -7852,6 +7883,43 @@ struct TVHomeView: View {
                 alignment: .topLeading
             )
             .id(section.id)
+        } else if section.id == LiveTVHomeRowModel.sectionID {
+            // Fork: Live TV channels with what's on; OK plays full screen.
+            LiveTVHomeRow(
+                id: section.id,
+                title: section.title,
+                horizontalEdgeInset: horizontalEdgeInset,
+                items: section.items,
+                externalFocus: $focusedCardID,
+                initialFocusCardKey: initialFocusCardKey,
+                initialScrollIndex: rowScrollStore.index(for: section.id),
+                onScrollIndexChange: { rowScrollStore.setIndex($0, for: section.id) },
+                onFocus: { meta in
+                    focusWork.upwardFocusTask?.cancel()
+                    recordFocusTransition()
+                    let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                    acknowledgeNativeProfileCardFocus(cardKey)
+                    if let pending = pendingInitialFocusCardKey, pending != cardKey { return }
+                    acknowledgeNativeOverlayFocusRestore(for: cardKey)
+                    let changedRow = focusedSectionId != section.id || focusedRowIndex != index
+                    focusedSectionId = section.id
+                    focusedRowIndex = index
+                    let animation: Animation? = changedRow && !suppressReturnFocusAnimations
+                        && pendingInitialFocusCardKey == nil
+                        ? ((isFastScrolling || fastNavigation)
+                            ? TVHomeLayout.fastVerticalScrollAnimation : TVHomeLayout.verticalScrollAnimation)
+                        : nil
+                    withAnimation(animation) {
+                        verticalScrollProxy.scrollTo(section.id, anchor: .top)
+                    }
+                    focusedCardID = cardKey
+                },
+                onBlur: { meta in
+                    clearNativeProfileCardFocus(TVHomeCardIdentity.key(rowID: section.id, item: meta))
+                }
+            )
+            .frame(height: estimatedHeight(for: section), alignment: .topLeading)
+            .id(section.id)
         } else if !section.collectionFolders.isEmpty {
             TVCollectionFolderRow(
                 id: section.id,
@@ -8091,6 +8159,7 @@ struct TVHomeView: View {
     private var initialFocusContentSignature: String {
         "\(store.hasLoaded)_\(store.sectionsRevision)_\(continueWatchingVisible ? continueWatchingMetas.count : 0)_\(continueWatchingVisible ? upcomingMetas.count : 0)"
             + "_\(homeCalendarToday ? calendarToday.metas.count : 0)"
+            + "_\(liveTVRow.metas.count)"
     }
 
     /// Finds the saved card without assuming that section or card IDs contain
@@ -8112,7 +8181,8 @@ struct TVHomeView: View {
                section.collectionFolders.isEmpty,
                section.id != TVHomeSection.continueWatchingId,
                section.id != TVHomeSection.upcomingId,
-               section.id != TVHomeSection.calendarTodayId {
+               section.id != TVHomeSection.calendarTodayId,
+               section.id != LiveTVHomeRowModel.sectionID {
                 let previewItems = section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows))
                 if let cardIndex = previewItems.firstIndex(where: {
                     TVHomeCardIdentity.key(rowID: section.id, item: $0) == focusKey
@@ -8138,7 +8208,8 @@ struct TVHomeView: View {
             guard section.collectionFolders.isEmpty,
                   section.id != TVHomeSection.continueWatchingId,
                   section.id != TVHomeSection.upcomingId,
-                  section.id != TVHomeSection.calendarTodayId else {
+                  section.id != TVHomeSection.calendarTodayId,
+                  section.id != LiveTVHomeRowModel.sectionID else {
                 continue
             }
             let matchingIndex = section.items.firstIndex {
@@ -8217,6 +8288,7 @@ struct TVHomeView: View {
             && targetSection.id != TVHomeSection.continueWatchingId
             && targetSection.id != TVHomeSection.upcomingId
             && targetSection.id != TVHomeSection.calendarTodayId
+            && targetSection.id != LiveTVHomeRowModel.sectionID
         let gridRowIndex = isGridCatalogSection
             ? location.cardIndex / TVHomeGridLayout.columns
             : 0
@@ -8271,6 +8343,7 @@ struct TVHomeView: View {
     }
 
     private func estimatedHeight(for section: TVHomeSection) -> CGFloat {
+        if section.id == LiveTVHomeRowModel.sectionID { return LiveTVHomeRow.rowHeight }
         return section.collectionFolders.isEmpty
             ? estimatedCatalogRowHeight
             : estimatedCollectionRowHeight(for: section)
@@ -8358,7 +8431,8 @@ struct TVHomeView: View {
             hideUnreleased: hideUnreleased,
             cwLandscape: continueWatchingLandscape,
             landscapePosters: landscapePosters,
-            calendarToday: homeCalendarToday ? calendarToday.metas : []
+            calendarToday: homeCalendarToday ? calendarToday.metas : [],
+            liveTV: collectionHome == nil ? liveTVRow.metas : []
         )
 
         if let cached = focusWork.cachedVisibleSections, cached.signature == signature {
@@ -8383,7 +8457,13 @@ struct TVHomeView: View {
             items: calendarToday.metas,
             posterShape: continueWatchingLandscape ? "landscape" : "poster"
         )
-        let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
+        let liveTVSections = liveTVRow.metas.isEmpty ? [] : [TVHomeSection(
+            id: LiveTVHomeRowModel.sectionID,
+            title: L10n.string("livetv_title", fallback: "Live TV"),
+            items: liveTVRow.metas
+        )]
+        let pinnedSections = liveTVSections
+            + ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
             + ((upcomingMetas.isEmpty || !continueWatchingVisible) ? [] : [upcomingSection])
             + ((calendarToday.isEmpty || !homeCalendarToday) ? [] : [calendarTodaySection])
             + [localTitlesSection].compactMap { $0 }
@@ -8399,6 +8479,7 @@ struct TVHomeView: View {
                 // Collection folder rows don't carry title posters; leave them intact.
                 if !section.collectionFolders.isEmpty
                     || section.id == TVHomeSection.localTitlesId
+                    || section.id == LiveTVHomeRowModel.sectionID
                     || section.id == TVHomeSection.jellyfinId
                     || section.id.hasPrefix(TVHomeSection.jellyfinLibraryIdPrefix) {
                     return section
@@ -8489,6 +8570,7 @@ struct TVHomeView: View {
         let catalogSections = visibleSections.filter {
             $0.id != TVHomeSection.continueWatchingId && $0.id != TVHomeSection.upcomingId
                 && $0.id != TVHomeSection.calendarTodayId && $0.collectionFolders.isEmpty
+                && $0.id != LiveTVHomeRowModel.sectionID
         }
         let selectedIDs = (try? JSONDecoder().decode([String].self, from: heroCatalogsData)) ?? []
         let selectedSet = collectionHome == nil ? Set(selectedIDs) : Set<String>()
@@ -9338,7 +9420,8 @@ struct TVHomeView: View {
             loadMoreContinueWatchingIfNeeded(currentItem: currentItem)
             return
         }
-        if sectionId == TVHomeSection.upcomingId || sectionId == TVHomeSection.calendarTodayId {
+        if sectionId == TVHomeSection.upcomingId || sectionId == TVHomeSection.calendarTodayId
+            || sectionId == LiveTVHomeRowModel.sectionID {
             return
         }
         guard let sectionIndex = store.sections.firstIndex(where: { $0.id == sectionId }) else { return }

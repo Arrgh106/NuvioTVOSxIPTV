@@ -274,7 +274,16 @@ final class LiveTVStore: ObservableObject {
         recentIDs = Array(ids.prefix(Self.recentLimit))
         ProfileSettings.current.set(recentIDs, forKey: Self.recentKey)
         // Don't reorder the list under the user while they browse it.
-        if selectedGroupID != LiveTVGroup.recentID { rebuildGroups() }
+        if selectedGroupID != LiveTVGroup.recentID { rebuildGroups() } else { publishHomeChannels() }
+    }
+
+    /// Favorites and recently watched for Home's Live TV row (step 7b),
+    /// which has no store of its own.
+    private func publishHomeChannels() {
+        guard !channelsByID.isEmpty else { return }
+        LiveTVHomeRowModel.shared.remember(
+            favorites: favoriteIDs.compactMap { channelsByID[$0] },
+            recent: recentIDs.compactMap { channelsByID[$0] })
     }
 
     func setHidden(_ ids: Set<String>, hidden: Bool) {
@@ -308,6 +317,7 @@ final class LiveTVStore: ObservableObject {
     /// Sidebar: Search (while searching), Favorites, Recently watched, All,
     /// then the provider's groups that aren't hidden.
     private func rebuildGroups() {
+        publishHomeChannels()
         let hideSeparators = hidesSeparators
         let separators = separatorIDs
         allVisible = hiddenGroupIDs.isEmpty && !hideSeparators ? channels : channels.filter { channel in
