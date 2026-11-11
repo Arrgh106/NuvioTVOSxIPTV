@@ -856,6 +856,10 @@ struct ContentView: View {
             guard profile != nil else { return }
             SMBServerStore.shared.reload()
             JellyfinServerStore.shared.reload()
+            // Fork: the library indexes are per profile too; without this a
+            // profile showed the previous profile's Jellyfin / SMB rows.
+            SMBLibraryIndex.shared.reload()
+            JellyfinLibraryIndex.shared.reload()
             Task(priority: .utility) {
                 await SMBSessionManager.shared.connectAll()
                 await JellyfinSessionManager.shared.connectAll()

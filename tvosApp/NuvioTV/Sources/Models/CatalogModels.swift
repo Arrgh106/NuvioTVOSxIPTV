@@ -12196,7 +12196,11 @@ enum ProfileSettings {
         SettingsKey.simklPlanToWatchHomeCatalogs,
         // MDBList
         SettingsKey.mdbListApiKey,
-        SettingsKey.mdbListEnabled
+        SettingsKey.mdbListEnabled,
+        // Fork: Jellyfin servers carry the user's access token, and their
+        // library index belongs to that login.
+        SettingsKey.jellyfinServers,
+        SettingsKey.jellyfinLibraryIndex
     ]
 
     private static var profileLocalTraktKeys: Set<String> { profileLocalIntegrationKeys }
