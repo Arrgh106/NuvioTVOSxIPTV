@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV guide, step 8: guide matching** (see below).
+- Nothing right now. Steps 0–8 of the Live TV guide are done; the next part is chosen from *Noted for later*.
 
 ## Next: Live TV guide, step by step
 
@@ -25,9 +25,9 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 7a: reminders as on Android. OK (or long press) on a show to come in the guide or the overlay schedule: *Remind me* / *Cancel reminder*; a bell marks it. A minute before the start a prompt comes up over any screen (also over a film) with *Watch* (Live TV full screen on the channel) and *Dismiss*; gone after two minutes. Per profile; listed in Settings → Live TV → Reminders, select one to remove it.
    - ✅ 7b: Live TV row on Home, below Continue Watching: favorite channels (recently watched while there are none, or by choice) with what's on, progress and time left. A card in focus shows the channel, the show with times, what's next and the description above the rows, on a dark background. OK plays full screen, Up/Down go through the row's channels. Settings → Live TV → Integration: on / off and the channels.
    - Profiles: Live TV (row, reminders, options, guide) and the Jellyfin / SMB libraries reload when switching profiles; new profiles no longer get a copy of the Jellyfin servers.
-8. 🚧 **Guide matching**
-   - 8a: channels without a working guide id are matched by name, as on Android ("DE: Sky Cinema HD" = "Sky Cinema": prefixes, HD / FHD / 4K and brackets don't count). Chosen by hand first, then the guide id, then the name; only guide channels with programmes. The guide is read again once after the update.
-   - 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
+8. ✅ **Guide matching**
+   - ✅ 8a: channels without a working guide id are matched by name, as on Android ("DE: Sky Cinema HD" = "Sky Cinema": prefixes, HD / FHD / 4K and brackets don't count). Chosen by hand first, then the guide id, then the name; only guide channels with programmes. The guide is read again once after the update.
+   - ✅ 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
 
 ## Noted for later
 
