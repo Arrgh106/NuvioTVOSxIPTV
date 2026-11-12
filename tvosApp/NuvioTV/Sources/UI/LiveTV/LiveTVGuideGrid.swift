@@ -238,6 +238,22 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 }
                 return
             }
+            // Same list with channels taken out (Remove from This Group, step
+            // 10c): those rows go, the others stay and focus moves on to the
+            // next one, instead of reloading under the closing menu.
+            if listID == self.listID, let removed = Self.removedRows(from: self.channels, to: channels) {
+                self.channels = channels
+                collection.performBatchUpdates {
+                    collection.deleteItems(at: removed.map { IndexPath(item: $0, section: 0) })
+                }
+                if let first = removed.first, !channels.isEmpty {
+                    preferredIndexPath = IndexPath(item: min(first, channels.count - 1), section: 0)
+                    collection.remembersLastFocusedIndexPath = false
+                    collection.setNeedsFocusUpdate()
+                    collection.updateFocusIfNeeded()
+                }
+                return
+            }
             let isNewList = listID != self.listID
             self.listID = listID
             self.channels = channels
@@ -247,6 +263,22 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 collection.setContentOffset(CGPoint(x: 0, y: -collection.contentInset.top), animated: false)
             }
             focusPendingChannel()
+        }
+
+        /// The rows of `old` missing from `new`, when `new` is `old` with some
+        /// taken out (same order); otherwise nil.
+        static func removedRows(from old: [XtreamLiveChannel], to new: [XtreamLiveChannel]) -> [Int]? {
+            guard new.count < old.count else { return nil }
+            var removed: [Int] = []
+            var next = 0
+            for (index, channel) in old.enumerated() {
+                if next < new.count, new[next].streamID == channel.streamID {
+                    next += 1
+                } else {
+                    removed.append(index)
+                }
+            }
+            return next == new.count ? removed : nil
         }
 
         /// Scrolls to the last watched channel and moves focus onto it.
