@@ -236,14 +236,15 @@ final class LiveTVStore: ObservableObject {
         let password = XtreamAccountStore.password(for: account)
         let visible = allVisible
         Task { [weak self] in
-            let ids = await Task.detached(priority: .utility) {
-                Set(visible.compactMap { channel -> String? in
-                    guard let id = channel.epgChannelID, !id.isEmpty else { return nil }
-                    return id.lowercased()
-                })
+            // Every visible channel: those without a guide id are matched
+            // by name (step 8a).
+            let channels = await Task.detached(priority: .utility) {
+                visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.name) }
             }.value
             guard let self, self.account == account else { return }
-            LiveTVGuide.shared.refreshIfNeeded(account: account, password: password, epgIDs: ids, force: force)
+            LiveTVGuide.shared.refreshIfNeeded(
+                account: account, password: password, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), force: force)
         }
     }
 
@@ -274,7 +275,16 @@ final class LiveTVStore: ObservableObject {
         recentIDs = Array(ids.prefix(Self.recentLimit))
         ProfileSettings.current.set(recentIDs, forKey: Self.recentKey)
         // Don't reorder the list under the user while they browse it.
-        if selectedGroupID != LiveTVGroup.recentID { rebuildGroups() }
+        if selectedGroupID != LiveTVGroup.recentID { rebuildGroups() } else { publishHomeChannels() }
+    }
+
+    /// Favorites and recently watched for Home's Live TV row (step 7b),
+    /// which has no store of its own.
+    private func publishHomeChannels() {
+        guard !channelsByID.isEmpty else { return }
+        LiveTVHomeRowModel.shared.remember(
+            favorites: favoriteIDs.compactMap { channelsByID[$0] },
+            recent: recentIDs.compactMap { channelsByID[$0] })
     }
 
     func setHidden(_ ids: Set<String>, hidden: Bool) {
@@ -308,6 +318,7 @@ final class LiveTVStore: ObservableObject {
     /// Sidebar: Search (while searching), Favorites, Recently watched, All,
     /// then the provider's groups that aren't hidden.
     private func rebuildGroups() {
+        publishHomeChannels()
         let hideSeparators = hidesSeparators
         let separators = separatorIDs
         allVisible = hiddenGroupIDs.isEmpty && !hideSeparators ? channels : channels.filter { channel in

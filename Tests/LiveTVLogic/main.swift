@@ -182,5 +182,67 @@ let onAir = LiveTVCatchup.xtreamURLs(
 check(onAir.contains { $0.absoluteString.contains("/30/") }, "on air: the aired 30 minutes")
 check(Set(onAir.map(\.absoluteString)).count == onAir.count, "no link twice")
 
+// MARK: Reminders
+
+func reminder(_ channel: Int, _ minutes: Double, _ title: String = "Show") -> LiveTVReminder {
+    LiveTVReminder(channelID: channel, channelName: "Ch \(channel)", title: title, start: at(minutes))
+}
+var reminders = LiveTVReminderList()
+check(reminders.toggle(reminder(1, 60, "Late")), "toggle sets a reminder")
+check(reminders.toggle(reminder(2, 30, "Early")), "a second one")
+check(reminders.items.map(\.title) == ["Early", "Late"], "sorted by start")
+check(reminders.contains(channelID: 1, start: at(60)), "found by channel and start")
+check(!reminders.contains(channelID: 1, start: at(30)), "not another start")
+check(!reminders.toggle(reminder(1, 60)), "toggle again cancels it")
+check(reminders.items.count == 1, "one left")
+// Due a minute before, until ten minutes after; shown ones not again.
+check(reminders.due(now: at(28.5), shown: []) == nil, "not due 90 s before")
+check(reminders.due(now: at(29), shown: [])?.title == "Early", "due a minute before")
+check(reminders.due(now: at(39.9), shown: [])?.title == "Early", "still due just under ten minutes after")
+check(reminders.due(now: at(40), shown: []) == nil, "not ten minutes after")
+check(reminders.due(now: at(30), shown: [reminder(2, 30).id]) == nil, "shown already")
+check(reminders.upcoming(now: at(35)).count == 1, "upcoming while it can still show")
+check(reminders.upcoming(now: at(41)).isEmpty, "not upcoming after that")
+// Dropped half an hour after the start.
+check(!reminders.prune(now: at(60)), "kept 30 minutes after")
+check(reminders.prune(now: at(60.5)), "dropped after that")
+check(reminders.items.isEmpty, "empty")
+
+// MARK: Guide matching (step 8a)
+
+check(LiveTVEPGMatch.normalize("DE: Sky Cinema Action HD") == "skycinemaaction", "prefix and quality go")
+check(LiveTVEPGMatch.normalize("Das Erste (FHD)") == "daserste", "brackets go")
+check(LiveTVEPGMatch.normalize("UK| BBC One [backup]") == "bbcone", "| prefix and [..] go")
+check(LiveTVEPGMatch.normalize("ProSieben 4K") == "prosieben", "4K goes")
+check(LiveTVEPGMatch.idName("DasErste.de") == "daserste", "id: country end goes")
+check(LiveTVEPGMatch.idName("GloboSP.br") == "globosp", "id: .br goes")
+
+func ref(_ id: Int, _ epg: String?, _ name: String) -> LiveTVEPGChannelRef {
+    LiveTVEPGChannelRef(streamID: id, epgID: epg, name: name)
+}
+var picker = LiveTVEPGMatch.Picker(channels: [
+    ref(1, "DasErste.de", "DE: Das Erste HD"),   // id
+    ref(2, nil, "ZDF HD"),                       // name
+    ref(3, "wrong.id", "Sky Sport 1"),           // wrong id: name
+    ref(4, nil, "Nothing Like It"),              // none
+    ref(5, nil, "RTL"),                          // by hand
+    ref(6, "daserste.de", "Das Erste"),          // by hand: no guide
+], overrides: [5: "rtl.manual", 6: ""])
+check(picker.saw(guideID: "daserste.de", names: ["Das Erste"]), "id match kept")
+check(picker.saw(guideID: "zdf.de", names: ["ZDF"]), "name match kept")
+check(picker.saw(guideID: "skysport1.de", names: ["Sky Sport 1 HD"]), "name match despite wrong id")
+check(picker.saw(guideID: "zdf.backup", names: ["ZDF"]), "second name match kept")
+check(picker.saw(guideID: "rtl.manual", names: ["Something else"]), "manual kept")
+check(!picker.saw(guideID: "other.tv", names: ["Other"]), "nobody's: not kept")
+let all: Set = ["daserste.de", "zdf.de", "skysport1.de", "zdf.backup", "rtl.manual"]
+let guideLinks = picker.links(listed: all)
+check(guideLinks[1] == "daserste.de", "by id")
+check(guideLinks[2] == "zdf.de", "by name, the first")
+check(guideLinks[3] == "skysport1.de", "by name when the id isn't in the guide")
+check(guideLinks[4] == nil, "no match")
+check(guideLinks[5] == "rtl.manual", "by hand wins")
+check(guideLinks[6] == nil, "by hand: no guide")
+check(picker.links(listed: all.subtracting(["zdf.de"]))[2] == "zdf.backup", "only guide channels with programmes")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -12176,6 +12176,9 @@ enum ProfileSettings {
     private static let simklIsolationMigrationKey = "nuvio.tv.profile.settings.simklIsolation.v1"
     private static let mdbListIsolationMigrationKey = "nuvio.tv.profile.settings.mdbListIsolation.v1"
     static let settingsChangedNotification = Notification.Name("nuvio.tv.profile.settings.changed")
+    /// Fork: posted after another profile's settings became `current` (Live
+    /// TV keeps per-profile state in memory and reloads on this).
+    static let activeProfileChangedNotification = Notification.Name("nuvio.tv.profile.active.changed")
 
     /// Values identifying connected external tracking/metadata accounts on the device.
     /// They are deliberately not copied when a new profile is created: a profile
@@ -12193,7 +12196,11 @@ enum ProfileSettings {
         SettingsKey.simklPlanToWatchHomeCatalogs,
         // MDBList
         SettingsKey.mdbListApiKey,
-        SettingsKey.mdbListEnabled
+        SettingsKey.mdbListEnabled,
+        // Fork: Jellyfin servers carry the user's access token, and their
+        // library index belongs to that login.
+        SettingsKey.jellyfinServers,
+        SettingsKey.jellyfinLibraryIndex
     ]
 
     private static var profileLocalTraktKeys: Set<String> { profileLocalIntegrationKeys }
@@ -12258,7 +12265,9 @@ enum ProfileSettings {
         // case, skip preference mutations so an oversized legacy domain is not
         // sent back through cfprefsd.
         current = suite
+        let changed = activeProfileID != id
         activeProfileID = id
+        if changed { NotificationCenter.default.post(name: activeProfileChangedNotification, object: nil) }
         guard canMutatePreferences else { return }
 
         suite.set(primary, forKey: primaryProfileKey)
@@ -12277,7 +12286,9 @@ enum ProfileSettings {
 
     static func clearActiveProfile() {
         current = .standard
+        let changed = activeProfileID != nil
         activeProfileID = nil
+        if changed { NotificationCenter.default.post(name: activeProfileChangedNotification, object: nil) }
     }
 
     /// Returns whether a captured settings store still belongs to the active

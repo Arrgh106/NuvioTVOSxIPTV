@@ -18,6 +18,12 @@ struct LiveTVView: View {
     @ObservedObject private var settings = LiveTVSettings.shared
     /// The quick menu (gear in the header).
     @State private var showsQuickMenu = false
+    /// Assign EPG for this channel (long press in the guide).
+    @State private var assignEPGChannel: XtreamLiveChannel?
+    @State private var epgChanged = false
+    /// Watch from outside Live TV (reminder, Home row): the channel full
+    /// screen. Not observed: nothing here redraws for it.
+    private var watch: LiveTVWatch { LiveTVWatch.shared }
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
@@ -83,6 +89,23 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
+        // A guide channel chosen by hand: the guide is read again once the
+        // screen closes (its programmes aren't stored yet).
+        .fullScreenCover(item: $assignEPGChannel, onDismiss: {
+            if epgChanged {
+                epgChanged = false
+                store.refreshGuide(force: true)
+            }
+        }) { channel in
+            LiveTVAssignEPG(channel: channel, onChanged: { epgChanged = true })
+        }
+        // Watch from a reminder or the Home row, from anywhere in the app;
+        // the channels may still be loading when Live TV opens for it.
+        .onReceive(watch.$pending) { _ in
+            // Sent before the value is stored: look once it is.
+            Task { @MainActor in watchReminder() }
+        }
+        .onChange(of: store.listRevision) { _, _ in watchReminder() }
         // Preview window switched off while it plays: nothing shows the
         // picture any more, so it stops.
         .onChange(of: settings.previewActive) { _, active in
@@ -207,6 +230,7 @@ struct LiveTVView: View {
                 onSelect: play,
                 onCatchup: playCatchup,
                 onToggleFavorite: { store.toggleFavorite($0) },
+                onAssignEPG: { assignEPGChannel = $0 },
                 info: info
             )
         }
@@ -253,6 +277,35 @@ struct LiveTVView: View {
             LiveTVFocusLinks.beginReturn()
             player.isFullscreen = true
         }
+    }
+
+    /// Watch from outside: the channel full screen, zapping through the
+    /// request's channels (Home row) or the group shown when it's in it.
+    private func watchReminder() {
+        guard let request = watch.pending,
+              let channel = store.channel(id: request.channelID) else { return }
+        watch.pending = nil
+        if let groupID = request.groupID, store.selectedGroupID != groupID,
+           store.groups.contains(where: { $0.id == groupID }) {
+            store.selectedGroupID = groupID
+        }
+        let requested = request.listIDs.compactMap { store.channel(id: $0) }
+        let list: [XtreamLiveChannel]
+        if requested.contains(where: { $0.streamID == channel.streamID }) {
+            list = requested
+        } else if store.visibleChannels.contains(where: { $0.streamID == channel.streamID }) {
+            list = store.visibleChannels
+        } else {
+            list = [channel]
+        }
+        let liveStore = store
+        LiveTVZapper.shared.begin(channel: channel, in: list) { [weak liveStore] in
+            liveStore?.playbackItem(for: $0)
+        }
+        start(channel)
+        LiveTVFocusLinks.beginReturn()
+        player.isFullscreen = true
+        player.showBar(.compact)
     }
 
     /// Plays `channel` where the picture is (preview or full screen).

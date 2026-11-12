@@ -17547,6 +17547,12 @@ enum LiveTVSettingsRows {
             title: title, subtitle: subtitle, selection: selection, options: options,
             accentColor: accentColor, optionLabel: optionLabel)
     }
+
+    static func action(
+        title: String, subtitle: String, value: String, accentColor: Color, action: @escaping () -> Void
+    ) -> some View {
+        SettingsActionRow(title: title, subtitle: subtitle, value: value, accentColor: accentColor, action: action)
+    }
 }
 
 private struct SettingsGroup<Content: View>: View {

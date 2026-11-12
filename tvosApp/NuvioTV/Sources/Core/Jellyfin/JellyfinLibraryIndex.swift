@@ -92,6 +92,8 @@ final class JellyfinLibraryIndex: ObservableObject {
 
     func reload() {
         titlesByServerID = Self.load()
+        // Home rebuilds its Jellyfin rows on this (e.g. another profile).
+        NotificationCenter.default.post(name: Self.changedNotification, object: nil)
     }
 
     /// All indexed titles across every server, ordered by

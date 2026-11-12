@@ -8,6 +8,7 @@ import SwiftUI
 struct LiveTVSettingsView: View {
     let accentColor: Color
     @ObservedObject private var settings = LiveTVSettings.shared
+    @ObservedObject private var reminders = LiveTVReminders.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -89,6 +90,64 @@ struct LiveTVSettingsView: View {
                     accentColor: accentColor
                 )
             }
+
+            LiveTVSettingsRows.group(
+                title: L10n.string("livetv_settings_integration", fallback: "Integration"),
+                subtitle: L10n.string("livetv_settings_integration_subtitle", fallback: "Live TV in the rest of the app")
+            ) {
+                LiveTVSettingsRows.toggle(
+                    title: L10n.string("livetv_settings_home_row", fallback: "Row on Home"),
+                    subtitle: L10n.string("livetv_settings_home_row_detail", fallback: "Your channels with what's on, at the top of Home; OK plays full screen"),
+                    isOn: $settings.homeRow,
+                    accentColor: accentColor
+                )
+                LiveTVSettingsRows.option(
+                    title: L10n.string("livetv_settings_home_row_source", fallback: "Channels in the Row"),
+                    subtitle: L10n.string("livetv_settings_home_row_source_detail", fallback: "Favorites (recently watched while there are none), or recently watched"),
+                    selection: Binding(
+                        get: { settings.homeRowSource.rawValue },
+                        set: { settings.homeRowSource = LiveTVSettings.HomeRowSource(rawValue: $0) ?? .favorites }),
+                    options: LiveTVSettings.HomeRowSource.allCases.map(\.rawValue),
+                    accentColor: accentColor,
+                    optionLabel: { LiveTVSettings.HomeRowSource(rawValue: $0)?.label ?? $0 }
+                )
+            }
+
+            reminderList
+        }
+    }
+}
+
+extension LiveTVSettingsView {
+    /// Upcoming reminders, as Android's "Reminders (select to remove)".
+    @ViewBuilder
+    var reminderList: some View {
+        let now = Date()
+        let upcoming = reminders.list.upcoming(now: now)
+        LiveTVSettingsRows.group(
+            title: L10n.string("livetv_settings_reminders", fallback: "Reminders"),
+            subtitle: upcoming.isEmpty
+                ? L10n.string("livetv_settings_reminders_none", fallback: "None set. OK on a show to come in the guide: Remind me")
+                : L10n.string("livetv_settings_reminders_detail", fallback: "A minute before the start a prompt offers to watch. Select one to remove it")
+        ) {
+            ForEach(upcoming) { reminder in
+                LiveTVSettingsRows.action(
+                    title: reminder.title,
+                    subtitle: LiveTVInfoPanel.clock(reminder.start, now: now) + "  ·  " + reminder.channelName,
+                    value: L10n.string("livetv_settings_reminders_remove", fallback: "Remove"),
+                    accentColor: accentColor,
+                    action: { reminders.remove(reminder) }
+                )
+            }
+        }
+    }
+}
+
+extension LiveTVSettings.HomeRowSource {
+    var label: String {
+        switch self {
+        case .favorites: return L10n.string("livetv_favorites", fallback: "Favorites")
+        case .recent: return L10n.string("livetv_recent", fallback: "Recently watched")
         }
     }
 }
