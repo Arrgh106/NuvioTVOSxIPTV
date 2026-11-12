@@ -21,6 +21,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
     var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
     var onRename: (XtreamLiveChannel) -> Void = { _ in }
+    /// Your own groups (step 10c): add the channel to one; remove it from
+    /// the one open now (nil: the open group isn't yours).
+    var onAddToGroup: (XtreamLiveChannel) -> Void = { _ in }
+    var onRemoveFromGroup: ((XtreamLiveChannel) -> Void)?
     /// Reorder Channels (step 10b): set while it runs, to the channel picked
     /// up first.
     var reorderStartID: Int?
@@ -47,6 +51,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
         context.coordinator.onRename = onRename
+        context.coordinator.onAddToGroup = onAddToGroup
+        context.coordinator.onRemoveFromGroup = onRemoveFromGroup
         context.coordinator.onReorderStart = onReorderStart
         context.coordinator.onReorderPicked = onReorderPicked
         context.coordinator.onReorderDone = onReorderDone
@@ -63,6 +69,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
         context.coordinator.onRename = onRename
+        context.coordinator.onAddToGroup = onAddToGroup
+        context.coordinator.onRemoveFromGroup = onRemoveFromGroup
         context.coordinator.onReorderStart = onReorderStart
         context.coordinator.onReorderPicked = onReorderPicked
         context.coordinator.onReorderDone = onReorderDone
@@ -88,6 +96,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
         var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
         var onRename: (XtreamLiveChannel) -> Void = { _ in }
+        var onAddToGroup: (XtreamLiveChannel) -> Void = { _ in }
+        var onRemoveFromGroup: ((XtreamLiveChannel) -> Void)?
         var onReorderStart: (XtreamLiveChannel) -> Void = { _ in }
         var onReorderPicked: (String?) -> Void = { _ in }
         var onReorderDone: ([Int]) -> Void = { _ in }
@@ -639,6 +649,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let channel = channels[indexPath.item]
             let isFavorite = favoriteIDs.contains(channel.streamID)
             let canReorder = canReorder && channels.count > 1
+            let removeFromGroup = onRemoveFromGroup
             // Channels with an archive: the show on now from its beginning.
             let now = Date()
             let shows = (collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell)?.strip.programmes ?? []
@@ -680,6 +691,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     title: L10n.string("livetv_rename_channel", fallback: "Rename Channel"),
                     image: UIImage(systemName: "pencil")
                 ) { _ in self?.onRename(channel) })
+                children.append(UIAction(
+                    title: L10n.string("livetv_group_add", fallback: "Add to Group…"),
+                    image: UIImage(systemName: "folder.badge.plus")
+                ) { _ in self?.onAddToGroup(channel) })
+                if let removeFromGroup {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_group_remove", fallback: "Remove from This Group"),
+                        image: UIImage(systemName: "folder.badge.minus"),
+                        attributes: .destructive
+                    ) { _ in removeFromGroup(channel) })
+                }
                 if canReorder {
                     children.append(UIAction(
                         title: L10n.string("livetv_reorder_channels", fallback: "Reorder Channels"),

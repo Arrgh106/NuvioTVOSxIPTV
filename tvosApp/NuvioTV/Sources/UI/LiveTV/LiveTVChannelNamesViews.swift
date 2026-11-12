@@ -8,13 +8,14 @@ struct LiveTVChannelNamesGroup: View {
     let accentColor: Color
     @ObservedObject private var names = LiveTVChannelEdits.shared
     @State private var editsCleanup = false
+    @State private var deletingAll = false
 
     var body: some View {
         let edits = names.edits
         let terms = LiveTVNameCleaner.terms(edits.removals)
         LiveTVSettingsRows.group(
             title: L10n.string("livetv_names_title", fallback: "Channel List"),
-            subtitle: L10n.string("livetv_names_subtitle", fallback: "Rename or reorder: long press a channel or a group in the guide")
+            subtitle: L10n.string("livetv_names_subtitle", fallback: "Rename, reorder or make your own groups: long press a channel or a group in the guide")
         ) {
             LiveTVSettingsRows.action(
                 title: L10n.string("livetv_names_cleanup", fallback: "Name Cleanup"),
@@ -79,6 +80,23 @@ struct LiveTVChannelNamesGroup: View {
                     action: { names.resetGroupOrder() }
                 )
             }
+            if !names.customGroups.isEmpty {
+                LiveTVSettingsRows.action(
+                    title: L10n.string("livetv_group_delete_all", fallback: "Delete My Groups"),
+                    subtitle: names.customGroups.map(\.name).joined(separator: ", "),
+                    value: L10n.format("livetv_order_groups", fallback: "%@ groups", names.customGroups.count.formatted()),
+                    accentColor: accentColor,
+                    action: { deletingAll = true }
+                )
+            }
+        }
+        .alert(L10n.string("livetv_group_delete_all_ask", fallback: "Delete all your groups?"), isPresented: $deletingAll) {
+            Button(L10n.string("livetv_group_delete_all", fallback: "Delete My Groups"), role: .destructive) {
+                names.deleteAllCustomGroups()
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
+        } message: {
+            Text(L10n.string("livetv_group_delete_all_detail", fallback: "Only your groups go. Their channels stay in the provider's groups."))
         }
         .sheet(isPresented: $editsCleanup) {
             LiveTVSettingsRows.clearSheetBackground(

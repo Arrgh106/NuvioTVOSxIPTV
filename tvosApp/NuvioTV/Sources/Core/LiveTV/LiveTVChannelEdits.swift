@@ -7,8 +7,12 @@ import Foundation
 final class LiveTVChannelEdits: ObservableObject {
     static let shared = LiveTVChannelEdits()
     static let changedNotification = Notification.Name("nuvio.tv.livetv.channelEdits.changed")
+    /// Your own groups changed (step 10c): only the sidebar and their lists
+    /// are built again, not the whole channel list.
+    static let customGroupsChangedNotification = Notification.Name("nuvio.tv.livetv.customGroups.changed")
 
     @Published private(set) var edits = LiveTVNameEdits.none
+    @Published private(set) var customGroups: [LiveTVCustomGroup] = []
 
     nonisolated private static let channelNamesKey = "nuvio.tv.livetv.channelNames"
     nonisolated private static let groupNamesKey = "nuvio.tv.livetv.groupNames"
@@ -16,6 +20,7 @@ final class LiveTVChannelEdits: ObservableObject {
     nonisolated private static let cleanGroupsKey = "nuvio.tv.livetv.cleanGroupNames"
     nonisolated private static let channelOrderKey = "nuvio.tv.livetv.channelOrder"
     nonisolated private static let groupOrderKey = "nuvio.tv.livetv.groupOrder"
+    nonisolated private static let customGroupsKey = "nuvio.tv.livetv.customGroups"
     private var profileObserver: NSObjectProtocol?
 
     private init() {
@@ -29,6 +34,60 @@ final class LiveTVChannelEdits: ObservableObject {
 
     func load() {
         edits = Self.read()
+        customGroups = ProfileSettings.current.data(forKey: Self.customGroupsKey)
+            .flatMap { try? JSONDecoder().decode([LiveTVCustomGroup].self, from: $0) } ?? []
+        NotificationCenter.default.post(name: Self.customGroupsChangedNotification, object: nil)
+    }
+
+    // MARK: Your groups (step 10c)
+
+    func customGroup(id: String) -> LiveTVCustomGroup? {
+        customGroups.first { $0.id == id }
+    }
+
+    /// Returns the new group's id.
+    @discardableResult
+    func createCustomGroup(name: String, with channel: Int? = nil) -> String {
+        let id = LiveTVCustomGroup.prefix + String(UUID().uuidString.prefix(8)).lowercased()
+        var groups = LiveTVCustomGroups.create(customGroups, name: name, id: id)
+        if let channel { groups = LiveTVCustomGroups.add(groups, id: id, channel: channel) }
+        setCustomGroups(groups)
+        return id
+    }
+
+    func renameCustomGroup(id: String, to name: String) {
+        setCustomGroups(LiveTVCustomGroups.rename(customGroups, id: id, to: name))
+    }
+
+    func deleteCustomGroup(id: String) {
+        setCustomGroups(LiveTVCustomGroups.delete(customGroups, id: id))
+    }
+
+    func addToCustomGroup(id: String, channel: Int) {
+        setCustomGroups(LiveTVCustomGroups.add(customGroups, id: id, channel: channel))
+    }
+
+    func removeFromCustomGroup(id: String, channel: Int) {
+        setCustomGroups(LiveTVCustomGroups.remove(customGroups, id: id, channel: channel))
+    }
+
+    func setCustomGroupOrder(id: String, shown: [Int]) {
+        setCustomGroups(LiveTVCustomGroups.setOrder(customGroups, id: id, shown: shown))
+    }
+
+    func deleteAllCustomGroups() {
+        setCustomGroups([])
+    }
+
+    private func setCustomGroups(_ groups: [LiveTVCustomGroup]) {
+        guard groups != customGroups else { return }
+        customGroups = groups
+        if groups.isEmpty {
+            ProfileSettings.current.removeObject(forKey: Self.customGroupsKey)
+        } else if let data = try? JSONEncoder().encode(groups) {
+            ProfileSettings.current.set(data, forKey: Self.customGroupsKey)
+        }
+        NotificationCenter.default.post(name: Self.customGroupsChangedNotification, object: nil)
     }
 
     /// The active profile's edits, straight from its settings (the list is

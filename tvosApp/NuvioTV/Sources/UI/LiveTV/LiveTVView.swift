@@ -23,6 +23,9 @@ struct LiveTVView: View {
     @State private var epgChanged = false
     /// Rename a channel or group (long press, step 10a).
     @State private var renaming: LiveTVRenameSheet.Target?
+    /// Your own groups (step 10c).
+    @State private var addingToGroup: LiveTVAddToGroupSheet.Target?
+    @State private var deletingGroup: LiveTVGroup?
     /// Reorder Channels / Reorder Groups (step 10b): set while it runs.
     @State private var reorderChannelStart: Int?
     @State private var reorderGroupStart: String?
@@ -125,6 +128,22 @@ struct LiveTVView: View {
             LiveTVSettingsRows.clearSheetBackground(
                 LiveTVRenameSheet(target: target, accentColor: LiveTVTheme.accent))
         }
+        .sheet(item: $addingToGroup) { target in
+            LiveTVSettingsRows.clearSheetBackground(
+                LiveTVAddToGroupSheet(target: target, accentColor: LiveTVTheme.accent))
+        }
+        .alert(
+            L10n.format("livetv_group_delete_ask", fallback: "Delete “%@”?", deletingGroup?.name ?? ""),
+            isPresented: Binding(get: { deletingGroup != nil }, set: { if !$0 { deletingGroup = nil } })
+        ) {
+            Button(L10n.string("livetv_group_delete", fallback: "Delete Group"), role: .destructive) {
+                if let group = deletingGroup { LiveTVChannelEdits.shared.deleteCustomGroup(id: group.id) }
+                deletingGroup = nil
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) { deletingGroup = nil }
+        } message: {
+            Text(L10n.string("livetv_group_delete_detail", fallback: "Only your group goes. Its channels stay in their own groups."))
+        }
         // Watch from a reminder or the Home row, from anywhere in the app;
         // the channels may still be loading when Live TV opens for it.
         .onReceive(watch.$pending) { _ in
@@ -223,9 +242,15 @@ struct LiveTVView: View {
             showCounts: settings.showGroupCounts,
             onSelect: { store.selectedGroupID = $0 },
             onRename: { group in
-                renaming = .init(
-                    kind: .group(group.id), current: group.name, providerName: store.providerGroupName(group.id))
+                if LiveTVCustomGroup.isCustom(group.id) {
+                    renaming = .init(kind: .customGroup(group.id), current: group.name, providerName: group.name)
+                } else {
+                    renaming = .init(
+                        kind: .group(group.id), current: group.name, providerName: store.providerGroupName(group.id))
+                }
             },
+            onNewGroup: { renaming = .newGroup() },
+            onDeleteGroup: { deletingGroup = $0 },
             reorderStartID: reorderGroupStart,
             reorderFinishRequest: reorderFinish,
             onReorderStart: { group in
@@ -302,6 +327,10 @@ struct LiveTVView: View {
                 onToggleFavorite: { store.toggleFavorite($0) },
                 onAssignEPG: { assignEPGChannel = $0 },
                 onRename: { renaming = .channel($0) },
+                onAddToGroup: { addingToGroup = .init(channel: $0) },
+                onRemoveFromGroup: store.selectedCustomGroupID.map { groupID in
+                    { (channel: XtreamLiveChannel) in LiveTVChannelEdits.shared.removeFromCustomGroup(id: groupID, channel: channel.streamID) }
+                },
                 reorderStartID: reorderChannelStart,
                 reorderFinishRequest: reorderFinish,
                 canReorder: store.canReorder(store.selectedGroupID),

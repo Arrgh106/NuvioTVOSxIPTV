@@ -182,6 +182,7 @@ final class LiveTVStore: ObservableObject {
     private var rawCategories: [XtreamCategory] = []
     private var rawChannels: [XtreamLiveChannel] = []
     private var editsObserver: NSObjectProtocol?
+    private var customGroupsObserver: NSObjectProtocol?
     private var renameTask: Task<Void, Never>?
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
@@ -218,6 +219,15 @@ final class LiveTVStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.applyNames() }
         }
+        // Your own groups (step 10c): the sidebar and their lists only.
+        customGroupsObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVChannelEdits.customGroupsChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.channels.isEmpty else { return }
+                self.rebuildGroups()
+            }
+        }
     }
 
     var hasAccount: Bool { account != nil }
@@ -234,8 +244,22 @@ final class LiveTVStore: ObservableObject {
         case LiveTVGroup.favoritesID: return favoriteIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.recentID: return recentIDs.compactMap { channelsByID[$0] }
         case LiveTVGroup.searchID: return searchResults
+        case _ where LiveTVCustomGroup.isCustom(groupID): return customChannels(groupID)
         default: return (hidesSeparators ? channelsByGroupWithoutSeparators : channelsByGroup)[groupID] ?? []
         }
+    }
+
+    /// Your group's channels, from every channel (also ones in hidden
+    /// groups, as on Android).
+    private func customChannels(_ groupID: String) -> [XtreamLiveChannel] {
+        let ids = LiveTVChannelEdits.shared.customGroup(id: groupID)?.channelIDs ?? []
+        let skip = hidesSeparators ? separatorIDs : []
+        return ids.compactMap { skip.contains($0) ? nil : channelsByID[$0] }
+    }
+
+    /// The group open now is one of yours.
+    var selectedCustomGroupID: String? {
+        LiveTVCustomGroup.isCustom(selectedGroupID) ? selectedGroupID : nil
     }
 
     // MARK: Full guide
@@ -247,7 +271,17 @@ final class LiveTVStore: ObservableObject {
     func refreshGuide(force: Bool, reuseDownloads: Bool = false) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
-        let visible = allVisible
+        // Channels in your groups from hidden groups get their guide too.
+        var visible = allVisible
+        var shownIDs = Set(visible.map(\.streamID))
+        for group in LiveTVChannelEdits.shared.customGroups {
+            for id in group.channelIDs where !shownIDs.contains(id) {
+                if let channel = channelsByID[id] {
+                    visible.append(channel)
+                    shownIDs.insert(id)
+                }
+            }
+        }
         Task { [weak self] in
             // Every visible channel: those without a guide id are matched
             // by name (step 8a).
@@ -289,6 +323,10 @@ final class LiveTVStore: ObservableObject {
     /// in their own list (ones not shown stay at the end).
     func saveChannelOrder(groupID: String, ids: [Int]) {
         guard canReorder(groupID) else { return }
+        if LiveTVCustomGroup.isCustom(groupID) {
+            LiveTVChannelEdits.shared.setCustomGroupOrder(id: groupID, shown: ids)
+            return
+        }
         if groupID == LiveTVGroup.favoritesID {
             let shown = Set(ids)
             let ordered = ids + favoriteIDs.filter { !shown.contains($0) }
@@ -309,6 +347,7 @@ final class LiveTVStore: ObservableObject {
     /// What the provider calls a group (before a rename or cleanup).
     func providerGroupName(_ id: String) -> String {
         if id == LiveTVGroup.otherID { return groupNames.other }
+        if let custom = LiveTVChannelEdits.shared.customGroup(id: id) { return custom.name }
         return rawCategories.first { $0.id == id }?.name ?? id
     }
 
@@ -400,10 +439,17 @@ final class LiveTVStore: ObservableObject {
         if !channels.isEmpty {
             result.append(LiveTVGroup(id: LiveTVGroup.allID, name: groupNames.all, count: allVisible.count))
         }
-        result += categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }.map { group in
+        let provider = categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }.map { group in
             guard hideSeparators else { return group }
             return LiveTVGroup(id: group.id, name: group.name, count: channelsByGroupWithoutSeparators[group.id]?.count ?? 0)
         }
+        // Your own groups first, then the provider's (step 10c); Reorder
+        // Groups arranges them together.
+        let edits = LiveTVChannelEdits.shared
+        let custom = edits.customGroups.map { group in
+            LiveTVGroup(id: group.id, name: group.name, count: customChannels(group.id).count)
+        }
+        result += custom.isEmpty ? provider : LiveTVListOrder.ordered(custom + provider, saved: edits.edits.groupOrder, id: \.id)
         groups = result
         if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID

@@ -12,6 +12,9 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     let onSelect: (String) -> Void
     /// Long press on a provider group: rename it (step 10a).
     var onRename: (LiveTVGroup) -> Void = { _ in }
+    /// Your own groups (step 10c).
+    var onNewGroup: () -> Void = {}
+    var onDeleteGroup: (LiveTVGroup) -> Void = { _ in }
     /// Reorder Groups (step 10b): set while it runs, to the group picked up
     /// first.
     var reorderStartID: String?
@@ -45,6 +48,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.showCounts = showCounts
         context.coordinator.onRename = onRename
+        context.coordinator.onNewGroup = onNewGroup
+        context.coordinator.onDeleteGroup = onDeleteGroup
         context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
@@ -73,6 +78,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             }
         }
         context.coordinator.onRename = onRename
+        context.coordinator.onNewGroup = onNewGroup
+        context.coordinator.onDeleteGroup = onDeleteGroup
         context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
         context.coordinator.updateReorder(reorderStartID, in: container.collectionView)
@@ -85,6 +92,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         private var selectedID = ""
         private var onSelect: (String) -> Void = { _ in }
         var onRename: (LiveTVGroup) -> Void = { _ in }
+        var onNewGroup: () -> Void = {}
+        var onDeleteGroup: (LiveTVGroup) -> Void = { _ in }
         var showCounts = true
         private var onReorderStart: (LiveTVGroup) -> Void = { _ in }
         private var onReorderPicked: (String?) -> Void = { _ in }
@@ -225,16 +234,29 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         ) -> UIContextMenuConfiguration? {
             guard !isReordering, let indexPath = indexPaths.first, indexPath.item < groups.count else { return nil }
             let group = groups[indexPath.item]
-            // Search, Favorites, Recently watched and All keep their names and places.
-            guard !group.isSpecial else { return nil }
             let several = groups.filter { !$0.isSpecial }.count > 1
+            let isCustom = LiveTVCustomGroup.isCustom(group.id)
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                let newGroup = UIAction(
+                    title: L10n.string("livetv_group_new", fallback: "New Group"),
+                    image: UIImage(systemName: "folder.badge.plus")
+                ) { _ in self?.onNewGroup() }
+                // Search, Favorites, Recently watched and All keep their names and places.
+                guard !group.isSpecial else { return UIMenu(title: group.name, children: [newGroup]) }
                 var children: [UIMenuElement] = [
                     UIAction(
                         title: L10n.string("livetv_rename_group", fallback: "Rename Group"),
                         image: UIImage(systemName: "pencil")
                     ) { _ in self?.onRename(group) },
                 ]
+                if isCustom {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_group_delete", fallback: "Delete Group"),
+                        image: UIImage(systemName: "trash"),
+                        attributes: .destructive
+                    ) { _ in self?.onDeleteGroup(group) })
+                }
+                children.append(newGroup)
                 if several {
                     children.append(UIAction(
                         title: L10n.string("livetv_reorder_groups", fallback: "Reorder Groups"),
