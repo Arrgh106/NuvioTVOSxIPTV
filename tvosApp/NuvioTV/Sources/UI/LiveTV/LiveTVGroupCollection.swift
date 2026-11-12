@@ -49,14 +49,9 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         let gate = container.leftTrap
         gate.name = "groups"
         gate.canOpen = { [weak coordinator = context.coordinator] in !(coordinator?.isReordering ?? false) }
-        // Menu while reordering: save and finish.
-        let pressMenu = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.finishReorder))
-        pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
-        pressMenu.delegate = context.coordinator
-        // Taken here, the press never reaches the app's sidebar.
-        pressMenu.delaysPressesBegan = true
-        context.coordinator.menuRecognizer = pressMenu
-        view.addGestureRecognizer(pressMenu)
+        // Menu while reordering: save and finish, never the app's sidebar.
+        container.takesMenu = { [weak coordinator = context.coordinator] in coordinator?.isReordering ?? false }
+        container.onMenu = { [weak coordinator = context.coordinator] in coordinator?.finishReorder() }
         gate.stay = { [weak coordinator = context.coordinator] in coordinator?.focusedCell }
         LiveTVFocusLinks.groupGate = gate
         context.coordinator.gate = gate
@@ -81,7 +76,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
         private var groups: [LiveTVGroup] = []
         private var selectedID = ""
         private var onSelect: (String) -> Void = { _ in }
@@ -94,7 +89,6 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         /// focus is, Menu saves. Search, Favorites, Recent and All stay on top.
         private(set) var isReordering = false
         private var pickedID: String?
-        weak var menuRecognizer: UIGestureRecognizer?
         private weak var collection: UICollectionView?
 
         func setReorderCallbacks(
@@ -119,16 +113,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             }
         }
 
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            gestureRecognizer !== menuRecognizer || isReordering
-        }
-
-        /// Menu only while reordering: otherwise it goes on at once.
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
-            gestureRecognizer !== menuRecognizer || isReordering
-        }
-
-        @objc func finishReorder() {
+        func finishReorder() {
             guard isReordering else { return }
             let ids = groups.filter { !$0.isSpecial }.map(\.id)
             isReordering = false
@@ -283,7 +268,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
 }
 
 /// The group list with a focus guide on its left edge (see `LiveTVLeftGate`).
-final class LiveTVGroupContainer: UIView {
+final class LiveTVGroupContainer: LiveTVMenuTakingView {
     let collectionView: UICollectionView
     let leftTrap = LiveTVLeftGate()
 

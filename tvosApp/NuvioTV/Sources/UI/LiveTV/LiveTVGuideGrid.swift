@@ -144,9 +144,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let pressMenu = UITapGestureRecognizer(target: self, action: #selector(backToChannel))
             pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
             pressMenu.delegate = self
-            // Taken here, the press never reaches the app's sidebar.
-            pressMenu.delaysPressesBegan = true
             menuRecognizer = pressMenu
+            // Menu while reordering: taken by the view itself, so it never
+            // reaches the app's sidebar.
+            view.takesMenu = { [weak self] in self?.reordering ?? false }
+            view.onMenu = { [weak self] in self?.finishReorder() }
             collection.addGestureRecognizer(pressMenu)
             // Tells one swipe from the next (a fast swipe keeps moving focus
             // after the swipe itself was handled).
@@ -457,14 +459,13 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             return wantsMenu
         }
 
-        /// Menu only when it's ours (reordering, or away from now): every
-        /// other press goes on at once, as before.
+        /// Menu away from now; while reordering the view takes it.
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
             gestureRecognizer !== menuRecognizer || wantsMenu
         }
 
         private var wantsMenu: Bool {
-            reordering || (focusedRow != nil && timeline.cursor != nil)
+            !reordering && focusedRow != nil && timeline.cursor != nil
         }
 
         /// The cursor sits on the channel (number, logo, name) instead of a
@@ -679,7 +680,43 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 // MARK: - Container
 
 /// Time ruler on top, channel rows below.
-final class LiveTVGuideGridView: UIView {
+/// Takes Menu presses while `takesMenu` says so: they then never reach the
+/// app, whose sidebar opened on Back while reordering. A gesture recognizer
+/// can't do that (the press reaches the responders first).
+class LiveTVMenuTakingView: UIView {
+    var takesMenu: () -> Bool = { false }
+    var onMenu: () -> Void = {}
+    private var menuTaken = false
+
+    private static func split(_ presses: Set<UIPress>) -> (menu: Bool, rest: Set<UIPress>) {
+        let rest = presses.filter { $0.type != .menu }
+        return (rest.count != presses.count, rest)
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, takesMenu() else { return super.pressesBegan(presses, with: event) }
+        menuTaken = true
+        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, menuTaken else { return super.pressesEnded(presses, with: event) }
+        menuTaken = false
+        if !rest.isEmpty { super.pressesEnded(rest, with: event) }
+        onMenu()
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, menuTaken else { return super.pressesCancelled(presses, with: event) }
+        menuTaken = false
+        if !rest.isEmpty { super.pressesCancelled(rest, with: event) }
+    }
+}
+
+final class LiveTVGuideGridView: LiveTVMenuTakingView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
     let leftTrap = LiveTVLeftGate()
