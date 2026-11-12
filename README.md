@@ -127,7 +127,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | TiviMate-style TV guide grid, info panel, overlay mode | ✅ Done |
 | Rename channels and groups, name cleanup | ✅ Done |
 | Reorder channels and groups | ✅ Done |
-| Custom groups | 🚧 In progress |
+| Custom groups | ✅ Done |
 | Parental controls (PIN lock for groups) | 🗓 Planned |
 | Catch-up, restart live shows | ✅ Done |
 | Time-shift (pause and rewind live without an archive) | 🗓 Planned |
