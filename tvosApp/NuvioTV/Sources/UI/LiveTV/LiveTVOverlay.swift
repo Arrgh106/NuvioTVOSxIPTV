@@ -98,7 +98,8 @@ final class LiveTVOverlayModel: ObservableObject {
     /// Opens on the channel playing, in the group it was started from.
     func open(playing: XtreamLiveChannel?) {
         guard let store else { return }
-        groups = store.groups
+        // Locked groups (step 11) open only in the guide, with the PIN.
+        groups = store.groups.filter { !$0.locked }
         var group = store.selectedGroupID
         var list = store.channels(inGroup: group)
         if let playing, !list.contains(where: { $0.streamID == playing.streamID }) {

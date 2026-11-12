@@ -405,5 +405,18 @@ mine = LiveTVCustomGroups.delete(mine, id: "custom:a")
 check(mine.map(\.id) == ["custom:b"], "deleted")
 check(LiveTVCustomGroup.isCustom("custom:b") && !LiveTVCustomGroup.isCustom("__all__") && !LiveTVCustomGroup.isCustom("12"), "custom ids")
 
+// MARK: Parental controls (step 11)
+
+check(LiveTVParental.isAdult("XXX Movies") && LiveTVParental.isAdult("For Adults") && LiveTVParental.isAdult("Kino 18+"), "adult names")
+check(LiveTVParental.isAdult("+18 Night") && LiveTVParental.isAdult("NSFW"), "adult names, more")
+check(!LiveTVParental.isAdult("Sport") && !LiveTVParental.isAdult("Sussex News") && !LiveTVParental.isAdult("Kids 18"), "not adult")
+check(LiveTVParental.isValidPin("1234") && LiveTVParental.isValidPin("12345678"), "valid PINs")
+check(!LiveTVParental.isValidPin("123") && !LiveTVParental.isValidPin("123456789") && !LiveTVParental.isValidPin("12a4") && !LiveTVParental.isValidPin("１２３４"), "invalid PINs")
+let parentalGroups: [(id: String, name: String)] = [("1", "Sport"), ("2", "XXX"), ("3", "News")]
+check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: true, unlocked: [], enabled: false).isEmpty, "no PIN: nothing locked")
+check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: true, unlocked: [], enabled: true) == ["2", "3"], "locked by you and by name")
+check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: false, unlocked: [], enabled: true) == ["3"], "automatic lock off")
+check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: true, unlocked: ["2"], enabled: true) == ["3"], "unlocked stays open")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

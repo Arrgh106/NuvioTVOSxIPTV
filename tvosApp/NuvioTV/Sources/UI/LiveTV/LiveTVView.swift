@@ -26,6 +26,8 @@ struct LiveTVView: View {
     /// Your own groups (step 10c).
     @State private var addingToGroup: LiveTVAddToGroupSheet.Target?
     @State private var deletingGroup: LiveTVGroup?
+    /// Parental controls (step 11): the PIN for a locked group.
+    @State private var pinPurpose: LiveTVPinSheet.Purpose?
     /// Reorder Channels / Reorder Groups (step 10b): set while it runs.
     @State private var reorderChannelStart: Int?
     @State private var reorderGroupStart: String?
@@ -127,6 +129,13 @@ struct LiveTVView: View {
         .sheet(item: $renaming) { target in
             LiveTVSettingsRows.clearSheetBackground(
                 LiveTVRenameSheet(target: target, accentColor: LiveTVTheme.accent))
+        }
+        .sheet(item: $pinPurpose) { purpose in
+            LiveTVSettingsRows.clearSheetBackground(
+                LiveTVPinSheet(purpose: purpose, accentColor: LiveTVTheme.accent) { groupID in
+                    store.refreshLocks()
+                    store.selectedGroupID = groupID
+                })
         }
         .sheet(item: $addingToGroup) { target in
             LiveTVSettingsRows.clearSheetBackground(
@@ -240,7 +249,14 @@ struct LiveTVView: View {
             groups: store.groups,
             selectedID: store.selectedGroupID,
             showCounts: settings.showGroupCounts,
-            onSelect: { store.selectedGroupID = $0 },
+            onSelect: { id in
+                // A locked group asks for the PIN first.
+                if let group = store.groups.first(where: { $0.id == id }), group.locked {
+                    pinPurpose = .unlock(group)
+                } else {
+                    store.selectedGroupID = id
+                }
+            },
             onRename: { group in
                 if LiveTVCustomGroup.isCustom(group.id) {
                     renaming = .init(kind: .customGroup(group.id), current: group.name, providerName: group.name)
@@ -251,6 +267,8 @@ struct LiveTVView: View {
             },
             onNewGroup: { renaming = .newGroup() },
             onDeleteGroup: { deletingGroup = $0 },
+            onLock: { group in LiveTVParentalControls.shared.lock(group.id) },
+            onRemoveLock: { pinPurpose = .removeLock($0) },
             reorderStartID: reorderGroupStart,
             reorderFinishRequest: reorderFinish,
             onReorderStart: { group in

@@ -83,6 +83,7 @@ The password is stored in the Apple TV Keychain. Each Nuvio profile has its own 
 - **Channel names:** long press a channel or a group → *Rename*. Settings → Live TV → Channel List → *Name Cleanup* takes words like "USA", "FHD" or "24/7" off the start or end of every name.
 - **Your order:** long press a channel → *Reorder Channels* (or a group → *Reorder Groups*). OK picks one up, move to the new place, OK puts it there; Back saves.
 - **Your own groups:** long press a channel → *Add to Group…* (pick one of yours or make a new one). The channel stays in its own group too. Your groups sit above the provider's; long press one to rename, delete or reorder it.
+- **Parental controls:** Settings → Live TV → Parental Controls → *Set a PIN* (4 to 8 digits). Then long press a group → *Lock with PIN*, or let groups named Adult, XXX or 18+ lock themselves. Locked groups ask for the PIN and stay out of All Channels, search, favorites and your groups.
 - **More guides:** Settings → Live TV → Guide Sources → *Add XMLTV Guide* (a link to an `.xml` or `.xml.gz` file). Each guide can be turned off and moved in time; a channel takes the guide with real listings that goes furthest ahead. The provider's own guide can be turned off there too.
 
 ## nuvio.tv account sync
@@ -128,7 +129,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Rename channels and groups, name cleanup | ✅ Done |
 | Reorder channels and groups | ✅ Done |
 | Custom groups | ✅ Done |
-| Parental controls (PIN lock for groups) | 🗓 Planned |
+| Parental controls (PIN lock for groups) | 🚧 In progress |
 | Catch-up, restart live shows | ✅ Done |
 | Time-shift (pause and rewind live without an archive) | 🗓 Planned |
 | On Demand (provider movies & series, matched to Nuvio details) | 🗓 Planned |

@@ -17556,11 +17556,11 @@ enum LiveTVSettingsRows {
 
     static func textField(
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
-        status: String? = nil, statusColor: Color = .white.opacity(0.56)
+        status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
     ) -> some View {
         SettingsNativeTextFieldRow(
-            title: title, subtitle: subtitle, placeholder: placeholder, text: text, fieldWidth: fieldWidth,
-            status: status, statusColor: statusColor)
+            title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
+            fieldWidth: fieldWidth, status: status, statusColor: statusColor)
     }
 
     static func stepper(
