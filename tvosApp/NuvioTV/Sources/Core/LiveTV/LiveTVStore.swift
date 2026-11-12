@@ -236,14 +236,15 @@ final class LiveTVStore: ObservableObject {
         let password = XtreamAccountStore.password(for: account)
         let visible = allVisible
         Task { [weak self] in
-            let ids = await Task.detached(priority: .utility) {
-                Set(visible.compactMap { channel -> String? in
-                    guard let id = channel.epgChannelID, !id.isEmpty else { return nil }
-                    return id.lowercased()
-                })
+            // Every visible channel: those without a guide id are matched
+            // by name (step 8a).
+            let channels = await Task.detached(priority: .utility) {
+                visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.name) }
             }.value
             guard let self, self.account == account else { return }
-            LiveTVGuide.shared.refreshIfNeeded(account: account, password: password, epgIDs: ids, force: force)
+            LiveTVGuide.shared.refreshIfNeeded(
+                account: account, password: password, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), force: force)
         }
     }
 

@@ -62,7 +62,8 @@ final class LiveTVGuideRows {
         if let running = inFlight[id] {
             task = running
         } else {
-            let epgID = channel.epgChannelID?.trimmingCharacters(in: .whitespaces)
+            // The guide channel matched at import (id, name or by hand).
+            let epgID = LiveTVGuide.shared.guideID(for: channel)
             let reader = LiveTVGuide.shared.reader()
             task = Task { @MainActor in
                 if let epgID, !epgID.isEmpty, let reader {

@@ -48,6 +48,11 @@ final class LiveTVGuide: ObservableObject {
     private var database: GuideDatabase?
     private var scope: String?
     private var refreshTask: Task<Void, Never>?
+    /// Stream → guide channel, worked out at import (step 8a). Empty for a
+    /// guide stored before matching: then the provider's guide id counts.
+    private var links: [Int: String] = [:]
+    /// Bumped when the stored guide changes how it reads (re-import once).
+    private static let formatVersion = "2"
 
     // MARK: Reading
 
@@ -63,22 +68,41 @@ final class LiveTVGuide: ObservableObject {
         return openDatabase()
     }
 
+    /// The guide channel a stream reads its programmes from: the match from
+    /// the import (manual, id or name), else the provider's guide id.
+    func guideID(streamID: Int, fallback: String?) -> String? {
+        _ = reader()
+        if let link = links[streamID] { return link }
+        let id = fallback?.trimmingCharacters(in: .whitespaces)
+        return id?.isEmpty == false ? id : nil
+    }
+
+    func guideID(for channel: XtreamLiveChannel) -> String? {
+        guideID(streamID: channel.streamID, fallback: channel.epgChannelID)
+    }
+
     // MARK: Refresh
 
     /// Starts a background refresh when the stored guide is missing or older
-    /// than `maxAge` (or always with `force`). `epgIDs`: the channels to
-    /// keep programmes for.
-    func refreshIfNeeded(account: XtreamAccount, password: String, epgIDs: Set<String>, force: Bool = false) {
+    /// than `maxAge` (or always with `force`). `channels`: the channels to
+    /// find guide channels for (by id or name, as on Android); `overrides`:
+    /// the user's choices (stream → guide id, "" for none).
+    func refreshIfNeeded(
+        account: XtreamAccount, password: String, channels: [LiveTVEPGChannelRef],
+        overrides: [Int: String] = [:], force: Bool = false
+    ) {
         let scope = ProfileSettings.activeProfileScope
         if scope != self.scope { closeDatabase(); self.scope = scope }
         if refreshTask != nil { return }
         let db = openDatabase()
-        if !force, let db, let updated = db.updatedAt(), Date().timeIntervalSince(updated) < Self.maxAge {
+        if !force, let db, db.meta("version") == Self.formatVersion,
+           let updated = db.updatedAt(), Date().timeIntervalSince(updated) < Self.maxAge {
             status = .ready(programmes: db.storedCount(), updated: updated)
             return
         }
-        guard !epgIDs.isEmpty, let url = Self.xmltvURL(account: account, password: password),
+        guard !channels.isEmpty, let url = Self.xmltvURL(account: account, password: password),
               let target = Self.databaseURL(scope: scope) else { return }
+        let version = Self.formatVersion
 
         status = .downloading(fraction: nil)
         refreshTask = Task { [weak self] in
@@ -90,7 +114,9 @@ final class LiveTVGuide: ObservableObject {
                 defer { try? FileManager.default.removeItem(at: file) }
                 await MainActor.run { self?.status = .importing(programmes: 0) }
                 let count = try await Task.detached(priority: .utility) {
-                    try GuideImporter.importXMLTV(file: file, into: target, keep: epgIDs) { imported in
+                    try GuideImporter.importXMLTV(
+                        file: file, into: target, channels: channels, overrides: overrides, version: version
+                    ) { imported in
                         Task { @MainActor in self?.status = .importing(programmes: imported) }
                     }
                 }.value
@@ -123,11 +149,13 @@ final class LiveTVGuide: ObservableObject {
         guard let url = Self.databaseURL(scope: scope),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         database = GuideDatabase(url: url, readOnly: true)
+        links = database?.links() ?? [:]
         return database
     }
 
     private func closeDatabase() {
         database = nil
+        links = [:]
     }
 
     nonisolated static func databaseURL(scope: String) -> URL? {
@@ -200,7 +228,72 @@ final class GuideDatabase: @unchecked Sendable {
             PRAGMA synchronous = OFF;
             CREATE TABLE IF NOT EXISTS programmes (ch TEXT NOT NULL, start INTEGER NOT NULL, stop INTEGER NOT NULL, title TEXT NOT NULL, descr TEXT);
             CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE IF NOT EXISTS links (stream INTEGER PRIMARY KEY, ch TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL);
             """)
+    }
+
+    func meta(_ key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT v FROM meta WHERE k = ?", -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, key, -1, SQLITE_TRANSIENT_DESTRUCTOR)
+        guard sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else { return nil }
+        return String(cString: text)
+    }
+
+    /// Stream → guide channel (empty in a guide stored before matching).
+    func links() -> [Int: String] {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT stream, ch FROM links", -1, &statement, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(statement) }
+        var result: [Int: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 1) {
+                result[Int(sqlite3_column_int64(statement, 0))] = String(cString: text)
+            }
+        }
+        return result
+    }
+
+    /// The guide's channels (id, first name), for choosing one by hand.
+    func guideChannels() -> [(id: String, name: String)] {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, name FROM channels ORDER BY name COLLATE NOCASE", -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        var result: [(id: String, name: String)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else { continue }
+            result.append((String(cString: id), String(cString: name)))
+        }
+        return result
+    }
+
+    func writeLinks(_ links: [Int: String]) {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO links (stream, ch) VALUES (?, ?)", -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        for (stream, ch) in links {
+            sqlite3_bind_int64(statement, 1, Int64(stream))
+            sqlite3_bind_text(statement, 2, ch, -1, SQLITE_TRANSIENT_DESTRUCTOR)
+            sqlite3_step(statement)
+            sqlite3_reset(statement)
+        }
+    }
+
+    func writeChannels(_ channels: [(id: String, name: String)]) {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO channels (id, name) VALUES (?, ?)", -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        for channel in channels {
+            sqlite3_bind_text(statement, 1, channel.id, -1, SQLITE_TRANSIENT_DESTRUCTOR)
+            sqlite3_bind_text(statement, 2, channel.name, -1, SQLITE_TRANSIENT_DESTRUCTOR)
+            sqlite3_step(statement)
+            sqlite3_reset(statement)
+        }
     }
 
     func createIndex() {
@@ -228,6 +321,15 @@ final class GuideDatabase: @unchecked Sendable {
 
     /// Programme count written at import (a COUNT(*) over hundreds of
     /// thousands of rows would stall the main thread).
+    /// After the import (fresh database, not on the main thread).
+    func programmeCount() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM programmes", -1, &statement, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
+    }
+
     func storedCount() -> Int {
         lock.lock(); defer { lock.unlock() }
         var statement: OpaquePointer?
@@ -361,7 +463,9 @@ private enum GuideImporter {
     static func importXMLTV(
         file: URL,
         into target: URL,
-        keep: Set<String>,
+        channels: [LiveTVEPGChannelRef],
+        overrides: [Int: String],
+        version: String,
         onProgress: @escaping @Sendable (Int) -> Void
     ) throws -> Int {
         let staging = target.deletingLastPathComponent().appendingPathComponent(target.lastPathComponent + ".new")
@@ -381,7 +485,7 @@ private enum GuideImporter {
 
         let now = Date().timeIntervalSince1970
         let delegate = XMLTVParserDelegate(
-            keep: keep,
+            picker: LiveTVEPGMatch.Picker(channels: channels, overrides: overrides),
             from: Int64(now - LiveTVGuide.pastWindow),
             to: Int64(now + LiveTVGuide.futureWindow)
         ) { programme in
@@ -406,10 +510,20 @@ private enum GuideImporter {
         guard delegate.count > 0 else {
             throw delegate.sawProgrammes ? GuideError.noMatchingChannels : GuideError.empty
         }
+        // Which guide channel each stream reads; programmes of guide channels
+        // kept as candidates but not picked go again.
+        let links = delegate.picker.links(listed: delegate.listed)
+        database.execute("BEGIN")
+        database.writeLinks(links)
+        database.writeChannels(delegate.guideChannels)
+        database.execute("DELETE FROM programmes WHERE ch NOT IN (SELECT ch FROM links)")
+        database.execute("COMMIT")
         database.createIndex()
-        let count = delegate.count
+        let count = database.programmeCount()
+        guard count > 0 else { throw GuideError.noMatchingChannels }
         database.setMeta("updated", String(Date().timeIntervalSince1970))
         database.setMeta("count", String(count))
+        database.setMeta("version", version)
 
         // Swap: the reader opens the file again after the refresh.
         try? FileManager.default.removeItem(at: target)
@@ -428,7 +542,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         let descr: String?
     }
 
-    private let keep: Set<String>
+    private(set) var picker: LiveTVEPGMatch.Picker
     private let from: Int64
     private let to: Int64
     private let onProgramme: (Programme) -> Void
@@ -437,15 +551,26 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     /// Any <programme> at all, matched or not (tells "no guide" from "no
     /// matching channels").
     private(set) var sawProgrammes = false
+    /// Guide channels with programmes stored.
+    private(set) var listed: Set<String> = []
+    /// Every guide channel (id lowercased, first name), for choosing by hand.
+    private(set) var guideChannels: [(id: String, name: String)] = []
+    /// The names of each `<channel>` (they come before the programmes).
+    private var displayNames: [String: [String]] = [:]
+    /// Per guide channel: worth keeping? Decided when its first programme comes.
+    private var decided: [String: Bool] = [:]
+    private var channelID: String?
+    private var channelNames: [String] = []
+    private var displayName: String?
 
     private var current: (channel: String, start: Int64, stop: Int64)?
     private var title = ""
     private var descr = ""
     private var element: String?
 
-    init(keep: Set<String>, from: Int64, to: Int64,
+    init(picker: LiveTVEPGMatch.Picker, from: Int64, to: Int64,
          onProgramme: @escaping (Programme) -> Void, onCount: @escaping (Int) -> Void) {
-        self.keep = keep
+        self.picker = picker
         self.from = from
         self.to = to
         self.onProgramme = onProgramme
@@ -456,10 +581,16 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
                 qualifiedName qName: String?, attributes: [String: String] = [:]) {
         if Task.isCancelled { parser.abortParsing(); return }
         switch elementName {
+        case "channel":
+            channelID = attributes["id"]?.trimmingCharacters(in: .whitespaces).lowercased()
+            channelNames = []
+        case "display-name":
+            displayName = channelID == nil ? nil : ""
         case "programme":
             sawProgrammes = true
             // Guide ids are matched without regard to case (as on Android).
-            guard let channel = attributes["channel"]?.lowercased(), keep.contains(channel),
+            guard let channel = attributes["channel"]?.trimmingCharacters(in: .whitespaces).lowercased(),
+                  wanted(channel),
                   let start = attributes["start"].flatMap(Self.parseTime),
                   let stop = attributes["stop"].flatMap(Self.parseTime),
                   stop > from, start < to, stop > start else {
@@ -476,7 +607,21 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         }
     }
 
+    /// Asked once per guide channel, at its first programme.
+    private func wanted(_ channel: String) -> Bool {
+        if let known = decided[channel] { return known }
+        let names = displayNames[channel] ?? []
+        if displayNames[channel] == nil {
+            // A guide without a <channel> list: only the id to go by.
+            guideChannels.append((channel, channel))
+        }
+        let keep = picker.saw(guideID: channel, names: names)
+        decided[channel] = keep
+        return keep
+    }
+
     func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if displayName != nil, displayName!.count < 200 { displayName! += string; return }
         switch element {
         case "title": if title.count < 300 { title += string }
         case "desc": if descr.count < 2000 { descr += string }
@@ -486,12 +631,24 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         switch elementName {
+        case "display-name":
+            if let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                channelNames.append(name)
+            }
+            displayName = nil
+        case "channel":
+            if let channelID, displayNames[channelID] == nil {
+                displayNames[channelID] = channelNames
+                guideChannels.append((channelID, channelNames.first ?? channelID))
+            }
+            channelID = nil
         case "title", "desc":
             element = nil
         case "programme":
             if let current {
                 let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !cleanTitle.isEmpty {
+                    listed.insert(current.channel)
                     let cleanDescr = descr.trimmingCharacters(in: .whitespacesAndNewlines)
                     onProgramme(Programme(channel: current.channel, start: current.start, stop: current.stop,
                                           title: cleanTitle, descr: cleanDescr.isEmpty ? nil : cleanDescr))

@@ -208,5 +208,41 @@ check(!reminders.prune(now: at(60)), "kept 30 minutes after")
 check(reminders.prune(now: at(60.5)), "dropped after that")
 check(reminders.items.isEmpty, "empty")
 
+// MARK: Guide matching (step 8a)
+
+check(LiveTVEPGMatch.normalize("DE: Sky Cinema Action HD") == "skycinemaaction", "prefix and quality go")
+check(LiveTVEPGMatch.normalize("Das Erste (FHD)") == "daserste", "brackets go")
+check(LiveTVEPGMatch.normalize("UK| BBC One [backup]") == "bbcone", "| prefix and [..] go")
+check(LiveTVEPGMatch.normalize("ProSieben 4K") == "prosieben", "4K goes")
+check(LiveTVEPGMatch.idName("DasErste.de") == "daserste", "id: country end goes")
+check(LiveTVEPGMatch.idName("GloboSP.br") == "globosp", "id: .br goes")
+
+func ref(_ id: Int, _ epg: String?, _ name: String) -> LiveTVEPGChannelRef {
+    LiveTVEPGChannelRef(streamID: id, epgID: epg, name: name)
+}
+var picker = LiveTVEPGMatch.Picker(channels: [
+    ref(1, "DasErste.de", "DE: Das Erste HD"),   // id
+    ref(2, nil, "ZDF HD"),                       // name
+    ref(3, "wrong.id", "Sky Sport 1"),           // wrong id: name
+    ref(4, nil, "Nothing Like It"),              // none
+    ref(5, nil, "RTL"),                          // by hand
+    ref(6, "daserste.de", "Das Erste"),          // by hand: no guide
+], overrides: [5: "rtl.manual", 6: ""])
+check(picker.saw(guideID: "daserste.de", names: ["Das Erste"]), "id match kept")
+check(picker.saw(guideID: "zdf.de", names: ["ZDF"]), "name match kept")
+check(picker.saw(guideID: "skysport1.de", names: ["Sky Sport 1 HD"]), "name match despite wrong id")
+check(picker.saw(guideID: "zdf.backup", names: ["ZDF"]), "second name match kept")
+check(picker.saw(guideID: "rtl.manual", names: ["Something else"]), "manual kept")
+check(!picker.saw(guideID: "other.tv", names: ["Other"]), "nobody's: not kept")
+let all: Set = ["daserste.de", "zdf.de", "skysport1.de", "zdf.backup", "rtl.manual"]
+let links = picker.links(listed: all)
+check(links[1] == "daserste.de", "by id")
+check(links[2] == "zdf.de", "by name, the first")
+check(links[3] == "skysport1.de", "by name when the id isn't in the guide")
+check(links[4] == nil, "no match")
+check(links[5] == "rtl.manual", "by hand wins")
+check(links[6] == nil, "by hand: no guide")
+check(picker.links(listed: all.subtracting(["zdf.de"]))[2] == "zdf.backup", "only guide channels with programmes")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

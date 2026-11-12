@@ -18,6 +18,9 @@ struct LiveTVView: View {
     @ObservedObject private var settings = LiveTVSettings.shared
     /// The quick menu (gear in the header).
     @State private var showsQuickMenu = false
+    /// Assign EPG for this channel (long press in the guide).
+    @State private var assignEPGChannel: XtreamLiveChannel?
+    @State private var epgChanged = false
     /// Watch from outside Live TV (reminder, Home row): the channel full
     /// screen. Not observed: nothing here redraws for it.
     private var watch: LiveTVWatch { LiveTVWatch.shared }
@@ -86,6 +89,16 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
+        // A guide channel chosen by hand: the guide is read again once the
+        // screen closes (its programmes aren't stored yet).
+        .fullScreenCover(item: $assignEPGChannel, onDismiss: {
+            if epgChanged {
+                epgChanged = false
+                store.refreshGuide(force: true)
+            }
+        }) { channel in
+            LiveTVAssignEPG(channel: channel, onChanged: { epgChanged = true })
+        }
         // Watch from a reminder or the Home row, from anywhere in the app;
         // the channels may still be loading when Live TV opens for it.
         .onReceive(watch.$pending) { _ in
@@ -217,6 +230,7 @@ struct LiveTVView: View {
                 onSelect: play,
                 onCatchup: playCatchup,
                 onToggleFavorite: { store.toggleFavorite($0) },
+                onAssignEPG: { assignEPGChannel = $0 },
                 info: info
             )
         }

@@ -47,7 +47,8 @@ final class LiveTVEPG {
     func nowNext(for streamID: Int) async -> NowNext? {
         if let cached = cached(streamID) { return cached }
         // The stored full guide first, queried off the main thread.
-        if let epgID = epgIDs[streamID], let reader = LiveTVGuide.shared.reader() {
+        if let epgID = LiveTVGuide.shared.guideID(streamID: streamID, fallback: epgIDs[streamID]),
+           let reader = LiveTVGuide.shared.reader() {
             let now = Date()
             let programs = await Task.detached(priority: .userInitiated) {
                 reader.programmes(channel: epgID, from: now, to: now.addingTimeInterval(12 * 3600))

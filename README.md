@@ -77,6 +77,9 @@ The password is stored in the Apple TV Keychain. Each Nuvio profile has its own 
 - **In the player:** up/down switches to the channel above/below in the group you started from (e.g. within Favorites). The top line shows the channel number and name, the line below what's on now and next.
 - Channel rows show what's on now, from your provider's EPG.
 - **Catch-up:** on channels with an archive, OK on a past show (marked ↺) plays it; long press OK on the show on now for *Watch from the beginning*. In full screen, Left opens the guide, Right the channel's schedule and dates. Play/Pause pauses; in a replay, pressing it again asks whether to continue or go back to live.
+- **Reminders:** OK on a show to come: *Remind me*. A minute before it starts you can switch to it from anywhere in the app. Settings → Live TV lists them.
+- **Home:** your favorite channels with what's on, below Continue Watching (Settings → Live TV → Integration).
+- **Wrong or missing programmes?** Long press a channel in the guide → *Assign EPG* and pick the right guide channel.
 
 ## nuvio.tv account sync
 
@@ -114,7 +117,9 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Now / next from the provider's EPG (channel list and player) | ✅ Done |
 | Hide groups, favorites, recently watched, channel search | ✅ Done |
 | Full EPG (`xmltv.php`) | ✅ Done |
-| Extra XMLTV guides, merging, "Assign EPG" | 🗓 Planned |
+| Guide matching by name, "Assign EPG" | ✅ Done |
+| Programme reminders, Live TV row on Home | ✅ Done |
+| Extra XMLTV guides, merging | 🗓 Planned |
 | TiviMate-style TV guide grid, info panel, overlay mode | ✅ Done |
 | Reorder / rename channels, custom groups, name cleaner | 🗓 Planned |
 | Parental controls (PIN lock for groups) | 🗓 Planned |

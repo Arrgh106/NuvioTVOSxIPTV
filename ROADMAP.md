@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV guide, step 7: reminders & Home row** (see below).
+- 🚧 **Live TV guide, step 8: guide matching** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -21,12 +21,18 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 4b: Left in full screen opens the guide over the picture (TiviMate's overlay mode): the group's channels with what's on, the highlighted channel's shows and the details; Left again the groups. OK plays a channel (its group becomes the one zapped through), Menu closes, it closes itself after 15 s. Swipes scroll by how far and fast the finger moves; only the rows on screen are drawn. Right opens the highlighted channel's schedule, Right again its dates (step 6).
 5. ✅ **Quick menu & Settings → Live TV**: the gear in the header opens the guide's quick menu over the guide; Settings → Live TV in the app's settings style. Per profile, every change shows at once. Guide: info panel, description, preview window (off: OK goes straight to full screen), smaller top, channel counts, hide separator rows (off by default), clock (system, 24-hour, 12-hour). Playback: open on last group, info bar when switching, reverse channel up/down. Account and groups stay in Live TV's header for now; Integration comes with the Home row (step 7).
 6. ✅ **Catch-up / restart** for channels with archive: in the guide OK on a past show plays it from the archive (↺ marks the shows that can), long press OK on the show on now offers *Watch from the beginning*. In the full-screen overlay Right opens the channel's schedule (days with headings, lands on the show on now), Right again the dates; OK on a past show plays it, on the show on now goes live. In a replay ◀/▶ jump 10 s back / 30 s ahead, Up/Down go back to live channels. Play/Pause pauses live and replays; pressed again in a replay it asks: *Continue watching* or *Back to live*. Catch-up links follow the Android app (several URL forms tried in turn).
-7. 🚧 **Reminders & Home row**.
+7. ✅ **Reminders & Home row**
+   - ✅ 7a: reminders as on Android. OK (or long press) on a show to come in the guide or the overlay schedule: *Remind me* / *Cancel reminder*; a bell marks it. A minute before the start a prompt comes up over any screen (also over a film) with *Watch* (Live TV full screen on the channel) and *Dismiss*; gone after two minutes. Per profile; listed in Settings → Live TV → Reminders, select one to remove it.
+   - ✅ 7b: Live TV row on Home, below Continue Watching: favorite channels (recently watched while there are none, or by choice) with what's on, progress and time left. A card in focus shows the channel, the show with times, what's next and the description above the rows, on a dark background. OK plays full screen, Up/Down go through the row's channels. Settings → Live TV → Integration: on / off and the channels.
+   - Profiles: Live TV (row, reminders, options, guide) and the Jellyfin / SMB libraries reload when switching profiles; new profiles no longer get a copy of the Jellyfin servers.
+8. 🚧 **Guide matching**
+   - 8a: channels without a working guide id are matched by name, as on Android ("DE: Sky Cinema HD" = "Sky Cinema": prefixes, HD / FHD / 4K and brackets don't count). Chosen by hand first, then the guide id, then the name; only guide channels with programmes. The guide is read again once after the update.
+   - 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
 
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
-- 💡 Guide matching by channel name for channels without a guide id (Android does this), and choosing a guide by hand per channel ("Assign EPG"); extra XMLTV sources.
+- 💡 Extra XMLTV sources (other guides next to the provider's) and a time offset per guide.
 - 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.

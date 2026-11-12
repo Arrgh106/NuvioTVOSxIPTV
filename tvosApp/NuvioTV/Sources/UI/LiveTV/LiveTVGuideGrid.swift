@@ -19,6 +19,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     /// OK on a past show of a channel with catch-up.
     var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
+    var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
     /// Told what's in focus, for the info panel.
     var info: LiveTVInfoModel?
 
@@ -30,6 +31,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.infoModel = info
         context.coordinator.pendingFocusID = focusChannelID
         context.coordinator.onCatchup = onCatchup
+        context.coordinator.onAssignEPG = onAssignEPG
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         return view
@@ -38,6 +40,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     func updateUIView(_ view: LiveTVGuideGridView, context: Context) {
         context.coordinator.infoModel = info
         context.coordinator.onCatchup = onCatchup
+        context.coordinator.onAssignEPG = onAssignEPG
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
     }
@@ -55,6 +58,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var channels: [XtreamLiveChannel] = []
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
         var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
+        var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
         private var favoriteIDs: Set<Int> = []
         private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
         private var timeline = LiveTVTimeline(now: Date())
@@ -511,6 +515,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     ) { _ in self?.onCatchup(channel, current) })
                 }
                 children.append(action)
+                // Which guide channel this channel reads (step 8b).
+                children.append(UIAction(
+                    title: L10n.string("livetv_epg_assign", fallback: "Assign EPG"),
+                    image: UIImage(systemName: "list.bullet.rectangle")
+                ) { _ in self?.onAssignEPG(channel) })
                 return UIMenu(title: channel.name, children: children)
             }
         }
