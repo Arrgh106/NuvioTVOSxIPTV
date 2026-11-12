@@ -355,5 +355,19 @@ check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCle
 nameEdits.cleanGroups = true
 check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCleaner) == "Sport", "group cleanup on")
 
+var resets = LiveTVNameEdits()
+check(resets.channelRename("ZDF", providerName: "ZDF") == nil, "back to the provider's name: nothing kept")
+check(resets.channelRename("  ", providerName: "ZDF") == nil, "empty: nothing kept")
+check(resets.channelRename("Zweites", providerName: "ZDF") == "Zweites", "a real rename is kept")
+resets.removals = "HD"
+check(resets.channelRename("ZDF", providerName: "ZDF") == nil, "cleanup can't change it: nothing kept")
+check(resets.channelRename("ZDF HD", providerName: "ZDF HD") == "ZDF HD", "cleanup would change it: kept whole")
+resets.removals = "DE"
+check(resets.channelRename("DE ZDF", providerName: "DE ZDF") == "DE ZDF", "maybe a space prefix: kept whole")
+check(resets.groupRename("DE | Sport", providerName: "DE | Sport") == nil, "group cleanup off: nothing kept")
+resets.cleanGroups = true
+check(resets.groupRename("DE | Sport", providerName: "DE | Sport") == "DE | Sport", "group cleanup on: kept whole")
+check(resets.groupRename("Sport", providerName: "DE | Sport") == nil, "the cleaned name: nothing kept")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -106,8 +106,8 @@ struct LiveTVRenameSheet: View {
         guard value.trimmingCharacters(in: .whitespacesAndNewlines) != target.current else { return }
         let edits = LiveTVChannelEdits.shared
         switch target.kind {
-        case .channel(let streamID): edits.renameChannel(id: streamID, to: value)
-        case .group(let groupID): edits.renameGroup(id: groupID, to: value)
+        case .channel(let streamID): edits.renameChannel(id: streamID, providerName: target.providerName, to: value)
+        case .group(let groupID): edits.renameGroup(id: groupID, providerName: target.providerName, to: value)
         }
     }
 }

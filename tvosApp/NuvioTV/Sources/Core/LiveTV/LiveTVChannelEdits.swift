@@ -43,12 +43,11 @@ final class LiveTVChannelEdits: ObservableObject {
     }
 
     /// Empty: back to the automatic name (the provider's, after Name
-    /// Cleanup). The provider's own name is kept as a rename, so cleanup
-    /// leaves it whole.
-    func renameChannel(id: Int, to name: String) {
-        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Cleanup). The provider's own name is kept as a rename only while
+    /// cleanup would change it.
+    func renameChannel(id: Int, providerName: String, to name: String) {
         var names = edits.channelNames
-        names[id] = clean.isEmpty ? nil : clean
+        names[id] = edits.channelRename(name, providerName: providerName)
         guard names != edits.channelNames else { return }
         edits.channelNames = names
         ProfileSettings.current.set(
@@ -56,10 +55,9 @@ final class LiveTVChannelEdits: ObservableObject {
         changed()
     }
 
-    func renameGroup(id: String, to name: String) {
-        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    func renameGroup(id: String, providerName: String, to name: String) {
         var names = edits.groupNames
-        names[id] = clean.isEmpty ? nil : clean
+        names[id] = edits.groupRename(name, providerName: providerName)
         guard names != edits.groupNames else { return }
         edits.groupNames = names
         ProfileSettings.current.set(names, forKey: Self.groupNamesKey)

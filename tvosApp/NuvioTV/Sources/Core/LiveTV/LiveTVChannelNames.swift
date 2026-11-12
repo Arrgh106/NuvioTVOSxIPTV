@@ -33,6 +33,27 @@ struct LiveTVNameEdits: Sendable, Equatable {
         return result
     }
 
+    /// What a rename to `name` keeps: nil where the name would come out
+    /// the same without it (empty, or the provider's name while Name
+    /// Cleanup can't change it), so nothing is left to reset.
+    func channelRename(_ name: String, providerName: String) -> String? {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        if clean == providerName, !LiveTVNameCleaner.mayChange(providerName, terms: LiveTVNameCleaner.terms(removals)) {
+            return nil
+        }
+        return clean
+    }
+
+    func groupRename(_ name: String, providerName: String) -> String? {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        let terms = LiveTVNameCleaner.terms(removals)
+        let automatic = cleanGroups && !terms.isEmpty
+            ? LiveTVNameCleaner.Cleaner(terms: terms).clean(providerName) : providerName
+        return clean == automatic ? nil : clean
+    }
+
     func groupDisplayName(id: String, name: String, cleaner: LiveTVNameCleaner.Cleaner?) -> String {
         if let renamed = groupNames[id] { return renamed }
         guard cleanGroups, let cleaner else { return name }
@@ -59,6 +80,15 @@ enum LiveTVNameCleaner {
     }
 
     static func isLetterOrDigit(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+    /// Whether cleanup could change this name: by its patterns, or as a
+    /// space prefix ("USA CNN"), which depends on the whole list.
+    static func mayChange(_ name: String, terms: [String]) -> Bool {
+        guard !terms.isEmpty else { return false }
+        if Cleaner(terms: terms).clean(name) != name { return true }
+        let lower = String(name.drop(while: { !isLetterOrDigit($0) })).lowercased()
+        return terms.contains { term in term.allSatisfy(\.isLetter) && lower.hasPrefix(term.lowercased() + " ") }
+    }
 
     /// Words a list uses as a prefix with only a space after it ("USA ESPN",
     /// "USA CNN"): five or more of its channels start that way. Otherwise a
