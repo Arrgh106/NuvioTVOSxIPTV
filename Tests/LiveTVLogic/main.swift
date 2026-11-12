@@ -313,5 +313,97 @@ check(LiveTVEPGSourceRules.gzipHeaderLength(named) == 18, "gzip header with a fi
 check(LiveTVEPGSourceRules.gzipHeaderLength(Array("<?xml".utf8)) == nil, "not gzip")
 check(!LiveTVEPGSourceRules.isGzip(Array("<tv>".utf8)), "xml isn't gzip")
 
+// MARK: Channel names (step 10a)
+
+check(LiveTVNameCleaner.terms(" HD, FHD ,HD, ,24/7") == ["24/7", "FHD", "HD"], "terms: trimmed, no doubles, longest first")
+let cleaner = LiveTVNameCleaner.Cleaner(terms: LiveTVNameCleaner.terms("USA, US, UK, 24/7, FHD, HD"))
+func cleaned(_ name: String, _ expected: String) {
+    let result = cleaner.clean(name)
+    check(result == expected, "clean \"\(name)\" -> \"\(result)\", expected \"\(expected)\"")
+}
+cleaned("USA: ESPN HD", "ESPN")
+cleaned("USA Network", "USA Network")
+cleaned("Sky Cinema FHD", "Sky Cinema")
+cleaned("|UK| BBC One", "BBC One")
+cleaned("Discovery", "Discovery")
+cleaned("Music HD", "Music")
+cleaned("HD", "HD")
+cleaned("Movies 24/7", "Movies")
+cleaned("[US] Fox News", "Fox News")
+cleaned("  KiKA  ", "KiKA")
+let tags = LiveTVNameCleaner.Cleaner(terms: LiveTVNameCleaner.terms(LiveTVNameCleaner.common))
+check(tags.clean("ARD ᴴᴰ") == "ARD", "superscript tag stuck on")
+check(LiveTVNameCleaner.Cleaner(terms: []).clean(" ZDF ") == " ZDF ", "no words: name untouched")
+
+let usaList = ["USA ESPN", "USA CNN", "USA HBO", "USA FOX", "USA ABC", "USA Network"]
+check(LiveTVNameCleaner.spacePrefixes(names: usaList, terms: ["USA", "HD"]) == ["usa"], "space prefix used by 5+ channels")
+check(LiveTVNameCleaner.spacePrefixes(names: Array(usaList.prefix(4)), terms: ["USA"]).isEmpty, "fewer than 5: no space prefix")
+let usa = LiveTVNameCleaner.Cleaner(terms: ["USA"], names: usaList)
+check(usa.clean("USA CNN") == "CNN", "space prefix off")
+check(usa.clean("USA USA Network") == "USA Network", "space prefix off only once")
+
+var nameEdits = LiveTVNameEdits()
+check(nameEdits.isEmpty, "no edits")
+nameEdits.channelNames = [1: "Mine"]
+nameEdits.removals = "HD"
+let shownNames = nameEdits.channelDisplayNames([(id: 1, name: "ZDF HD"), (id: 2, name: "ARD HD"), (id: 3, name: "KiKA")])
+check(shownNames == [1: "Mine", 2: "ARD"], "rename first, then cleanup, unchanged left out")
+nameEdits.groupNames = ["g1": "News"]
+let groupCleaner = LiveTVNameCleaner.Cleaner(terms: ["DE"])
+check(nameEdits.groupDisplayName(id: "g1", name: "DE | Nachrichten", cleaner: groupCleaner) == "News", "group rename wins")
+check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCleaner) == "DE | Sport", "group cleanup off")
+nameEdits.cleanGroups = true
+check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCleaner) == "Sport", "group cleanup on")
+
+var resets = LiveTVNameEdits()
+check(resets.channelRename("ZDF", providerName: "ZDF") == nil, "back to the provider's name: nothing kept")
+check(resets.channelRename("  ", providerName: "ZDF") == nil, "empty: nothing kept")
+check(resets.channelRename("Zweites", providerName: "ZDF") == "Zweites", "a real rename is kept")
+resets.removals = "HD"
+check(resets.channelRename("ZDF", providerName: "ZDF") == nil, "cleanup can't change it: nothing kept")
+check(resets.channelRename("ZDF HD", providerName: "ZDF HD") == "ZDF HD", "cleanup would change it: kept whole")
+resets.removals = "DE"
+check(resets.channelRename("DE ZDF", providerName: "DE ZDF") == "DE ZDF", "maybe a space prefix: kept whole")
+check(resets.groupRename("DE | Sport", providerName: "DE | Sport") == nil, "group cleanup off: nothing kept")
+resets.cleanGroups = true
+check(resets.groupRename("DE | Sport", providerName: "DE | Sport") == "DE | Sport", "group cleanup on: kept whole")
+check(resets.groupRename("Sport", providerName: "DE | Sport") == nil, "the cleaned name: nothing kept")
+
+// MARK: Your order (step 10b)
+
+let natural = [1, 2, 3, 4, 5]
+check(LiveTVListOrder.ordered(natural, saved: nil, id: { $0 }) == natural, "no order: as it is")
+check(LiveTVListOrder.ordered(natural, saved: [3, 1], id: { $0 }) == [3, 4, 5, 1, 2], "unsaved wait behind the saved one above")
+check(LiveTVListOrder.ordered(natural, saved: [9, 2], id: { $0 }) == [1, 2, 3, 4, 5], "gone ones skipped, new ones on top stay on top")
+check(LiveTVListOrder.ordered(natural, saved: [5, 4, 3, 2, 1, 1], id: { $0 }) == [5, 4, 3, 2, 1], "all saved, doubles once")
+check(LiveTVListOrder.ordered(["a", "b", "c"], saved: ["c"], id: { $0 }) == ["a", "b", "c"], "saved last: same as before")
+check(LiveTVListOrder.move(["a", "b", "c", "d"], from: 0, to: 2) == ["b", "c", "a", "d"], "move down takes the place")
+check(LiveTVListOrder.move(["a", "b", "c", "d"], from: 3, to: 0) == ["d", "a", "b", "c"], "move up takes the place")
+check(LiveTVListOrder.move(["a", "b"], from: 0, to: 5) == ["a", "b"], "out of range: unchanged")
+
+// MARK: Your groups (step 10c)
+
+var mine = LiveTVCustomGroups.create([], name: "  ", id: "custom:a")
+check(mine.count == 1 && mine[0].name == LiveTVCustomGroups.fallbackName, "empty name: My Group")
+mine = LiveTVCustomGroups.create(mine, name: " Sport ", id: "custom:b")
+check(mine[1].name == "Sport", "name trimmed")
+mine = LiveTVCustomGroups.add(mine, id: "custom:b", channel: 7)
+mine = LiveTVCustomGroups.add(mine, id: "custom:b", channel: 3)
+mine = LiveTVCustomGroups.add(mine, id: "custom:b", channel: 7)
+check(mine[1].channelIDs == [7, 3], "added at the end, once")
+check(mine[0].channelIDs.isEmpty, "other group untouched")
+mine = LiveTVCustomGroups.add(mine, id: "custom:b", channel: 9)
+mine = LiveTVCustomGroups.setOrder(mine, id: "custom:b", shown: [9, 7])
+check(mine[1].channelIDs == [9, 7, 3], "reordered; the one not shown kept at the end")
+mine = LiveTVCustomGroups.setOrder(mine, id: "custom:b", shown: [5, 3, 3, 9])
+check(mine[1].channelIDs == [3, 9, 7], "not yours and doubles ignored")
+mine = LiveTVCustomGroups.remove(mine, id: "custom:b", channel: 9)
+check(mine[1].channelIDs == [3, 7], "removed")
+check(LiveTVCustomGroups.rename(mine, id: "custom:b", to: " ")[1].name == "Sport", "empty rename keeps the name")
+check(LiveTVCustomGroups.rename(mine, id: "custom:b", to: "News")[1].name == "News", "renamed")
+mine = LiveTVCustomGroups.delete(mine, id: "custom:a")
+check(mine.map(\.id) == ["custom:b"], "deleted")
+check(LiveTVCustomGroup.isCustom("custom:b") && !LiveTVCustomGroup.isCustom("__all__") && !LiveTVCustomGroup.isCustom("12"), "custom ids")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

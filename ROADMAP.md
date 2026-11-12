@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- ⏭ Next step: to be chosen from *Noted for later*.
+- Nothing right now: step 10 is done, the next step is being chosen.
 
 ## Next: Live TV guide, step by step
 
@@ -30,11 +30,14 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
 
 9. ✅ **Extra XMLTV guides** (as Android's EPG sources): Settings → Live TV → Guide Sources. Add a guide by link (`.xml` or `.xml.gz`, unpacked on the device in steps, the link kept in the Keychain), turn it on or off, move its listings by −12 to +12 hours in half hours. The provider's own guide can be turned off. All guides are read into one guide; each channel takes, as on Android, a choice by hand first, then real listings over placeholders ("No information" …), an id match over a name, the one going furthest ahead, the added guide before the provider's. Each guide shows how many programmes and channels it brought, or why it failed; one guide failing doesn't stop the others. *Assign EPG* lists the channels of all guides. Per profile. After saving a guide, *Update the guide now?* (also without Live TV open). The downloaded files are kept: a choice in *Assign EPG* is written at once when its programmes are stored already (or *No guide*), otherwise the kept files are read again without downloading.
+10. ✅ **Channel list editing** (as Android's "Edit channel" and "Hide & arrange"), in three parts:
+   - ✅ 10a: *Rename Channel* and *Rename Group* (long press in the guide or the groups); empty goes back to the automatic name. Settings → Live TV → Channel List: *Name Cleanup* takes words off the start or end of channel names, as on Android ("USA: ESPN HD" → "ESPN", never in the middle, never the whole name; a word with only a space after it counts when 5+ channels start with it), *Add Common Prefixes & Suffixes*, *Also Clean Group Names*, resets. Guide matching and Assign EPG keep the provider's names; search finds the new ones. The guide relabels in place, focus stays. Per profile. The settings sheet for a guide source now looks like the other settings sheets (Jellyfin, SMB).
+   - ✅ 10b: *Reorder Channels* (long press a channel; every group but Search and Recently watched, Favorites included) and *Reorder Groups* (long press a group; Search, Favorites, Recent and All stay on top). OK picks one up (framed), move freely to the new place (fast through long lists, unlike Android's step by step), OK puts it there; Back saves. As on Android, a channel or group the provider adds later goes right behind the one above it, not to the end. Resets in Settings → Live TV → Channel List. Going back to the provider's name no longer counts as a rename.
+   - ✅ 10c: your own groups, as Android's custom groups. Long press a channel → *Add to Group…*: one of yours, or a new one made with it. Channels go in by reference (they stay in their own group, also ones from hidden groups) and get their guide. Your groups sit above the provider's and *Reorder Groups* arranges them together. In one of your groups: *Remove from This Group* and *Reorder Channels*. Long press a group: *Rename Group*, *Delete Group* (asks first), *New Group*. Settings → Live TV → Channel List → *Delete My Groups*. Per profile. A channel taken out of a list (your group, Favorites) leaves animated, focus moves on to the next one.
 
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
-- 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.
 - 💡 Guide focus: fine-tune the pause before Left goes on to the groups / sidebar (0.45 s now), if it feels slow or fast in daily use.

@@ -21,6 +21,19 @@ struct LiveTVView: View {
     /// Assign EPG for this channel (long press in the guide).
     @State private var assignEPGChannel: XtreamLiveChannel?
     @State private var epgChanged = false
+    /// Rename a channel or group (long press, step 10a).
+    @State private var renaming: LiveTVRenameSheet.Target?
+    /// Your own groups (step 10c).
+    @State private var addingToGroup: LiveTVAddToGroupSheet.Target?
+    @State private var deletingGroup: LiveTVGroup?
+    /// Reorder Channels / Reorder Groups (step 10b): set while it runs.
+    @State private var reorderChannelStart: Int?
+    @State private var reorderGroupStart: String?
+    /// The channel or group picked up now, for the hint.
+    @State private var reorderPicked: String?
+    /// Back while reordering: the guide or the groups save and finish.
+    @State private var reorderFinish = 0
+    private var isReordering: Bool { reorderChannelStart != nil || reorderGroupStart != nil }
     /// Watch from outside Live TV (reminder, Home row): the channel full
     /// screen. Not observed: nothing here redraws for it.
     private var watch: LiveTVWatch { LiveTVWatch.shared }
@@ -50,7 +63,7 @@ struct LiveTVView: View {
     private var channelBrowser: some View {
         VStack(alignment: .leading, spacing: settings.smallHeader ? 16 : 24) {
             header
-                .disabled(returnLock.locked || showsQuickMenu)
+                .disabled(returnLock.locked || showsQuickMenu || isReordering)
             if settings.showInfoPanel {
                 LiveTVInfoPanel(model: info)
             }
@@ -85,6 +98,17 @@ struct LiveTVView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
+        // How Reorder Channels / Groups works, while it runs.
+        .overlay(alignment: .bottom) {
+            if isReordering {
+                reorderHint
+                    .padding(.bottom, 40)
+                    .transition(.opacity)
+            }
+        }
+        // While reordering Back saves (in the guide or the groups) and
+        // never opens the app's sidebar.
+        .onExitCommand(perform: isReordering ? { reorderFinish &+= 1 } : nil)
         .onChange(of: showsQuickMenu) { _, shows in player.previewCovered = shows }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
@@ -99,6 +123,26 @@ struct LiveTVView: View {
             }
         }) { channel in
             LiveTVAssignEPG(channel: channel, onChanged: { epgChanged = true })
+        }
+        .sheet(item: $renaming) { target in
+            LiveTVSettingsRows.clearSheetBackground(
+                LiveTVRenameSheet(target: target, accentColor: LiveTVTheme.accent))
+        }
+        .sheet(item: $addingToGroup) { target in
+            LiveTVSettingsRows.clearSheetBackground(
+                LiveTVAddToGroupSheet(target: target, accentColor: LiveTVTheme.accent))
+        }
+        .alert(
+            L10n.format("livetv_group_delete_ask", fallback: "Delete “%@”?", deletingGroup?.name ?? ""),
+            isPresented: Binding(get: { deletingGroup != nil }, set: { if !$0 { deletingGroup = nil } })
+        ) {
+            Button(L10n.string("livetv_group_delete", fallback: "Delete Group"), role: .destructive) {
+                if let group = deletingGroup { LiveTVChannelEdits.shared.deleteCustomGroup(id: group.id) }
+                deletingGroup = nil
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) { deletingGroup = nil }
+        } message: {
+            Text(L10n.string("livetv_group_delete_detail", fallback: "Only your group goes. Its channels stay in their own groups."))
         }
         // Watch from a reminder or the Home row, from anywhere in the app;
         // the channels may still be loading when Live TV opens for it.
@@ -196,8 +240,58 @@ struct LiveTVView: View {
             groups: store.groups,
             selectedID: store.selectedGroupID,
             showCounts: settings.showGroupCounts,
-            onSelect: { store.selectedGroupID = $0 }
+            onSelect: { store.selectedGroupID = $0 },
+            onRename: { group in
+                if LiveTVCustomGroup.isCustom(group.id) {
+                    renaming = .init(kind: .customGroup(group.id), current: group.name, providerName: group.name)
+                } else {
+                    renaming = .init(
+                        kind: .group(group.id), current: group.name, providerName: store.providerGroupName(group.id))
+                }
+            },
+            onNewGroup: { renaming = .newGroup() },
+            onDeleteGroup: { deletingGroup = $0 },
+            reorderStartID: reorderGroupStart,
+            reorderFinishRequest: reorderFinish,
+            onReorderStart: { group in
+                reorderPicked = group.name
+                reorderGroupStart = group.id
+            },
+            onReorderPicked: { reorderPicked = $0 },
+            onReorderDone: { ids in
+                store.saveGroupOrder(ids)
+                reorderGroupStart = nil
+                reorderPicked = nil
+            }
         )
+    }
+
+    /// Android's hint box for reordering, in the Live TV glass.
+    private var reorderHint: some View {
+        let groups = reorderGroupStart != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(groups
+                 ? L10n.string("livetv_reorder_groups", fallback: "Reorder Groups")
+                 : L10n.string("livetv_reorder_channels", fallback: "Reorder Channels"))
+                .font(.system(size: 26, weight: .bold))
+            if let reorderPicked {
+                Text(L10n.format("livetv_reorder_moving", fallback: "Moving: %@", reorderPicked))
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(LiveTVTheme.accent == .white ? .orange : LiveTVTheme.accent)
+                Text(L10n.string("livetv_reorder_place", fallback: "Up / Down: choose the place · OK: put it there"))
+            } else {
+                Text(groups
+                     ? L10n.string("livetv_reorder_pick_group", fallback: "Up / Down: choose a group · OK: pick it up to move")
+                     : L10n.string("livetv_reorder_pick", fallback: "Up / Down: choose a channel · OK: pick it up to move"))
+            }
+            Text(L10n.string("livetv_reorder_save", fallback: "Back: save and finish"))
+                .foregroundColor(.white.opacity(0.6))
+        }
+        .font(.system(size: 22))
+        .foregroundColor(.white)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 20)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.black.opacity(0.8)))
     }
 
     @ViewBuilder
@@ -232,6 +326,24 @@ struct LiveTVView: View {
                 onCatchup: playCatchup,
                 onToggleFavorite: { store.toggleFavorite($0) },
                 onAssignEPG: { assignEPGChannel = $0 },
+                onRename: { renaming = .channel($0) },
+                onAddToGroup: { addingToGroup = .init(channel: $0) },
+                onRemoveFromGroup: store.selectedCustomGroupID.map { groupID in
+                    { (channel: XtreamLiveChannel) in LiveTVChannelEdits.shared.removeFromCustomGroup(id: groupID, channel: channel.streamID) }
+                },
+                reorderStartID: reorderChannelStart,
+                reorderFinishRequest: reorderFinish,
+                canReorder: store.canReorder(store.selectedGroupID),
+                onReorderStart: { channel in
+                    reorderPicked = channel.name
+                    reorderChannelStart = channel.streamID
+                },
+                onReorderPicked: { reorderPicked = $0 },
+                onReorderDone: { ids in
+                    store.saveChannelOrder(groupID: store.selectedGroupID, ids: ids)
+                    reorderChannelStart = nil
+                    reorderPicked = nil
+                },
                 info: info
             )
         }

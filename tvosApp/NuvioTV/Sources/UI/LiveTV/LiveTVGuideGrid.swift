@@ -20,6 +20,24 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
     var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
+    var onRename: (XtreamLiveChannel) -> Void = { _ in }
+    /// Your own groups (step 10c): add the channel to one; remove it from
+    /// the one open now (nil: the open group isn't yours).
+    var onAddToGroup: (XtreamLiveChannel) -> Void = { _ in }
+    var onRemoveFromGroup: ((XtreamLiveChannel) -> Void)?
+    /// Reorder Channels (step 10b): set while it runs, to the channel picked
+    /// up first.
+    var reorderStartID: Int?
+    /// Goes up on Back while reordering (Live TV's exit command gets the
+    /// press): save and finish.
+    var reorderFinishRequest = 0
+    /// The group can be put in your order (not Search or Recently watched).
+    var canReorder = false
+    var onReorderStart: (XtreamLiveChannel) -> Void = { _ in }
+    /// The channel picked up now (nil: none), for the hint.
+    var onReorderPicked: (String?) -> Void = { _ in }
+    /// Menu: the order the group is left in.
+    var onReorderDone: ([Int]) -> Void = { _ in }
     /// Told what's in focus, for the info panel.
     var info: LiveTVInfoModel?
 
@@ -32,8 +50,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.pendingFocusID = focusChannelID
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
+        context.coordinator.onRename = onRename
+        context.coordinator.onAddToGroup = onAddToGroup
+        context.coordinator.onRemoveFromGroup = onRemoveFromGroup
+        context.coordinator.onReorderStart = onReorderStart
+        context.coordinator.onReorderPicked = onReorderPicked
+        context.coordinator.onReorderDone = onReorderDone
+        context.coordinator.canReorder = canReorder
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
+        context.coordinator.updateReorder(reorderStartID)
+        context.coordinator.finishRequest = reorderFinishRequest
         return view
     }
 
@@ -41,8 +68,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.infoModel = info
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
+        context.coordinator.onRename = onRename
+        context.coordinator.onAddToGroup = onAddToGroup
+        context.coordinator.onRemoveFromGroup = onRemoveFromGroup
+        context.coordinator.onReorderStart = onReorderStart
+        context.coordinator.onReorderPicked = onReorderPicked
+        context.coordinator.onReorderDone = onReorderDone
+        context.coordinator.canReorder = canReorder
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
+        context.coordinator.updateReorder(reorderStartID)
+        context.coordinator.requestFinish(reorderFinishRequest)
     }
 
     static func dismantleUIView(_ view: LiveTVGuideGridView, coordinator: Coordinator) {
@@ -59,6 +95,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
         var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
         var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
+        var onRename: (XtreamLiveChannel) -> Void = { _ in }
+        var onAddToGroup: (XtreamLiveChannel) -> Void = { _ in }
+        var onRemoveFromGroup: ((XtreamLiveChannel) -> Void)?
+        var onReorderStart: (XtreamLiveChannel) -> Void = { _ in }
+        var onReorderPicked: (String?) -> Void = { _ in }
+        var onReorderDone: ([Int]) -> Void = { _ in }
+        /// Reorder Channels runs: OK picks a channel up and puts it down
+        /// where focus is, Menu saves. The list is this one until then.
+        private var reordering = false
+        var canReorder = false
+        private var pickedID: Int?
         private var favoriteIDs: Set<Int> = []
         private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
         private var timeline = LiveTVTimeline(now: Date())
@@ -113,6 +160,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
             pressMenu.delegate = self
             menuRecognizer = pressMenu
+            // Menu while reordering: taken by the view itself, so it never
+            // reaches the app's sidebar.
+            view.takesMenu = { [weak self] in self?.reordering ?? false }
+            view.onMenu = { [weak self] in self?.finishReorder() }
             collection.addGestureRecognizer(pressMenu)
             // Tells one swipe from the next (a fast swipe keeps moving focus
             // after the swipe itself was handled).
@@ -121,7 +172,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             gate.name = "guide"
             gate.stay = { [weak self] in self?.focusedCell }
             gate.onward = { [LiveTVFocusLinks.groups].compactMap { $0 } }
-            gate.canOpen = { [weak self] in self?.onChannel ?? false }
+            gate.canOpen = { [weak self] in (self?.onChannel ?? false) && !(self?.reordering ?? false) }
             LiveTVFocusLinks.guideGate = gate
             LiveTVFocusLinks.prepareGuideReturn = { [weak self] in
                 guard let self, let collection = self.view?.collectionView else { return }
@@ -176,8 +227,33 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func update(listID: String, channels: [XtreamLiveChannel], onSelect: @escaping (XtreamLiveChannel) -> Void) {
             self.onSelect = onSelect
+            // While reordering the list here is the one being arranged.
+            guard !reordering else { return }
             guard let collection = view?.collectionView else { return }
-            guard listID != self.listID || channels.count != self.channels.count else { return }
+            guard listID != self.listID || channels.count != self.channels.count else {
+                // Same list with other names (step 10a): relabel, focus stays.
+                if channels != self.channels {
+                    self.channels = channels
+                    relabelVisible()
+                }
+                return
+            }
+            // Same list with channels taken out (Remove from This Group, step
+            // 10c): those rows go, the others stay and focus moves on to the
+            // next one, instead of reloading under the closing menu.
+            if listID == self.listID, let removed = Self.removedRows(from: self.channels, to: channels) {
+                self.channels = channels
+                collection.performBatchUpdates {
+                    collection.deleteItems(at: removed.map { IndexPath(item: $0, section: 0) })
+                }
+                if let first = removed.first, !channels.isEmpty {
+                    preferredIndexPath = IndexPath(item: min(first, channels.count - 1), section: 0)
+                    collection.remembersLastFocusedIndexPath = false
+                    collection.setNeedsFocusUpdate()
+                    collection.updateFocusIfNeeded()
+                }
+                return
+            }
             let isNewList = listID != self.listID
             self.listID = listID
             self.channels = channels
@@ -187,6 +263,22 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 collection.setContentOffset(CGPoint(x: 0, y: -collection.contentInset.top), animated: false)
             }
             focusPendingChannel()
+        }
+
+        /// The rows of `old` missing from `new`, when `new` is `old` with some
+        /// taken out (same order); otherwise nil.
+        static func removedRows(from old: [XtreamLiveChannel], to new: [XtreamLiveChannel]) -> [Int]? {
+            guard new.count < old.count else { return nil }
+            var removed: [Int] = []
+            var next = 0
+            for (index, channel) in old.enumerated() {
+                if next < new.count, new[next].streamID == channel.streamID {
+                    next += 1
+                } else {
+                    removed.append(index)
+                }
+            }
+            return next == new.count ? removed : nil
         }
 
         /// Scrolls to the last watched channel and moves focus onto it.
@@ -265,6 +357,88 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             return preferredIndexPath
         }
 
+        // MARK: Reorder Channels (step 10b)
+
+        func updateReorder(_ startID: Int?) {
+            if let startID, !reordering {
+                reordering = true
+                pickedID = channels.contains { $0.streamID == startID } ? startID : nil
+                // On the channels: Right and Left don't move through time now.
+                let now = Date()
+                timeline.resetToNow(now)
+                setOnChannel(true)
+                refreshAll(now: now)
+                restyleMoving()
+            } else if startID == nil, reordering {
+                // Ended from outside (e.g. Live TV closed): nothing saved.
+                reordering = false
+                pickedID = nil
+                restyleMoving()
+            }
+        }
+
+        private func reorderSelect(at target: Int, in collection: UICollectionView) {
+            guard let picked = pickedID else {
+                pickedID = channels[target].streamID
+                restyleMoving()
+                onReorderPicked(channels[target].name)
+                return
+            }
+            pickedID = nil
+            if let from = channels.firstIndex(where: { $0.streamID == picked }), from != target {
+                channels = LiveTVListOrder.move(channels, from: from, to: target)
+                collection.performBatchUpdates {
+                    collection.moveItem(at: IndexPath(item: from, section: 0), to: IndexPath(item: target, section: 0))
+                }
+                // Focus onto the channel just put down.
+                preferredIndexPath = IndexPath(item: target, section: 0)
+                collection.remembersLastFocusedIndexPath = false
+                collection.setNeedsFocusUpdate()
+                collection.updateFocusIfNeeded()
+            }
+            restyleMoving()
+            onReorderPicked(nil)
+        }
+
+        var finishRequest = 0
+
+        func requestFinish(_ request: Int) {
+            guard request != finishRequest else { return }
+            finishRequest = request
+            // Not inside SwiftUI's update: the callback changes its state.
+            DispatchQueue.main.async { [weak self] in self?.finishReorder() }
+        }
+
+        private func finishReorder() {
+            guard reordering else { return }
+            let ids = channels.map(\.streamID)
+            reordering = false
+            pickedID = nil
+            restyleMoving()
+            onReorderDone(ids)
+        }
+
+        private func restyleMoving() {
+            for cell in visibleRows {
+                cell.setMoving(reordering && cell.channel?.streamID == pickedID && pickedID != nil)
+            }
+        }
+
+        private func relabelVisible() {
+            guard let collection = view?.collectionView else { return }
+            for cell in visibleRows {
+                guard let indexPath = collection.indexPath(for: cell), indexPath.item < channels.count else { continue }
+                let channel = channels[indexPath.item]
+                // Another channel in this place (not just a name): reload.
+                guard cell.channel?.streamID == channel.streamID else {
+                    collection.reloadData()
+                    return
+                }
+                cell.relabel(channel)
+            }
+            publishInfo()
+        }
+
         func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void) {
             onToggleFavorite = onToggle
             guard ids != favoriteIDs else { return }
@@ -285,7 +459,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         }
 
         @objc private func moveRight() {
-            guard let cell = focusedRow else { return }
+            guard !reordering, let cell = focusedRow else { return }
             let now = Date()
             if onChannel {
                 // From the channel onto what's on now.
@@ -303,6 +477,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// Left: back through time; on what's on now onto the channel; from
         /// the channel the focus engine itself moves on to the groups.
         @objc private func handleLeft() {
+            guard !reordering else { return }
             // On the channel the focus guide on the left takes Left; a press
             // it held back restarts the pause.
             if onChannel {
@@ -326,6 +501,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private weak var menuRecognizer: UIGestureRecognizer?
 
         @objc private func backToChannel() {
+            if reordering {
+                finishReorder()
+                return
+            }
             let now = Date()
             timeline.resetToNow(now)
             setOnChannel(true)
@@ -334,7 +513,16 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard gestureRecognizer === menuRecognizer else { return true }
-            return focusedRow != nil && timeline.cursor != nil
+            return wantsMenu
+        }
+
+        /// Menu away from now; while reordering the view takes it.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+            gestureRecognizer !== menuRecognizer || wantsMenu
+        }
+
+        private var wantsMenu: Bool {
+            !reordering && focusedRow != nil && timeline.cursor != nil
         }
 
         /// The cursor sits on the channel (number, logo, name) instead of a
@@ -383,6 +571,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             if indexPath.item < channels.count {
                 let channel = channels[indexPath.item]
                 cell.configure(with: channel, favorite: favoriteIDs.contains(channel.streamID), timeline: timeline, now: Date())
+                cell.setMoving(reordering && channel.streamID == pickedID)
                 // Programmes arriving for the focused row update the panel.
                 cell.onProgrammesLoaded = { [weak self, weak cell] in
                     guard let self, let cell, cell === self.focusedCell else { return }
@@ -395,6 +584,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         // MARK: Focus
 
         func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
+            if reordering, !(context.nextFocusedItem is LiveTVGuideRowCell),
+               context.focusHeading == .up || context.focusHeading == .down {
+                return false
+            }
             // Focus leaves a row to the left only from the channel, and not
             // with the press or swipe that just put the cursor there.
             // Left out of the guide is decided by its focus guide (LiveTVLeftGate);
@@ -449,6 +642,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < channels.count else { return }
+            if reordering {
+                reorderSelect(at: indexPath.item, in: collectionView)
+                return
+            }
             let channel = channels[indexPath.item]
             // On a show that's over, on a channel with catch-up: watch it again.
             let now = Date()
@@ -480,9 +677,11 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
             point: CGPoint
         ) -> UIContextMenuConfiguration? {
-            guard let indexPath = indexPaths.first, indexPath.item < channels.count else { return nil }
+            guard !reordering, let indexPath = indexPaths.first, indexPath.item < channels.count else { return nil }
             let channel = channels[indexPath.item]
             let isFavorite = favoriteIDs.contains(channel.streamID)
+            let canReorder = canReorder && channels.count > 1
+            let removeFromGroup = onRemoveFromGroup
             // Channels with an archive: the show on now from its beginning.
             let now = Date()
             let shows = (collectionView.cellForItem(at: indexPath) as? LiveTVGuideRowCell)?.strip.programmes ?? []
@@ -520,6 +719,27 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     title: L10n.string("livetv_epg_assign", fallback: "Assign EPG"),
                     image: UIImage(systemName: "list.bullet.rectangle")
                 ) { _ in self?.onAssignEPG(channel) })
+                children.append(UIAction(
+                    title: L10n.string("livetv_rename_channel", fallback: "Rename Channel"),
+                    image: UIImage(systemName: "pencil")
+                ) { _ in self?.onRename(channel) })
+                children.append(UIAction(
+                    title: L10n.string("livetv_group_add", fallback: "Add to Group…"),
+                    image: UIImage(systemName: "folder.badge.plus")
+                ) { _ in self?.onAddToGroup(channel) })
+                if let removeFromGroup {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_group_remove", fallback: "Remove from This Group"),
+                        image: UIImage(systemName: "folder.badge.minus"),
+                        attributes: .destructive
+                    ) { _ in removeFromGroup(channel) })
+                }
+                if canReorder {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_reorder_channels", fallback: "Reorder Channels"),
+                        image: UIImage(systemName: "arrow.up.arrow.down")
+                    ) { _ in self?.onReorderStart(channel) })
+                }
                 return UIMenu(title: channel.name, children: children)
             }
         }
@@ -529,7 +749,43 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 // MARK: - Container
 
 /// Time ruler on top, channel rows below.
-final class LiveTVGuideGridView: UIView {
+/// Takes Menu presses while `takesMenu` says so: they then never reach the
+/// app, whose sidebar opened on Back while reordering. A gesture recognizer
+/// can't do that (the press reaches the responders first).
+class LiveTVMenuTakingView: UIView {
+    var takesMenu: () -> Bool = { false }
+    var onMenu: () -> Void = {}
+    private var menuTaken = false
+
+    private static func split(_ presses: Set<UIPress>) -> (menu: Bool, rest: Set<UIPress>) {
+        let rest = presses.filter { $0.type != .menu }
+        return (rest.count != presses.count, rest)
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, takesMenu() else { return super.pressesBegan(presses, with: event) }
+        menuTaken = true
+        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, menuTaken else { return super.pressesEnded(presses, with: event) }
+        menuTaken = false
+        if !rest.isEmpty { super.pressesEnded(rest, with: event) }
+        onMenu()
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let (menu, rest) = Self.split(presses)
+        guard menu, menuTaken else { return super.pressesCancelled(presses, with: event) }
+        menuTaken = false
+        if !rest.isEmpty { super.pressesCancelled(rest, with: event) }
+    }
+}
+
+final class LiveTVGuideGridView: LiveTVMenuTakingView {
     let ruler = LiveTVTimeRuler()
     let collectionView: UICollectionView
     let leftTrap = LiveTVLeftGate()
