@@ -69,6 +69,8 @@ struct LiveTVSettingsView: View {
 
             LiveTVGuideSourcesGroup(accentColor: accentColor)
 
+            LiveTVChannelNamesGroup(accentColor: accentColor)
+
             LiveTVSettingsRows.group(
                 title: L10n.string("livetv_settings_playback", fallback: "Playback"),
                 subtitle: L10n.string("livetv_settings_playback_subtitle", fallback: "Watching channels")

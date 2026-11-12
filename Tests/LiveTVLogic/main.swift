@@ -313,5 +313,47 @@ check(LiveTVEPGSourceRules.gzipHeaderLength(named) == 18, "gzip header with a fi
 check(LiveTVEPGSourceRules.gzipHeaderLength(Array("<?xml".utf8)) == nil, "not gzip")
 check(!LiveTVEPGSourceRules.isGzip(Array("<tv>".utf8)), "xml isn't gzip")
 
+// MARK: Channel names (step 10a)
+
+check(LiveTVNameCleaner.terms(" HD, FHD ,HD, ,24/7") == ["24/7", "FHD", "HD"], "terms: trimmed, no doubles, longest first")
+let cleaner = LiveTVNameCleaner.Cleaner(terms: LiveTVNameCleaner.terms("USA, US, UK, 24/7, FHD, HD"))
+func cleaned(_ name: String, _ expected: String) {
+    let result = cleaner.clean(name)
+    check(result == expected, "clean \"\(name)\" -> \"\(result)\", expected \"\(expected)\"")
+}
+cleaned("USA: ESPN HD", "ESPN")
+cleaned("USA Network", "USA Network")
+cleaned("Sky Cinema FHD", "Sky Cinema")
+cleaned("|UK| BBC One", "BBC One")
+cleaned("Discovery", "Discovery")
+cleaned("Music HD", "Music")
+cleaned("HD", "HD")
+cleaned("Movies 24/7", "Movies")
+cleaned("[US] Fox News", "Fox News")
+cleaned("  KiKA  ", "KiKA")
+let tags = LiveTVNameCleaner.Cleaner(terms: LiveTVNameCleaner.terms(LiveTVNameCleaner.common))
+check(tags.clean("ARD ᴴᴰ") == "ARD", "superscript tag stuck on")
+check(LiveTVNameCleaner.Cleaner(terms: []).clean(" ZDF ") == " ZDF ", "no words: name untouched")
+
+let usaList = ["USA ESPN", "USA CNN", "USA HBO", "USA FOX", "USA ABC", "USA Network"]
+check(LiveTVNameCleaner.spacePrefixes(names: usaList, terms: ["USA", "HD"]) == ["usa"], "space prefix used by 5+ channels")
+check(LiveTVNameCleaner.spacePrefixes(names: Array(usaList.prefix(4)), terms: ["USA"]).isEmpty, "fewer than 5: no space prefix")
+let usa = LiveTVNameCleaner.Cleaner(terms: ["USA"], names: usaList)
+check(usa.clean("USA CNN") == "CNN", "space prefix off")
+check(usa.clean("USA USA Network") == "USA Network", "space prefix off only once")
+
+var nameEdits = LiveTVNameEdits()
+check(nameEdits.isEmpty, "no edits")
+nameEdits.channelNames = [1: "Mine"]
+nameEdits.removals = "HD"
+let shownNames = nameEdits.channelDisplayNames([(id: 1, name: "ZDF HD"), (id: 2, name: "ARD HD"), (id: 3, name: "KiKA")])
+check(shownNames == [1: "Mine", 2: "ARD"], "rename first, then cleanup, unchanged left out")
+nameEdits.groupNames = ["g1": "News"]
+let groupCleaner = LiveTVNameCleaner.Cleaner(terms: ["DE"])
+check(nameEdits.groupDisplayName(id: "g1", name: "DE | Nachrichten", cleaner: groupCleaner) == "News", "group rename wins")
+check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCleaner) == "DE | Sport", "group cleanup off")
+nameEdits.cleanGroups = true
+check(nameEdits.groupDisplayName(id: "g2", name: "DE | Sport", cleaner: groupCleaner) == "Sport", "group cleanup on")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -20,6 +20,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
     var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
     var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
+    var onRename: (XtreamLiveChannel) -> Void = { _ in }
     /// Told what's in focus, for the info panel.
     var info: LiveTVInfoModel?
 
@@ -32,6 +33,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.pendingFocusID = focusChannelID
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
+        context.coordinator.onRename = onRename
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         return view
@@ -41,6 +43,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.infoModel = info
         context.coordinator.onCatchup = onCatchup
         context.coordinator.onAssignEPG = onAssignEPG
+        context.coordinator.onRename = onRename
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
     }
@@ -59,6 +62,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         private var onSelect: (XtreamLiveChannel) -> Void = { _ in }
         var onCatchup: (XtreamLiveChannel, XtreamProgram) -> Void = { _, _ in }
         var onAssignEPG: (XtreamLiveChannel) -> Void = { _ in }
+        var onRename: (XtreamLiveChannel) -> Void = { _ in }
         private var favoriteIDs: Set<Int> = []
         private var onToggleFavorite: (XtreamLiveChannel) -> Void = { _ in }
         private var timeline = LiveTVTimeline(now: Date())
@@ -177,7 +181,14 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         func update(listID: String, channels: [XtreamLiveChannel], onSelect: @escaping (XtreamLiveChannel) -> Void) {
             self.onSelect = onSelect
             guard let collection = view?.collectionView else { return }
-            guard listID != self.listID || channels.count != self.channels.count else { return }
+            guard listID != self.listID || channels.count != self.channels.count else {
+                // Same list with other names (step 10a): relabel, focus stays.
+                if channels != self.channels {
+                    self.channels = channels
+                    relabelVisible()
+                }
+                return
+            }
             let isNewList = listID != self.listID
             self.listID = listID
             self.channels = channels
@@ -263,6 +274,21 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 return indexPath
             }
             return preferredIndexPath
+        }
+
+        private func relabelVisible() {
+            guard let collection = view?.collectionView else { return }
+            for cell in visibleRows {
+                guard let indexPath = collection.indexPath(for: cell), indexPath.item < channels.count else { continue }
+                let channel = channels[indexPath.item]
+                // Another channel in this place (not just a name): reload.
+                guard cell.channel?.streamID == channel.streamID else {
+                    collection.reloadData()
+                    return
+                }
+                cell.relabel(channel)
+            }
+            publishInfo()
         }
 
         func updateFavorites(_ ids: Set<Int>, onToggle: @escaping (XtreamLiveChannel) -> Void) {
@@ -520,6 +546,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     title: L10n.string("livetv_epg_assign", fallback: "Assign EPG"),
                     image: UIImage(systemName: "list.bullet.rectangle")
                 ) { _ in self?.onAssignEPG(channel) })
+                children.append(UIAction(
+                    title: L10n.string("livetv_rename_channel", fallback: "Rename Channel"),
+                    image: UIImage(systemName: "pencil")
+                ) { _ in self?.onRename(channel) })
                 return UIMenu(title: channel.name, children: children)
             }
         }

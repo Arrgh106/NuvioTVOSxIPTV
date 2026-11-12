@@ -10,6 +10,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     /// The number of channels beside each group (a Live TV option).
     var showCounts = true
     let onSelect: (String) -> Void
+    /// Long press on a provider group: rename it (step 10a).
+    var onRename: (LiveTVGroup) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -33,6 +35,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.delegate = context.coordinator
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.showCounts = showCounts
+        context.coordinator.onRename = onRename
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
         let gate = container.leftTrap
@@ -54,6 +57,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
                 cell.setShowsCount(showCounts)
             }
         }
+        context.coordinator.onRename = onRename
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
     }
 
@@ -62,10 +66,22 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         private var groups: [LiveTVGroup] = []
         private var selectedID = ""
         private var onSelect: (String) -> Void = { _ in }
+        var onRename: (LiveTVGroup) -> Void = { _ in }
         var showCounts = true
 
         func update(groups: [LiveTVGroup], selectedID: String, onSelect: @escaping (String) -> Void, in view: UICollectionView) {
             self.onSelect = onSelect
+            if groups != self.groups, groups.map(\.id) == self.groups.map(\.id) {
+                // Same groups, other names or counts: relabel, focus stays.
+                self.groups = groups
+                self.selectedID = selectedID
+                for case let cell as LiveTVGroupCell in view.visibleCells {
+                    guard let indexPath = view.indexPath(for: cell), indexPath.item < groups.count else { continue }
+                    cell.configure(with: groups[indexPath.item], selected: groups[indexPath.item].id == selectedID)
+                    cell.setShowsCount(showCounts)
+                }
+                return
+            }
             if groups != self.groups {
                 self.groups = groups
                 self.selectedID = selectedID
@@ -98,6 +114,25 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < groups.count else { return }
             onSelect(groups[indexPath.item].id)
+        }
+
+        func collectionView(
+            _ collectionView: UICollectionView,
+            contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+            point: CGPoint
+        ) -> UIContextMenuConfiguration? {
+            guard let indexPath = indexPaths.first, indexPath.item < groups.count else { return nil }
+            let group = groups[indexPath.item]
+            // Search, Favorites, Recently watched and All keep their names.
+            guard !group.isSpecial else { return nil }
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                UIMenu(title: group.name, children: [
+                    UIAction(
+                        title: L10n.string("livetv_rename_group", fallback: "Rename Group"),
+                        image: UIImage(systemName: "pencil")
+                    ) { _ in self?.onRename(group) },
+                ])
+            }
         }
 
         // MARK: Focus

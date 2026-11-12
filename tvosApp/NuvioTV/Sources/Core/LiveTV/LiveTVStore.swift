@@ -178,6 +178,11 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var searchQuery = ""
 
     private var allowedFormats: [String] = []
+    /// The provider's lists as loaded: built again when names change (step 10a).
+    private var rawCategories: [XtreamCategory] = []
+    private var rawChannels: [XtreamLiveChannel] = []
+    private var editsObserver: NSObjectProtocol?
+    private var renameTask: Task<Void, Never>?
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
     private var channelsByID: [Int: XtreamLiveChannel] = [:]
@@ -207,6 +212,12 @@ final class LiveTVStore: ObservableObject {
                     self.listRevision &+= 1
                 }
             }
+        // Renamed channels and groups, name cleanup: the list again, same order.
+        editsObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVChannelEdits.changedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyNames() }
+        }
     }
 
     var hasAccount: Bool { account != nil }
@@ -241,7 +252,7 @@ final class LiveTVStore: ObservableObject {
             // Every visible channel: those without a guide id are matched
             // by name (step 8a).
             let channels = await Task.detached(priority: .utility) {
-                visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.name) }
+                visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.originalName) }
             }.value
             guard let self, self.account == account else { return }
             let sources = LiveTVEPGSources.shared
@@ -266,6 +277,12 @@ final class LiveTVStore: ObservableObject {
         }
         ProfileSettings.current.set(favoriteIDs, forKey: Self.favoritesKey)
         rebuildGroups()
+    }
+
+    /// What the provider calls a group (before a rename or cleanup).
+    func providerGroupName(_ id: String) -> String {
+        if id == LiveTVGroup.otherID { return groupNames.other }
+        return rawCategories.first { $0.id == id }?.name ?? id
     }
 
     func channel(id: Int) -> XtreamLiveChannel? {
@@ -374,6 +391,9 @@ final class LiveTVStore: ObservableObject {
         account = stored
         userInfo = nil
         channels = []
+        rawCategories = []
+        rawChannels = []
+        renameTask?.cancel()
         channelsByGroup = [:]
         channelsByID = [:]
         categoryGroups = []
@@ -392,7 +412,9 @@ final class LiveTVStore: ObservableObject {
         loadTask = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) { () -> (LiveTVCache, Prepared)? in
                 guard let cache = LiveTVCache.load(from: url), cache.accountID == stored.id else { return nil }
-                return (cache, LiveTVStore.prepare(categories: cache.categories, channels: cache.channels, names: names))
+                return (cache, LiveTVStore.prepare(
+                    categories: cache.categories, channels: cache.channels, names: names,
+                    edits: LiveTVChannelEdits.read()))
             }.value
             guard !Task.isCancelled, let self, self.account == stored else { return }
             self.state = .idle
@@ -401,6 +423,8 @@ final class LiveTVStore: ObservableObject {
                 return
             }
             let (cache, result) = prepared
+            self.rawCategories = cache.categories
+            self.rawChannels = cache.channels
             self.apply(result)
             self.allowedFormats = cache.userInfoAllowedFormats
             self.lastUpdated = cache.savedAt
@@ -482,10 +506,14 @@ final class LiveTVStore: ObservableObject {
                 let channels = try await Self.withRetry { try await client.liveChannels() }
                 let scopeURL = await MainActor.run { LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope) }
                 let names = await MainActor.run { LiveTVStore.groupNamesValue() }
+                let edits = LiveTVChannelEdits.read()
                 let prepared = await Task.detached(priority: .userInitiated) {
-                    LiveTVStore.prepare(categories: categories, channels: channels, names: names)
+                    LiveTVStore.prepare(categories: categories, channels: channels, names: names, edits: edits)
                 }.value
                 guard !Task.isCancelled, let self else { return }
+                self.renameTask?.cancel()
+                self.rawCategories = categories
+                self.rawChannels = channels
                 self.userInfo = info
                 self.allowedFormats = info.allowedOutputFormats
                 self.apply(prepared)
@@ -580,8 +608,18 @@ final class LiveTVStore: ObservableObject {
     nonisolated static func prepare(
         categories: [XtreamCategory],
         channels: [XtreamLiveChannel],
-        names: GroupNames
+        names: GroupNames,
+        edits: LiveTVNameEdits = .none
     ) -> Prepared {
+        // Renamed and cleaned names (step 10a); the order stays the provider's.
+        var channels = channels
+        let display = edits.isEmpty
+            ? [:] : edits.channelDisplayNames(channels.map { (id: $0.streamID, name: $0.name) })
+        if !display.isEmpty {
+            channels = channels.map { channel in display[channel.streamID].map { channel.shown(as: $0) } ?? channel }
+        }
+        let terms = LiveTVNameCleaner.terms(edits.removals)
+        let groupCleaner = edits.cleanGroups && !terms.isEmpty ? LiveTVNameCleaner.Cleaner(terms: terms) : nil
         let sorted = channels.enumerated().sorted { lhs, rhs in
             switch (lhs.element.number, rhs.element.number) {
             case let (l?, r?) where l != r: return l < r
@@ -599,7 +637,10 @@ final class LiveTVStore: ObservableObject {
         for category in categories {
             let count = byGroup[category.id]?.count ?? 0
             guard count > 0, known.insert(category.id).inserted else { continue }
-            result.append(LiveTVGroup(id: category.id, name: category.name, count: count))
+            result.append(LiveTVGroup(
+                id: category.id,
+                name: edits.groupDisplayName(id: category.id, name: category.name, cleaner: groupCleaner),
+                count: count))
         }
         // Channels whose category the panel didn't list.
         let orphanKeys = byGroup.keys.filter { !known.contains($0) }
@@ -607,7 +648,9 @@ final class LiveTVStore: ObservableObject {
             var orphans: [XtreamLiveChannel] = []
             for key in orphanKeys { orphans += byGroup[key] ?? [] }
             byGroup[LiveTVGroup.otherID] = orphans
-            result.append(LiveTVGroup(id: LiveTVGroup.otherID, name: names.other, count: orphans.count))
+            result.append(LiveTVGroup(
+                id: LiveTVGroup.otherID,
+                name: edits.groupNames[LiveTVGroup.otherID] ?? names.other, count: orphans.count))
         }
         var epgIDs: [Int: String] = [:]
         for channel in sorted {
@@ -618,15 +661,37 @@ final class LiveTVStore: ObservableObject {
             groups: result, knownCategoryIDs: known)
     }
 
-    private func apply(_ prepared: Prepared) {
+    /// The list again with the names changed: same channels in the same
+    /// order, so the guide keeps its place and only relabels.
+    private func applyNames() {
+        guard !rawChannels.isEmpty else { return }
+        let categories = rawCategories
+        let raw = rawChannels
+        let names = groupNames
+        let edits = LiveTVChannelEdits.read()
+        renameTask?.cancel()
+        renameTask = Task { [weak self] in
+            let prepared = await Task.detached(priority: .userInitiated) {
+                LiveTVStore.prepare(categories: categories, channels: raw, names: names, edits: edits)
+            }.value
+            guard !Task.isCancelled, let self, self.rawChannels.count == raw.count else { return }
+            self.apply(prepared, namesOnly: true)
+        }
+    }
+
+    private func apply(_ prepared: Prepared, namesOnly: Bool = false) {
         channels = prepared.channels
         channelsByGroup = prepared.channelsByGroup
         channelsByID = prepared.channelsByID
         knownCategoryIDs = prepared.knownCategoryIDs
-        separatorIDs = Set(prepared.channels.lazy.filter { Self.isSeparator($0.name) }.map(\.streamID))
+        separatorIDs = Set(prepared.channels.lazy.filter { Self.isSeparator($0.originalName) }.map(\.streamID))
         rebuildSeparatorLists()
         let restoring = groups.isEmpty
         categoryGroups = prepared.groups
+        if namesOnly {
+            rebuildGroups()
+            return
+        }
         listRevision &+= 1
         LiveTVEPG.shared.register(epgIDs: prepared.epgIDs)
         rebuildGroups()

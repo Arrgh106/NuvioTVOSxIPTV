@@ -122,7 +122,7 @@ struct LiveTVAssignEPG: View {
     /// Closest names to the channel's, as Android's `epgClosestRow`: the
     /// same key first, then the longest shared start.
     private var suggestions: [GuideChannel] {
-        let key = LiveTVEPGMatch.normalize(channel.name)
+        let key = LiveTVEPGMatch.normalize(channel.originalName)
         guard key.count >= 2 else { return [] }
         func score(_ guide: GuideChannel) -> Int {
             if guide.key == key { return 100_000 }

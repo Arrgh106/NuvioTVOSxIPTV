@@ -121,6 +121,13 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
         loadProgrammes(for: channel)
     }
 
+    /// The same channel under another name (renamed, step 10a).
+    func relabel(_ channel: XtreamLiveChannel) {
+        guard channel.streamID == self.channel?.streamID else { return }
+        self.channel = channel
+        nameLabel.text = channel.name
+    }
+
     func setFavorite(_ favorite: Bool) {
         favoriteIcon.isHidden = !favorite
     }

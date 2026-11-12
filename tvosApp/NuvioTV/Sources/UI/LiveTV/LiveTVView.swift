@@ -21,6 +21,8 @@ struct LiveTVView: View {
     /// Assign EPG for this channel (long press in the guide).
     @State private var assignEPGChannel: XtreamLiveChannel?
     @State private var epgChanged = false
+    /// Rename a channel or group (long press, step 10a).
+    @State private var renaming: LiveTVRenameSheet.Target?
     /// Watch from outside Live TV (reminder, Home row): the channel full
     /// screen. Not observed: nothing here redraws for it.
     private var watch: LiveTVWatch { LiveTVWatch.shared }
@@ -99,6 +101,10 @@ struct LiveTVView: View {
             }
         }) { channel in
             LiveTVAssignEPG(channel: channel, onChanged: { epgChanged = true })
+        }
+        .sheet(item: $renaming) { target in
+            LiveTVSettingsRows.clearSheetBackground(
+                LiveTVRenameSheet(target: target, accentColor: LiveTVTheme.accent))
         }
         // Watch from a reminder or the Home row, from anywhere in the app;
         // the channels may still be loading when Live TV opens for it.
@@ -196,7 +202,11 @@ struct LiveTVView: View {
             groups: store.groups,
             selectedID: store.selectedGroupID,
             showCounts: settings.showGroupCounts,
-            onSelect: { store.selectedGroupID = $0 }
+            onSelect: { store.selectedGroupID = $0 },
+            onRename: { group in
+                renaming = .init(
+                    kind: .group(group.id), current: group.name, providerName: store.providerGroupName(group.id))
+            }
         )
     }
 
@@ -232,6 +242,7 @@ struct LiveTVView: View {
                 onCatchup: playCatchup,
                 onToggleFavorite: { store.toggleFavorite($0) },
                 onAssignEPG: { assignEPGChannel = $0 },
+                onRename: { renaming = .channel($0) },
                 info: info
             )
         }

@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- ⏭ Next step: to be chosen from *Noted for later*.
+- 🚧 **Live TV, step 10a: channel and group names** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -30,11 +30,14 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
 
 9. ✅ **Extra XMLTV guides** (as Android's EPG sources): Settings → Live TV → Guide Sources. Add a guide by link (`.xml` or `.xml.gz`, unpacked on the device in steps, the link kept in the Keychain), turn it on or off, move its listings by −12 to +12 hours in half hours. The provider's own guide can be turned off. All guides are read into one guide; each channel takes, as on Android, a choice by hand first, then real listings over placeholders ("No information" …), an id match over a name, the one going furthest ahead, the added guide before the provider's. Each guide shows how many programmes and channels it brought, or why it failed; one guide failing doesn't stop the others. *Assign EPG* lists the channels of all guides. Per profile. After saving a guide, *Update the guide now?* (also without Live TV open). The downloaded files are kept: a choice in *Assign EPG* is written at once when its programmes are stored already (or *No guide*), otherwise the kept files are read again without downloading.
+10. 🚧 **Channel list editing** (as Android's "Edit channel" and "Hide & arrange"), in three parts:
+   - 🚧 10a: *Rename Channel* and *Rename Group* (long press in the guide or the groups); empty goes back to the automatic name. Settings → Live TV → Channel Names: *Name Cleanup* takes words off the start or end of channel names, as on Android ("USA: ESPN HD" → "ESPN", never in the middle, never the whole name; a word with only a space after it counts when 5+ channels start with it), *Add Common Prefixes & Suffixes*, *Also Clean Group Names*, resets. Guide matching and Assign EPG keep the provider's names; search finds the new ones. The guide relabels in place, focus stays. Per profile. The settings sheet for a guide source now looks like the other settings sheets (Jellyfin, SMB).
+   - ⏭ 10b: reorder channels (OK picks up, Up / Down moves, CH+ / CH− by 8, Back saves) and groups.
+   - ⏭ 10c: custom groups (add channels without moving them, delete, reset).
 
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
-- 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.
 - 💡 Guide focus: fine-tune the pause before Left goes on to the groups / sidebar (0.45 s now), if it feels slow or fast in daily use.

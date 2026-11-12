@@ -172,14 +172,28 @@ struct XtreamCategory: Codable, Identifiable, Hashable, Sendable {
 struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
     let streamID: Int
     let number: Int?
-    let name: String
+    /// The name shown: renamed or cleaned (step 10a), else the provider's.
+    var name: String
     let logoURL: String?
     let epgChannelID: String?
     let categoryID: String?
     /// Days of catch-up the provider keeps (0 = none).
     let archiveDays: Int
 
+    /// The provider's name when `name` differs (not saved in the cache).
+    var providerName: String? = nil
+
     var id: Int { streamID }
+    /// What the provider calls it: guide matching and separator rows go by this.
+    var originalName: String { providerName ?? name }
+
+    /// The same channel shown under another name.
+    func shown(as display: String) -> XtreamLiveChannel {
+        var copy = self
+        copy.providerName = originalName
+        copy.name = display
+        return copy
+    }
 
     enum CodingKeys: String, CodingKey {
         case streamID = "stream_id"
