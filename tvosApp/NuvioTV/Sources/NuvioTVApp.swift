@@ -4129,6 +4129,9 @@ private struct CrossfadingBackdrop: View {
     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
     /// (Android `Alignment.TopEnd`); title posters keep center.
     var alignment: Alignment = .center
+    /// Fork: no URL fades the picture out (a Live TV channel has no artwork)
+    /// instead of keeping the last title's.
+    var clearsWithoutURL = false
 
     @State private var image: UIImage?
     @State private var loadedURL: String?
@@ -4166,6 +4169,15 @@ private struct CrossfadingBackdrop: View {
         }
         .task(id: url) {
             guard let url, url != loadedURL, let imageURL = URL(string: url) else {
+                if url == nil, clearsWithoutURL, let previous = image {
+                    outgoingImage = previous
+                    outgoingOpacity = 1
+                    image = nil
+                    loadedURL = nil
+                    withAnimation(.easeInOut(duration: 0.30)) { outgoingOpacity = 0 }
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled, image == nil else { return }
+                }
                 outgoingImage = nil
                 outgoingOpacity = 0
                 return
@@ -4213,6 +4225,7 @@ private struct CrossfadingBackdrop: View {
 extension CrossfadingBackdrop: Equatable {
     static func == (lhs: CrossfadingBackdrop, rhs: CrossfadingBackdrop) -> Bool {
         lhs.url == rhs.url
+            && lhs.clearsWithoutURL == rhs.clearsWithoutURL
             && lhs.placeholder == rhs.placeholder
             && lhs.alignment == rhs.alignment
     }
@@ -5649,7 +5662,8 @@ struct TVHomeView: View {
                     CrossfadingBackdrop(
                         url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
                         placeholder: backdropColor,
-                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center
+                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center,
+                        clearsWithoutURL: focusedSectionId == LiveTVHomeRowModel.sectionID
                     )
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -5664,7 +5678,8 @@ struct TVHomeView: View {
                         CrossfadingBackdrop(
                             url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
                             placeholder: backdropColor,
-                            alignment: .topTrailing
+                            alignment: .topTrailing,
+                            clearsWithoutURL: focusedSectionId == LiveTVHomeRowModel.sectionID
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
