@@ -39,7 +39,7 @@ struct LiveTVGuideSourcesGroup: View {
                 accentColor: accentColor,
                 action: {
                     editing = .init(
-                        source: LiveTVEPGSource(id: LiveTVEPGSource.newID(), name: "XMLTV"), url: "", isNew: true)
+                        source: LiveTVEPGSource(id: LiveTVEPGSource.newID(), name: ""), url: "", isNew: true)
                 }
             )
             LiveTVSettingsRows.action(
@@ -50,8 +50,8 @@ struct LiveTVGuideSourcesGroup: View {
                 action: { sources.refreshNow() }
             )
         }
-        .fullScreenCover(item: $editing) { target in
-            LiveTVGuideSourceEditor(target: target)
+        .sheet(item: $editing) { target in
+            LiveTVSettingsRows.clearSheetBackground(LiveTVGuideSourceEditor(target: target, accentColor: accentColor))
         }
     }
 
@@ -83,6 +83,8 @@ struct LiveTVGuideSourcesGroup: View {
 // MARK: - Editor
 
 /// Adding or changing an XMLTV guide: name, link, on / off, time shift.
+/// Built like the Jellyfin and SMB server sheets, so it looks like the rest
+/// of Settings.
 struct LiveTVGuideSourceEditor: View {
     struct Target: Identifiable {
         var source: LiveTVEPGSource
@@ -92,99 +94,107 @@ struct LiveTVGuideSourceEditor: View {
     }
 
     let target: Target
+    let accentColor: Color
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var url = ""
-    @State private var enabled = true
-    @State private var shift = 0
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @State private var name: String
+    @State private var url: String
+    @State private var enabled: Bool
+    @State private var shift: Int
     @State private var invalid = false
     @State private var asksUpdate = false
 
+    init(target: Target, accentColor: Color) {
+        self.target = target
+        self.accentColor = accentColor
+        _name = State(initialValue: target.source.name)
+        _url = State(initialValue: target.url)
+        _enabled = State(initialValue: target.source.enabled)
+        _shift = State(initialValue: target.source.shiftMinutes)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(target.isNew
-                     ? L10n.string("livetv_epg_source_new", fallback: "Add XMLTV Guide")
-                     : L10n.string("livetv_epg_source_change", fallback: "XMLTV Guide"))
-                    .font(.system(size: 40, weight: .bold))
-                Text(L10n.string("livetv_epg_source_hint", fallback: "A link to an XMLTV file (.xml or .xml.gz). The link is kept in the Keychain of this Apple TV."))
-                    .font(.system(size: 22))
-                    .foregroundColor(.white.opacity(0.6))
-            }
-            VStack(alignment: .leading, spacing: 16) {
-                TextField(L10n.string("livetv_epg_source_name", fallback: "Name"), text: $name)
-                    .autocorrectionDisabled()
-                    .frame(width: 900)
-                TextField(L10n.string("livetv_epg_source_url", fallback: "XMLTV link (http://…/epg.xml.gz)"), text: $url)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .frame(width: 900)
-                if invalid {
-                    Text(L10n.string("livetv_epg_source_invalid", fallback: "Enter a link starting with http:// or https://"))
-                        .font(.system(size: 22))
-                        .foregroundColor(.orange)
-                }
-            }
-            .focusSection()
-            HStack(spacing: 20) {
-                Button {
-                    enabled.toggle()
-                } label: {
-                    Label(enabled
-                          ? L10n.string("livetv_epg_source_on", fallback: "On")
-                          : L10n.string("livetv_epg_source_off", fallback: "Off"),
-                          systemImage: enabled ? "checkmark.circle.fill" : "circle")
-                }
-                Button {
-                    shift = max(LiveTVEPGSourceRules.shiftChoices.first ?? -720, shift - 30)
-                } label: {
-                    Image(systemName: "minus")
-                }
-                VStack(spacing: 2) {
-                    Text(L10n.string("livetv_epg_source_shift", fallback: "Time shift"))
-                        .font(.system(size: 18))
-                        .foregroundColor(.white.opacity(0.6))
-                    Text(LiveTVEPGSourceRules.shiftLabel(
-                        shift, none: L10n.string("livetv_epg_source_shift_none", fallback: "None")))
-                        .font(.system(size: 26, weight: .semibold))
-                        .monospacedDigit()
-                }
-                .frame(width: 160)
-                Button {
-                    shift = min(LiveTVEPGSourceRules.shiftChoices.last ?? 720, shift + 30)
-                } label: {
-                    Image(systemName: "plus")
-                }
-            }
-            .focusSection()
-            Text(L10n.string("livetv_epg_source_shift_detail", fallback: "Moves this guide's listings later (+) or earlier (−), for guides out of step with what's playing"))
-                .font(.system(size: 20))
-                .foregroundColor(.white.opacity(0.5))
-            HStack(spacing: 20) {
-                Button(action: save) {
-                    Label(L10n.string("livetv_epg_source_save", fallback: "Save"), systemImage: "checkmark")
-                }
-                if !target.isNew {
-                    Button(role: .destructive) {
-                        LiveTVEPGSources.shared.remove(target.source)
-                        asksUpdate = true
-                    } label: {
-                        Label(L10n.string("livetv_epg_source_delete", fallback: "Delete"), systemImage: "trash")
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(target.isNew
+                         ? L10n.string("livetv_epg_source_new", fallback: "Add XMLTV Guide")
+                         : L10n.string("livetv_epg_source_change", fallback: "Edit XMLTV Guide"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_epg_source_group", fallback: "Guide"),
+                        subtitle: L10n.string("livetv_epg_source_hint", fallback: "A link to an XMLTV file (.xml or .xml.gz). The link is kept in the Keychain of this Apple TV.")
+                    ) {
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_epg_source_name", fallback: "Name"),
+                            subtitle: L10n.string("livetv_epg_source_name_detail", fallback: "Shown in Guide Sources and Assign EPG. Empty: the link's server"),
+                            placeholder: L10n.string("livetv_epg_source_name_placeholder", fallback: "e.g. Germany"),
+                            text: $name
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_epg_source_url", fallback: "XMLTV Link"),
+                            subtitle: L10n.string("livetv_epg_source_url_detail", fallback: "e.g. http://example.com/epg.xml.gz"),
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $url,
+                            fieldWidth: 520,
+                            status: invalid
+                                ? L10n.string("livetv_epg_source_invalid", fallback: "Enter a link starting with http:// or https://")
+                                : nil,
+                            statusColor: .orange
+                        )
                     }
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_epg_source_options", fallback: "Options"),
+                        subtitle: L10n.string("livetv_epg_source_options_detail", fallback: "Takes effect at the next guide update")
+                    ) {
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_epg_source_use", fallback: "Use This Guide"),
+                            subtitle: L10n.string("livetv_epg_source_use_detail", fallback: "Off: kept here, but not read"),
+                            isOn: $enabled,
+                            accentColor: accentColor
+                        )
+                        LiveTVSettingsRows.stepper(
+                            title: L10n.string("livetv_epg_source_shift", fallback: "Time Shift"),
+                            subtitle: L10n.string("livetv_epg_source_shift_detail", fallback: "Moves this guide's listings later (+) or earlier (−), for guides out of step with what's playing"),
+                            value: $shift,
+                            range: (LiveTVEPGSourceRules.shiftChoices.first ?? -720)...(LiveTVEPGSourceRules.shiftChoices.last ?? 720),
+                            step: 30,
+                            accentColor: accentColor,
+                            label: { LiveTVEPGSourceRules.shiftLabel($0, none: L10n.string("livetv_epg_source_shift_none", fallback: "None")) }
+                        )
+                    }
+
+                    HStack(spacing: 24) {
+                        LiveTVSettingsRows.dialogButton(
+                            title: L10n.string("action_cancel", fallback: "Cancel"), isPrimary: false
+                        ) {
+                            dismiss()
+                        }
+                        Spacer()
+                        if !target.isNew {
+                            LiveTVSettingsRows.deleteButton {
+                                LiveTVEPGSources.shared.remove(target.source)
+                                asksUpdate = true
+                            }
+                        }
+                        LiveTVSettingsRows.dialogButton(
+                            title: L10n.string("action_save", fallback: "Save"),
+                            isPrimary: true,
+                            enabled: !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                            action: save
+                        )
+                    }
+                    .focusSection()
                 }
-                Button {
-                    dismiss()
-                } label: {
-                    Text(L10n.string("livetv_epg_source_cancel", fallback: "Cancel"))
-                }
+                .padding(40)
             }
-            .focusSection()
-            Spacer()
         }
-        .padding(80)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.black.opacity(0.92).ignoresSafeArea())
         // Read the guides now, or at the next update (opening Live TV, every 12 h).
         .alert(L10n.string("livetv_epg_source_ask_title", fallback: "Update the guide now?"), isPresented: $asksUpdate) {
             Button(L10n.string("livetv_epg_source_ask_now", fallback: "Update now")) {
@@ -197,12 +207,6 @@ struct LiveTVGuideSourceEditor: View {
         } message: {
             Text(L10n.string("livetv_epg_source_ask_detail", fallback: "All guides are downloaded and read again. Later: when Live TV opens next."))
         }
-        .onAppear {
-            name = target.source.name
-            url = target.url
-            enabled = target.source.enabled
-            shift = target.source.shiftMinutes
-        }
     }
 
     private func save() {
@@ -212,6 +216,7 @@ struct LiveTVGuideSourceEditor: View {
             invalid = true
             return
         }
+        invalid = false
         var source = target.source
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         source.name = cleanName.isEmpty ? LiveTVEPGSourceRules.host(of: link) : cleanName
@@ -221,3 +226,4 @@ struct LiveTVGuideSourceEditor: View {
         asksUpdate = true
     }
 }
+

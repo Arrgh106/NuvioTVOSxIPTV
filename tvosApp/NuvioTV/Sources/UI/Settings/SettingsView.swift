@@ -17553,6 +17553,40 @@ enum LiveTVSettingsRows {
     ) -> some View {
         SettingsActionRow(title: title, subtitle: subtitle, value: value, accentColor: accentColor, action: action)
     }
+
+    static func textField(
+        title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
+        status: String? = nil, statusColor: Color = .white.opacity(0.56)
+    ) -> some View {
+        SettingsNativeTextFieldRow(
+            title: title, subtitle: subtitle, placeholder: placeholder, text: text, fieldWidth: fieldWidth,
+            status: status, statusColor: statusColor)
+    }
+
+    static func stepper(
+        title: String, subtitle: String, value: Binding<Int>, range: ClosedRange<Int>, step: Int,
+        accentColor: Color, label: @escaping (Int) -> String
+    ) -> some View {
+        SettingsStepperRow(
+            title: title, subtitle: subtitle, value: value, range: range, step: step, suffix: "",
+            accentColor: accentColor, label: label)
+    }
+
+    /// Cancel / Save as in the Jellyfin and SMB server sheets.
+    static func dialogButton(
+        title: String, isPrimary: Bool, enabled: Bool = true, action: @escaping () -> Void
+    ) -> some View {
+        SMBDialogButton(title: title, isPrimary: isPrimary, enabled: enabled, action: action)
+    }
+
+    static func deleteButton(action: @escaping () -> Void) -> some View {
+        SMBDeleteButton(action: action)
+    }
+
+    /// The sheet shows its own background (as the server sheets).
+    static func clearSheetBackground<Content: View>(_ content: Content) -> some View {
+        content.modifier(ClearPresentationBackgroundIfAvailable())
+    }
 }
 
 private struct SettingsGroup<Content: View>: View {
@@ -17747,6 +17781,8 @@ private struct SettingsStepperRow: View {
     let step: Int
     let suffix: String
     let accentColor: Color
+    /// Fork: a value shown other than "\(value)\(suffix)" (Live TV time shift).
+    var label: ((Int) -> String)? = nil
 
     @FocusState private var isFocused: Bool
 
@@ -17765,10 +17801,10 @@ private struct SettingsStepperRow: View {
                     value = max(range.lowerBound, value - step)
                 }
 
-                Text("\(value)\(suffix)")
+                Text(label?(value) ?? "\(value)\(suffix)")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(.white)
-                    .frame(width: 78)
+                    .frame(width: label == nil ? 78 : 110)
 
                 SettingsMiniButton(
                     systemName: "plus",
