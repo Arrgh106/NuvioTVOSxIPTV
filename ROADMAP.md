@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- Nothing right now. Steps 0–8 of the Live TV guide are done; the next part is chosen from *Noted for later*.
+- 🚧 **Live TV guide, step 9: extra XMLTV guides** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -29,10 +29,11 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 8a: channels without a working guide id are matched by name, as on Android ("DE: Sky Cinema HD" = "Sky Cinema": prefixes, HD / FHD / 4K and brackets don't count). Chosen by hand first, then the guide id, then the name; only guide channels with programmes. The guide is read again once after the update.
    - ✅ 8b: *Assign EPG* (long press on a channel in the guide): suggestions with the closest names, search over all guide channels, *Automatic* or *No guide*. Per profile; the guide is read again after a change.
 
+9. 🚧 **Extra XMLTV guides** (as Android's EPG sources): Settings → Live TV → Guide Sources. Add a guide by link (`.xml` or `.xml.gz`, unpacked on the device in steps, the link kept in the Keychain), turn it on or off, move its listings by −12 to +12 hours in half hours. The provider's own guide can be turned off. All guides are read into one guide; each channel takes, as on Android, a choice by hand first, then real listings over placeholders ("No information" …), an id match over a name, the one going furthest ahead, the added guide before the provider's. Each guide shows how many programmes and channels it brought, or why it failed; one guide failing doesn't stop the others. *Assign EPG* lists the channels of all guides. Per profile; changing the guides reads them again.
+
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
-- 💡 Extra XMLTV sources (other guides next to the provider's) and a time offset per guide.
 - 💡 Channel list: reorder and rename channels, custom groups, name cleaner.
 - 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.

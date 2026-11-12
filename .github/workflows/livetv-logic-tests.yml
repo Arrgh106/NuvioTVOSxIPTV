@@ -14,6 +14,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCatchup.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVReminderList.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGMatch.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGSourceList.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -24,6 +25,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCatchup.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVReminderList.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGMatch.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGSourceList.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -49,6 +51,7 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCatchup.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVReminderList.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGMatch.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVEPGSourceList.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

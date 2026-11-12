@@ -11,9 +11,12 @@ struct LiveTVAssignEPG: View {
     @Environment(\.dismiss) private var dismiss
 
     private struct GuideChannel: Identifiable, Hashable {
+        /// The key it's stored under (with its guide in front for added guides).
         let id: String
         let name: String
         let key: String
+        /// Its guide's name and its id in that guide, shown under the name.
+        let detail: String
     }
 
     @State private var all: [GuideChannel] = []
@@ -85,7 +88,7 @@ struct LiveTVAssignEPG: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(guide.name)
                         .font(.system(size: 26, weight: .medium))
-                    Text(guide.id)
+                    Text(guide.detail)
                         .font(.system(size: 18))
                         .foregroundColor(.white.opacity(0.5))
                 }
@@ -138,7 +141,7 @@ struct LiveTVAssignEPG: View {
         let words = search.lowercased().split(separator: " ").map(String.init)
         guard !words.isEmpty else { return all }
         return all.filter { guide in
-            let text = (guide.name + " " + guide.id).lowercased()
+            let text = (guide.name + " " + guide.detail).lowercased()
             return words.allSatisfy { text.contains($0) }
         }
     }
@@ -157,8 +160,14 @@ struct LiveTVAssignEPG: View {
             return
         }
         let list = await Task.detached(priority: .userInitiated) {
-            reader.guideChannels().map {
-                GuideChannel(id: $0.id, name: $0.name, key: LiveTVEPGMatch.normalize($0.name))
+            let channels = reader.guideChannels()
+            // The guide's name only when there are several.
+            let several = Set(channels.map(\.source)).count > 1
+            return channels.map {
+                let id = LiveTVEPGSourceRules.guideID(fromKey: $0.id)
+                return GuideChannel(
+                    id: $0.id, name: $0.name, key: LiveTVEPGMatch.normalize($0.name),
+                    detail: several && !$0.source.isEmpty ? id + "  ·  " + $0.source : id)
             }
         }.value
         all = list

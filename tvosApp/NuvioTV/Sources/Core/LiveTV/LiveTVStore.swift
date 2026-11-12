@@ -191,6 +191,7 @@ final class LiveTVStore: ObservableObject {
     private var channelsByGroupWithoutSeparators: [String: [XtreamLiveChannel]] = [:]
     private var hidesSeparators: Bool { LiveTVSettings.shared.hideSeparators && !separatorIDs.isEmpty }
     private var settingsObserver: AnyCancellable?
+    private var sourcesObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
 
     init() {
@@ -207,6 +208,13 @@ final class LiveTVStore: ObservableObject {
                     self.listRevision &+= 1
                 }
             }
+        // Guides added, changed or removed in Settings: read them (step 9).
+        sourcesObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVEPGSources.changedNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let force = note.userInfo?["force"] as? Bool ?? false
+            Task { @MainActor in self?.refreshGuide(force: force) }
+        }
     }
 
     var hasAccount: Bool { account != nil }
@@ -242,9 +250,11 @@ final class LiveTVStore: ObservableObject {
                 visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.name) }
             }.value
             guard let self, self.account == account else { return }
+            let sources = LiveTVEPGSources.shared
             LiveTVGuide.shared.refreshIfNeeded(
                 account: account, password: password, channels: channels,
-                overrides: LiveTVEPGOverrides.load(), force: force)
+                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
+                providerGuide: sources.providerGuide, force: force)
         }
     }
 

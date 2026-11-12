@@ -49,22 +49,60 @@ enum LiveTVEPGMatch {
             in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
     }
 
+    // MARK: Placeholders
+
+    /// "Programming", "No information", "To be announced"…: no real show
+    /// (Android's `PLACEHOLDER_TITLES`). A guide channel with mostly these
+    /// loses against one with real listings.
+    private static let placeholders: Set<String> = [
+        "programming", "program", "programme", "no information", "no info", "no program information",
+        "no programme information", "to be announced", "tba", "tbd", "n/a", "na", "off air", "no data",
+        "no epg", "not available", "information not available", "regular programming",
+        "scheduled programming", "paid programming", "coming soon", "no program guide available",
+    ]
+
+    static func isPlaceholder(_ title: String) -> Bool {
+        var text = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasSuffix(".") { text.removeLast() }
+        return placeholders.contains(text)
+    }
+
     // MARK: Picking
 
+    /// What a guide channel brought: its listings kept, how many of them
+    /// were placeholders, and how far ahead they go.
+    struct ChannelStat: Sendable {
+        var count = 0
+        var placeholders = 0
+        var lastStop: Int64 = 0
+
+        mutating func add(stop: Int64, placeholder: Bool) {
+            count += 1
+            if placeholder { placeholders += 1 }
+            lastStop = max(lastStop, stop)
+        }
+
+        /// Under 80 % placeholders (as on Android).
+        var isReal: Bool { placeholders * 10 < count * 8 }
+    }
+
     /// Built from the provider's channels before the import; told about each
-    /// guide channel as the import meets it; gives the links at the end.
+    /// guide channel as the import meets it, in every guide; gives the links
+    /// at the end.
     struct Picker {
-        /// How a guide channel was found for a stream; higher wins.
-        enum Kind: Int, Comparable {
+        /// How a guide channel was found for a stream.
+        enum Kind: Int {
             case name = 1
             case id = 2
             case manual = 3
-            static func < (lhs: Kind, rhs: Kind) -> Bool { lhs.rawValue < rhs.rawValue }
         }
 
         private struct Candidate {
-            let guideID: String
+            let key: String
             let kind: Kind
+            /// The guide's place in the list (added guides first).
+            let guide: Int
+            /// Where in the files it came (the first wins a tie).
             let order: Int
         }
 
@@ -74,7 +112,7 @@ enum LiveTVEPGMatch {
         private var candidates: [Int: [Candidate]] = [:]
         private var order = 0
 
-        /// `overrides`: stream → guide id, or "" for no guide at all.
+        /// `overrides`: stream → guide channel key, or "" for no guide at all.
         init(channels: [LiveTVEPGChannelRef], overrides: [Int: String] = [:]) {
             for channel in channels {
                 if let choice = overrides[channel.streamID] {
@@ -92,36 +130,65 @@ enum LiveTVEPGMatch {
             }
         }
 
-        /// A guide channel (its id lowercased), in the order of the file.
+        /// A guide channel: `key` as stored (`LiveTVEPGSourceRules.key`),
+        /// `id` its id in the file (lowercased), `guide` the guide's place.
         /// True when one of the provider's channels may use it, so its
         /// programmes are worth keeping.
-        mutating func saw(guideID: String, names: [String]) -> Bool {
+        mutating func saw(key: String, id: String, names: [String], guide: Int = 0) -> Bool {
             order += 1
             var found = false
+            let order = self.order
             func add(_ streams: [Int]?, _ kind: Kind) {
                 guard let streams else { return }
                 found = true
                 for stream in streams {
-                    candidates[stream, default: []].append(Candidate(guideID: guideID, kind: kind, order: order))
+                    candidates[stream, default: []].append(Candidate(key: key, kind: kind, guide: guide, order: order))
                 }
             }
-            add(manual[guideID], .manual)
-            add(byID[guideID], .id)
-            for key in LiveTVEPGMatch.guideKeys(id: guideID, names: names) { add(byName[key], .name) }
+            add(manual[key], .manual)
+            add(byID[id], .id)
+            for name in LiveTVEPGMatch.guideKeys(id: id, names: names) { add(byName[name], .name) }
             return found
         }
 
-        /// Stream → guide id. Only guide channels with programmes count
-        /// (`listed`); then manual over id over name, then the first one.
-        func links(listed: Set<String>) -> [Int: String] {
+        /// The provider's guide alone: key and id are the same.
+        mutating func saw(guideID: String, names: [String]) -> Bool {
+            saw(key: guideID, id: guideID, names: names)
+        }
+
+        /// Stream → guide channel key, as Android's `choose()`: only guide
+        /// channels with listings count; a choice by hand wins; then real
+        /// listings over placeholders, an id match over a name, the one going
+        /// further ahead (in half days), the guide higher in the list, the
+        /// first in the file.
+        func links(stats: [String: ChannelStat], now: Int64) -> [Int: String] {
+            func score(_ candidate: Candidate, _ stat: ChannelStat) -> Int64 {
+                if candidate.kind == .manual { return Int64.max }
+                let halfDays = min(999, max(0, stat.lastStop - now) / (12 * 3600))
+                return (stat.isReal ? 4_000_000 : 0) + (candidate.kind == .id ? 2_000_000 : 0)
+                    + halfDays * 1_000 - Int64(candidate.guide)
+            }
             var result: [Int: String] = [:]
             for (stream, list) in candidates {
-                let best = list.filter { listed.contains($0.guideID) }.max { lhs, rhs in
-                    lhs.kind != rhs.kind ? lhs.kind < rhs.kind : lhs.order > rhs.order
+                var best: (score: Int64, order: Int, key: String)?
+                for candidate in list {
+                    guard let stat = stats[candidate.key], stat.count > 0 else { continue }
+                    let value = score(candidate, stat)
+                    if let current = best, current.score > value || current.score == value && current.order <= candidate.order {
+                        continue
+                    }
+                    best = (value, candidate.order, candidate.key)
                 }
-                if let best { result[stream] = best.guideID }
+                if let best { result[stream] = best.key }
             }
             return result
+        }
+
+        /// Only which guide channels have listings known (all real, today).
+        func links(listed: Set<String>) -> [Int: String] {
+            var stats: [String: ChannelStat] = [:]
+            for key in listed { stats[key] = ChannelStat(count: 1, placeholders: 0, lastStop: 0) }
+            return links(stats: stats, now: 0)
         }
     }
 }

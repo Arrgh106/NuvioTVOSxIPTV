@@ -244,5 +244,74 @@ check(guideLinks[5] == "rtl.manual", "by hand wins")
 check(guideLinks[6] == nil, "by hand: no guide")
 check(picker.links(listed: all.subtracting(["zdf.de"]))[2] == "zdf.backup", "only guide channels with programmes")
 
+// MARK: Several guides (step 9)
+
+check(LiveTVEPGMatch.isPlaceholder(" No Information. "), "placeholder title")
+check(!LiveTVEPGMatch.isPlaceholder("Tagesschau"), "real title")
+var stat = LiveTVEPGMatch.ChannelStat()
+for _ in 0..<8 { stat.add(stop: 100, placeholder: true) }
+stat.add(stop: 50, placeholder: false); stat.add(stop: 50, placeholder: false)
+check(!stat.isReal && stat.lastStop == 100, "80 % placeholders: not real")
+stat.add(stop: 50, placeholder: false)
+check(stat.isReal, "under 80 %: real")
+
+let extraKey = LiveTVEPGSourceRules.key(sourceID: "xabc", guideID: "ZDF.de")
+check(extraKey == "xabc|zdf.de", "added guide key")
+check(LiveTVEPGSourceRules.key(sourceID: "", guideID: "ZDF.de") == "zdf.de", "provider key as it was")
+check(LiveTVEPGSourceRules.guideID(fromKey: extraKey) == "zdf.de", "id back from key")
+check(LiveTVEPGSourceRules.guideID(fromKey: "zdf.de") == "zdf.de", "provider id stays")
+
+let hour: Int64 = 3600
+let nowTime: Int64 = 1_000_000
+var multi = LiveTVEPGMatch.Picker(channels: [
+    ref(1, nil, "ZDF"),          // added guide goes further ahead
+    ref(2, nil, "Arte"),         // provider real, added placeholders
+    ref(3, "kika.de", "KiKA"),   // id in the provider's, name in the added one
+    ref(4, nil, "3sat"),         // same in both: added guide first
+    ref(5, nil, "Phoenix"),      // by hand in the added guide
+], overrides: [5: "xabc|phoenix.tv"])
+// Added guide (place 0), then the provider's (place 1).
+check(multi.saw(key: "xabc|zdf.de", id: "zdf.de", names: ["ZDF"], guide: 0), "added: name")
+check(multi.saw(key: "xabc|arte.fr", id: "arte.fr", names: ["Arte"], guide: 0), "added: arte")
+check(multi.saw(key: "xabc|kika", id: "kika", names: ["KiKA"], guide: 0), "added: kika by name")
+check(multi.saw(key: "xabc|3sat", id: "3sat", names: ["3sat"], guide: 0), "added: 3sat")
+check(multi.saw(key: "xabc|phoenix.tv", id: "phoenix.tv", names: ["Something"], guide: 0), "added: by hand")
+check(multi.saw(key: "zdf.de", id: "zdf.de", names: ["ZDF"], guide: 1), "provider: zdf")
+check(multi.saw(key: "arte.de", id: "arte.de", names: ["Arte"], guide: 1), "provider: arte")
+check(multi.saw(key: "kika.de", id: "kika.de", names: ["KiKA"], guide: 1), "provider: kika by id")
+check(multi.saw(key: "3sat.de", id: "3sat.de", names: ["3sat"], guide: 1), "provider: 3sat")
+check(!multi.saw(key: "phoenix.de", id: "phoenix.de", names: ["Phoenix"], guide: 1), "chosen by hand: no automatic match")
+func stats(_ count: Int, placeholders: Int = 0, aheadHours: Int64) -> LiveTVEPGMatch.ChannelStat {
+    LiveTVEPGMatch.ChannelStat(count: count, placeholders: placeholders, lastStop: nowTime + aheadHours * hour)
+}
+let multiLinks = multi.links(stats: [
+    "xabc|zdf.de": stats(40, aheadHours: 72), "zdf.de": stats(20, aheadHours: 24),
+    "xabc|arte.fr": stats(10, placeholders: 10, aheadHours: 72), "arte.de": stats(20, aheadHours: 24),
+    "xabc|kika": stats(20, aheadHours: 24), "kika.de": stats(20, aheadHours: 24),
+    "xabc|3sat": stats(20, aheadHours: 24), "3sat.de": stats(20, aheadHours: 24),
+    "xabc|phoenix.tv": stats(1, placeholders: 1, aheadHours: 1), "phoenix.de": stats(20, aheadHours: 72),
+], now: nowTime)
+check(multiLinks[1] == "xabc|zdf.de", "further ahead wins")
+check(multiLinks[2] == "arte.de", "real listings beat placeholders")
+check(multiLinks[3] == "kika.de", "id match beats name match")
+check(multiLinks[4] == "xabc|3sat", "a tie: the added guide first")
+check(multiLinks[5] == "xabc|phoenix.tv", "by hand wins over everything")
+
+check(LiveTVEPGSourceRules.shiftLabel(0) == "None", "no shift")
+check(LiveTVEPGSourceRules.shiftLabel(90) == "+1:30 h", "+90 min")
+check(LiveTVEPGSourceRules.shiftLabel(-30) == "−0:30 h", "−30 min")
+check(LiveTVEPGSourceRules.shiftChoices.count == 49 && LiveTVEPGSourceRules.shiftChoices.contains(0), "shift choices")
+check(LiveTVEPGSourceRules.host(of: " http://epg.example.test/guide.xml.gz ") == "epg.example.test", "host")
+let feedA = LiveTVGuideFeed(sourceID: "xabc", name: "A", url: URL(string: "http://a.test/e.xml")!, shiftMinutes: 0)
+let feedB = LiveTVGuideFeed(sourceID: "xabc", name: "A", url: URL(string: "http://a.test/e.xml")!, shiftMinutes: 60)
+check(LiveTVEPGSourceRules.fingerprint([feedA]) != LiveTVEPGSourceRules.fingerprint([feedB]), "shift changes the fingerprint")
+check(!LiveTVEPGSourceRules.fingerprint([feedA]).contains("a.test"), "no link in the fingerprint")
+
+check(LiveTVEPGSourceRules.gzipHeaderLength([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0xaa]) == 10, "plain gzip header")
+let named: [UInt8] = [0x1f, 0x8b, 8, 0x08, 0, 0, 0, 0, 0, 3] + Array("epg.xml".utf8) + [0, 0xaa]
+check(LiveTVEPGSourceRules.gzipHeaderLength(named) == 18, "gzip header with a file name")
+check(LiveTVEPGSourceRules.gzipHeaderLength(Array("<?xml".utf8)) == nil, "not gzip")
+check(!LiveTVEPGSourceRules.isGzip(Array("<tv>".utf8)), "xml isn't gzip")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
