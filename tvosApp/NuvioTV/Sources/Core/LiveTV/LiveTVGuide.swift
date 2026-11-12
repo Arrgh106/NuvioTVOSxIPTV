@@ -543,7 +543,14 @@ enum GuideFiles {
         let target = file.deletingPathExtension().appendingPathExtension("unpacked.xml")
         FileManager.default.createFile(atPath: target.path, contents: nil)
         let output = try FileHandle(forWritingTo: target)
-        defer { try? output.close() }
+        var keep = false
+        defer {
+            try? output.close()
+            if !keep { try? FileManager.default.removeItem(at: target) }
+        }
+        // Far above any real guide: a broken or hostile file can't fill the disk.
+        let limit: UInt64 = 2 << 30
+        var total: UInt64 = 0
 
         let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
         defer { stream.deallocate() }
@@ -557,6 +564,7 @@ enum GuideFiles {
 
         var finished = false
         var wrote = false
+        var tooBig = false
         while !finished {
             if Task.isCancelled { throw CancellationError() }
             let chunk = input.readData(ofLength: size)
@@ -572,6 +580,8 @@ enum GuideFiles {
                     let status = compression_stream_process(stream, flags)
                     let produced = size - stream.pointee.dst_size
                     if produced > 0 {
+                        total += UInt64(produced)
+                        if total > limit { failed = true; tooBig = true; return }
                         output.write(Data(bytes: buffer, count: produced))
                         wrote = true
                     }
@@ -584,7 +594,8 @@ enum GuideFiles {
             // A cut-off file: what came so far is read (the parser stops at the cut).
             if failed || last { break }
         }
-        guard wrote else { throw GuideError.unreadable }
+        guard wrote, !tooBig else { throw GuideError.unreadable }
+        keep = true
         try? FileManager.default.removeItem(at: file)
         return target
     }
