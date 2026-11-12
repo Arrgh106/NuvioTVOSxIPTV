@@ -101,6 +101,9 @@ struct LiveTVView: View {
                     .transition(.opacity)
             }
         }
+        // While reordering Back saves (in the guide or the groups) and
+        // never opens the app's sidebar.
+        .onExitCommand(perform: isReordering ? {} : nil)
         .onChange(of: showsQuickMenu) { _, shows in player.previewCovered = shows }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }

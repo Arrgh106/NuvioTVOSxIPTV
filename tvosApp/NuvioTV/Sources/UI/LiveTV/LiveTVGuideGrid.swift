@@ -144,6 +144,8 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let pressMenu = UITapGestureRecognizer(target: self, action: #selector(backToChannel))
             pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
             pressMenu.delegate = self
+            // Taken here, the press never reaches the app's sidebar.
+            pressMenu.delaysPressesBegan = true
             menuRecognizer = pressMenu
             collection.addGestureRecognizer(pressMenu)
             // Tells one swipe from the next (a fast swipe keeps moving focus
@@ -452,8 +454,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard gestureRecognizer === menuRecognizer else { return true }
-            if reordering { return true }
-            return focusedRow != nil && timeline.cursor != nil
+            return wantsMenu
+        }
+
+        /// Menu only when it's ours (reordering, or away from now): every
+        /// other press goes on at once, as before.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+            gestureRecognizer !== menuRecognizer || wantsMenu
+        }
+
+        private var wantsMenu: Bool {
+            reordering || (focusedRow != nil && timeline.cursor != nil)
         }
 
         /// The cursor sits on the channel (number, logo, name) instead of a

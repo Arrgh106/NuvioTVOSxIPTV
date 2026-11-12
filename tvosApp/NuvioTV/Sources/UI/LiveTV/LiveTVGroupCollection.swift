@@ -53,6 +53,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         let pressMenu = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.finishReorder))
         pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
         pressMenu.delegate = context.coordinator
+        // Taken here, the press never reaches the app's sidebar.
+        pressMenu.delaysPressesBegan = true
         context.coordinator.menuRecognizer = pressMenu
         view.addGestureRecognizer(pressMenu)
         gate.stay = { [weak coordinator = context.coordinator] in coordinator?.focusedCell }
@@ -118,6 +120,11 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer !== menuRecognizer || isReordering
+        }
+
+        /// Menu only while reordering: otherwise it goes on at once.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
             gestureRecognizer !== menuRecognizer || isReordering
         }
 
