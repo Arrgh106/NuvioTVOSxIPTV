@@ -14,6 +14,8 @@ final class LiveTVChannelEdits: ObservableObject {
     nonisolated private static let groupNamesKey = "nuvio.tv.livetv.groupNames"
     nonisolated private static let removalsKey = "nuvio.tv.livetv.nameRemovals"
     nonisolated private static let cleanGroupsKey = "nuvio.tv.livetv.cleanGroupNames"
+    nonisolated private static let channelOrderKey = "nuvio.tv.livetv.channelOrder"
+    nonisolated private static let groupOrderKey = "nuvio.tv.livetv.groupOrder"
     private var profileObserver: NSObjectProtocol?
 
     private init() {
@@ -39,6 +41,9 @@ final class LiveTVChannelEdits: ObservableObject {
         loaded.groupNames = settings.dictionary(forKey: groupNamesKey) as? [String: String] ?? [:]
         loaded.removals = settings.string(forKey: removalsKey) ?? ""
         loaded.cleanGroups = settings.bool(forKey: cleanGroupsKey)
+        loaded.channelOrder = settings.data(forKey: channelOrderKey)
+            .flatMap { try? JSONDecoder().decode([String: [Int]].self, from: $0) } ?? [:]
+        loaded.groupOrder = settings.stringArray(forKey: groupOrderKey) ?? []
         return loaded
     }
 
@@ -77,6 +82,41 @@ final class LiveTVChannelEdits: ObservableObject {
         edits.cleanGroups = on
         ProfileSettings.current.set(on, forKey: Self.cleanGroupsKey)
         changed()
+    }
+
+    /// Your order for a group's channels (Reorder Channels).
+    func setChannelOrder(groupID: String, ids: [Int]) {
+        guard edits.channelOrder[groupID] != ids else { return }
+        edits.channelOrder[groupID] = ids
+        storeChannelOrder()
+        changed()
+    }
+
+    func setGroupOrder(_ ids: [String]) {
+        guard ids != edits.groupOrder else { return }
+        edits.groupOrder = ids
+        ProfileSettings.current.set(ids, forKey: Self.groupOrderKey)
+        changed()
+    }
+
+    func resetChannelOrder() {
+        guard !edits.channelOrder.isEmpty else { return }
+        edits.channelOrder = [:]
+        ProfileSettings.current.removeObject(forKey: Self.channelOrderKey)
+        changed()
+    }
+
+    func resetGroupOrder() {
+        guard !edits.groupOrder.isEmpty else { return }
+        edits.groupOrder = []
+        ProfileSettings.current.removeObject(forKey: Self.groupOrderKey)
+        changed()
+    }
+
+    private func storeChannelOrder() {
+        if let data = try? JSONEncoder().encode(edits.channelOrder) {
+            ProfileSettings.current.set(data, forKey: Self.channelOrderKey)
+        }
     }
 
     func resetChannelNames() {

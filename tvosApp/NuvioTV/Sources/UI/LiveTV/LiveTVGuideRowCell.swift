@@ -202,6 +202,15 @@ final class LiveTVGuideRowCell: UICollectionViewCell {
     /// The cursor is on the channel itself (white, like a focused list row).
     private var channelHighlighted = false
 
+    /// Picked up in Reorder Channels (step 10b): an accent frame round the
+    /// channel until it's put down.
+    func setMoving(_ moving: Bool) {
+        channelBackground.layer.borderWidth = moving ? 4 : 0
+        // White accent: white on the white focus would vanish.
+        channelBackground.layer.borderColor = (LiveTVTheme.isWhiteAccent ? UIColor.systemOrange : LiveTVTheme.accentUIColor).cgColor
+        strip.alpha = moving ? 0.35 : 1
+    }
+
     func setChannelHighlighted(_ highlighted: Bool) {
         guard highlighted != channelHighlighted else { return }
         channelHighlighted = highlighted

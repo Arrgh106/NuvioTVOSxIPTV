@@ -279,6 +279,33 @@ final class LiveTVStore: ObservableObject {
         rebuildGroups()
     }
 
+    /// Groups whose channels can be put in your order (not Search or
+    /// Recently watched, which have their own order).
+    func canReorder(_ groupID: String) -> Bool {
+        groupID != LiveTVGroup.searchID && groupID != LiveTVGroup.recentID
+    }
+
+    /// Saves the order Reorder Channels left a group in. Favorites keep it
+    /// in their own list (ones not shown stay at the end).
+    func saveChannelOrder(groupID: String, ids: [Int]) {
+        guard canReorder(groupID) else { return }
+        if groupID == LiveTVGroup.favoritesID {
+            let shown = Set(ids)
+            let ordered = ids + favoriteIDs.filter { !shown.contains($0) }
+            guard ordered != favoriteIDs else { return }
+            favoriteIDs = ordered
+            ProfileSettings.current.set(favoriteIDs, forKey: Self.favoritesKey)
+            rebuildGroups()
+            return
+        }
+        LiveTVChannelEdits.shared.setChannelOrder(groupID: groupID, ids: ids)
+    }
+
+    /// Saves the order Reorder Groups left the provider's groups in.
+    func saveGroupOrder(_ ids: [String]) {
+        LiveTVChannelEdits.shared.setGroupOrder(ids.filter { $0 == LiveTVGroup.otherID || !$0.hasPrefix("__") })
+    }
+
     /// What the provider calls a group (before a rename or cleanup).
     func providerGroupName(_ id: String) -> String {
         if id == LiveTVGroup.otherID { return groupNames.other }
@@ -611,7 +638,7 @@ final class LiveTVStore: ObservableObject {
         names: GroupNames,
         edits: LiveTVNameEdits = .none
     ) -> Prepared {
-        // Renamed and cleaned names (step 10a); the order stays the provider's.
+        // Renamed and cleaned names (step 10a).
         var channels = channels
         let display = edits.isEmpty
             ? [:] : edits.channelDisplayNames(channels.map { (id: $0.streamID, name: $0.name) })
@@ -620,7 +647,7 @@ final class LiveTVStore: ObservableObject {
         }
         let terms = LiveTVNameCleaner.terms(edits.removals)
         let groupCleaner = edits.cleanGroups && !terms.isEmpty ? LiveTVNameCleaner.Cleaner(terms: terms) : nil
-        let sorted = channels.enumerated().sorted { lhs, rhs in
+        let sortedByNumber = channels.enumerated().sorted { lhs, rhs in
             switch (lhs.element.number, rhs.element.number) {
             case let (l?, r?) where l != r: return l < r
             case (_?, nil): return true
@@ -628,8 +655,10 @@ final class LiveTVStore: ObservableObject {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
+        // Your order (step 10b): All channels, then each group.
+        let sorted = LiveTVListOrder.ordered(sortedByNumber, saved: edits.channelOrder[LiveTVGroup.allID], id: \.streamID)
         // Separator rows stay in: Live TV's option hides them.
-        var byGroup = Dictionary(grouping: sorted, by: { $0.categoryID ?? "" })
+        var byGroup = Dictionary(grouping: sortedByNumber, by: { $0.categoryID ?? "" })
         let byID = Dictionary(sorted.map { ($0.streamID, $0) }, uniquingKeysWith: { first, _ in first })
 
         var result: [LiveTVGroup] = []
@@ -652,6 +681,11 @@ final class LiveTVStore: ObservableObject {
                 id: LiveTVGroup.otherID,
                 name: edits.groupNames[LiveTVGroup.otherID] ?? names.other, count: orphans.count))
         }
+        for (groupID, order) in edits.channelOrder where groupID != LiveTVGroup.allID {
+            guard let list = byGroup[groupID] else { continue }
+            byGroup[groupID] = LiveTVListOrder.ordered(list, saved: order, id: \.streamID)
+        }
+        result = LiveTVListOrder.ordered(result, saved: edits.groupOrder, id: \.id)
         var epgIDs: [Int: String] = [:]
         for channel in sorted {
             if let id = channel.epgChannelID, !id.isEmpty { epgIDs[channel.streamID] = id }
@@ -661,8 +695,8 @@ final class LiveTVStore: ObservableObject {
             groups: result, knownCategoryIDs: known)
     }
 
-    /// The list again with the names changed: same channels in the same
-    /// order, so the guide keeps its place and only relabels.
+    /// The list again with other names or your order (steps 10a, 10b): the
+    /// same channels, so the guide keeps its place and only relabels.
     private func applyNames() {
         guard !rawChannels.isEmpty else { return }
         let categories = rawCategories

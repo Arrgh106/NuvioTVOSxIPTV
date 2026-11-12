@@ -12,6 +12,13 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     let onSelect: (String) -> Void
     /// Long press on a provider group: rename it (step 10a).
     var onRename: (LiveTVGroup) -> Void = { _ in }
+    /// Reorder Groups (step 10b): set while it runs, to the group picked up
+    /// first.
+    var reorderStartID: String?
+    var onReorderStart: (LiveTVGroup) -> Void = { _ in }
+    var onReorderPicked: (String?) -> Void = { _ in }
+    /// Menu: the groups in the order they were left in.
+    var onReorderDone: ([String]) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -36,10 +43,18 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         view.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 40, right: 0)
         context.coordinator.showCounts = showCounts
         context.coordinator.onRename = onRename
+        context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
         let gate = container.leftTrap
         gate.name = "groups"
+        gate.canOpen = { [weak coordinator = context.coordinator] in !(coordinator?.isReordering ?? false) }
+        // Menu while reordering: save and finish.
+        let pressMenu = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.finishReorder))
+        pressMenu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+        pressMenu.delegate = context.coordinator
+        context.coordinator.menuRecognizer = pressMenu
+        view.addGestureRecognizer(pressMenu)
         gate.stay = { [weak coordinator = context.coordinator] in coordinator?.focusedCell }
         LiveTVFocusLinks.groupGate = gate
         context.coordinator.gate = gate
@@ -58,19 +73,96 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             }
         }
         context.coordinator.onRename = onRename
+        context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
+        context.coordinator.updateReorder(reorderStartID, in: container.collectionView)
     }
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
         private var groups: [LiveTVGroup] = []
         private var selectedID = ""
         private var onSelect: (String) -> Void = { _ in }
         var onRename: (LiveTVGroup) -> Void = { _ in }
         var showCounts = true
+        private var onReorderStart: (LiveTVGroup) -> Void = { _ in }
+        private var onReorderPicked: (String?) -> Void = { _ in }
+        private var onReorderDone: ([String]) -> Void = { _ in }
+        /// Reorder Groups runs: OK picks a group up and puts it down where
+        /// focus is, Menu saves. Search, Favorites, Recent and All stay on top.
+        private(set) var isReordering = false
+        private var pickedID: String?
+        weak var menuRecognizer: UIGestureRecognizer?
+        private weak var collection: UICollectionView?
+
+        func setReorderCallbacks(
+            start: @escaping (LiveTVGroup) -> Void, picked: @escaping (String?) -> Void,
+            done: @escaping ([String]) -> Void
+        ) {
+            onReorderStart = start
+            onReorderPicked = picked
+            onReorderDone = done
+        }
+
+        func updateReorder(_ startID: String?, in view: UICollectionView) {
+            collection = view
+            if let startID, !isReordering {
+                isReordering = true
+                pickedID = groups.contains { $0.id == startID && !$0.isSpecial } ? startID : nil
+                restyleMoving(in: view)
+            } else if startID == nil, isReordering {
+                isReordering = false
+                pickedID = nil
+                restyleMoving(in: view)
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer !== menuRecognizer || isReordering
+        }
+
+        @objc func finishReorder() {
+            guard isReordering else { return }
+            let ids = groups.filter { !$0.isSpecial }.map(\.id)
+            isReordering = false
+            pickedID = nil
+            if let collection { restyleMoving(in: collection) }
+            onReorderDone(ids)
+        }
+
+        private func reorderSelect(at index: Int, in view: UICollectionView) {
+            guard let picked = pickedID else {
+                let group = groups[index]
+                guard !group.isSpecial else { return }
+                pickedID = group.id
+                restyleMoving(in: view)
+                onReorderPicked(group.name)
+                return
+            }
+            pickedID = nil
+            // Onto Search, Favorites, Recent or All: the first place below them.
+            let first = groups.firstIndex { !$0.isSpecial } ?? 0
+            let target = max(index, first)
+            if let from = groups.firstIndex(where: { $0.id == picked }), from != target {
+                groups = LiveTVListOrder.move(groups, from: from, to: target)
+                view.performBatchUpdates {
+                    view.moveItem(at: IndexPath(item: from, section: 0), to: IndexPath(item: target, section: 0))
+                }
+            }
+            restyleMoving(in: view)
+            onReorderPicked(nil)
+        }
+
+        private func restyleMoving(in view: UICollectionView) {
+            for case let cell as LiveTVGroupCell in view.visibleCells {
+                cell.setMoving(isReordering && pickedID != nil && cell.groupID == pickedID)
+            }
+        }
 
         func update(groups: [LiveTVGroup], selectedID: String, onSelect: @escaping (String) -> Void, in view: UICollectionView) {
             self.onSelect = onSelect
+            // While reordering the list here is the one being arranged.
+            guard !isReordering else { return }
             if groups != self.groups, groups.map(\.id) == self.groups.map(\.id) {
                 // Same groups, other names or counts: relabel, focus stays.
                 self.groups = groups
@@ -107,12 +199,17 @@ struct LiveTVGroupCollection: UIViewRepresentable {
                 let group = groups[indexPath.item]
                 cell.configure(with: group, selected: group.id == selectedID)
                 cell.setShowsCount(showCounts)
+                cell.setMoving(isReordering && pickedID != nil && group.id == pickedID)
             }
             return cell
         }
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             guard indexPath.item < groups.count else { return }
+            if isReordering {
+                reorderSelect(at: indexPath.item, in: collectionView)
+                return
+            }
             onSelect(groups[indexPath.item].id)
         }
 
@@ -121,21 +218,35 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
             point: CGPoint
         ) -> UIContextMenuConfiguration? {
-            guard let indexPath = indexPaths.first, indexPath.item < groups.count else { return nil }
+            guard !isReordering, let indexPath = indexPaths.first, indexPath.item < groups.count else { return nil }
             let group = groups[indexPath.item]
-            // Search, Favorites, Recently watched and All keep their names.
+            // Search, Favorites, Recently watched and All keep their names and places.
             guard !group.isSpecial else { return nil }
+            let several = groups.filter { !$0.isSpecial }.count > 1
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                UIMenu(title: group.name, children: [
+                var children: [UIMenuElement] = [
                     UIAction(
                         title: L10n.string("livetv_rename_group", fallback: "Rename Group"),
                         image: UIImage(systemName: "pencil")
                     ) { _ in self?.onRename(group) },
-                ])
+                ]
+                if several {
+                    children.append(UIAction(
+                        title: L10n.string("livetv_reorder_groups", fallback: "Reorder Groups"),
+                        image: UIImage(systemName: "arrow.up.arrow.down")
+                    ) { _ in self?.onReorderStart(group) })
+                }
+                return UIMenu(title: group.name, children: children)
             }
         }
 
         // MARK: Focus
+
+        /// While reordering focus stays in the groups.
+        func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
+            guard isReordering, !(context.nextFocusedItem is LiveTVGroupCell) else { return true }
+            return context.focusHeading == .left
+        }
 
         /// Not while coming back from the player: focus goes to the guide.
         func collectionView(_ collectionView: UICollectionView, canFocusItemAt indexPath: IndexPath) -> Bool {
@@ -244,6 +355,12 @@ final class LiveTVGroupCell: UICollectionViewCell {
 
     func setShowsCount(_ shows: Bool) {
         countLabel.isHidden = !shows
+    }
+
+    /// Picked up in Reorder Groups (step 10b).
+    func setMoving(_ moving: Bool) {
+        background.layer.borderWidth = moving ? 4 : 0
+        background.layer.borderColor = (LiveTVTheme.isWhiteAccent ? UIColor.systemOrange : LiveTVTheme.accentUIColor).cgColor
     }
 
     func setSelected(_ selected: Bool) {

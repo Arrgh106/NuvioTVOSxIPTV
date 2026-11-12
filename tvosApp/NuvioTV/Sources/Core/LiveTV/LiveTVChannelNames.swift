@@ -14,6 +14,11 @@ struct LiveTVNameEdits: Sendable, Equatable {
     var removals = ""
     /// The words come off group names too.
     var cleanGroups = false
+    /// Group id ("__all__" for All channels) → stream ids in your order
+    /// (step 10b).
+    var channelOrder: [String: [Int]] = [:]
+    /// Group ids in your order.
+    var groupOrder: [String] = []
 
     static let none = LiveTVNameEdits()
 

@@ -13,8 +13,8 @@ struct LiveTVChannelNamesGroup: View {
         let edits = names.edits
         let terms = LiveTVNameCleaner.terms(edits.removals)
         LiveTVSettingsRows.group(
-            title: L10n.string("livetv_names_title", fallback: "Channel Names"),
-            subtitle: L10n.string("livetv_names_subtitle", fallback: "Rename a channel or a group with a long press in the guide")
+            title: L10n.string("livetv_names_title", fallback: "Channel List"),
+            subtitle: L10n.string("livetv_names_subtitle", fallback: "Rename or reorder: long press a channel or a group in the guide")
         ) {
             LiveTVSettingsRows.action(
                 title: L10n.string("livetv_names_cleanup", fallback: "Name Cleanup"),
@@ -59,6 +59,24 @@ struct LiveTVChannelNamesGroup: View {
                     value: L10n.format("livetv_names_renamed", fallback: "%@ renamed", edits.groupNames.count.formatted()),
                     accentColor: accentColor,
                     action: { names.resetGroupNames() }
+                )
+            }
+            if !edits.channelOrder.isEmpty {
+                LiveTVSettingsRows.action(
+                    title: L10n.string("livetv_order_reset_channels", fallback: "Reset Channel Order"),
+                    subtitle: L10n.string("livetv_order_reset_channels_detail", fallback: "Undoes Reorder Channels in every group (favorites keep theirs)"),
+                    value: L10n.format("livetv_order_groups", fallback: "%@ groups", edits.channelOrder.count.formatted()),
+                    accentColor: accentColor,
+                    action: { names.resetChannelOrder() }
+                )
+            }
+            if !edits.groupOrder.isEmpty {
+                LiveTVSettingsRows.action(
+                    title: L10n.string("livetv_order_reset_groups", fallback: "Reset Group Order"),
+                    subtitle: L10n.string("livetv_order_reset_groups_detail", fallback: "The groups in the provider's order again"),
+                    value: "",
+                    accentColor: accentColor,
+                    action: { names.resetGroupOrder() }
                 )
             }
         }

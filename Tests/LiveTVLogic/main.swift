@@ -369,5 +369,17 @@ resets.cleanGroups = true
 check(resets.groupRename("DE | Sport", providerName: "DE | Sport") == "DE | Sport", "group cleanup on: kept whole")
 check(resets.groupRename("Sport", providerName: "DE | Sport") == nil, "the cleaned name: nothing kept")
 
+// MARK: Your order (step 10b)
+
+let natural = [1, 2, 3, 4, 5]
+check(LiveTVListOrder.ordered(natural, saved: nil, id: { $0 }) == natural, "no order: as it is")
+check(LiveTVListOrder.ordered(natural, saved: [3, 1], id: { $0 }) == [3, 4, 5, 1, 2], "unsaved wait behind the saved one above")
+check(LiveTVListOrder.ordered(natural, saved: [9, 2], id: { $0 }) == [1, 2, 3, 4, 5], "gone ones skipped, new ones on top stay on top")
+check(LiveTVListOrder.ordered(natural, saved: [5, 4, 3, 2, 1, 1], id: { $0 }) == [5, 4, 3, 2, 1], "all saved, doubles once")
+check(LiveTVListOrder.ordered(["a", "b", "c"], saved: ["c"], id: { $0 }) == ["a", "b", "c"], "saved last: same as before")
+check(LiveTVListOrder.move(["a", "b", "c", "d"], from: 0, to: 2) == ["b", "c", "a", "d"], "move down takes the place")
+check(LiveTVListOrder.move(["a", "b", "c", "d"], from: 3, to: 0) == ["d", "a", "b", "c"], "move up takes the place")
+check(LiveTVListOrder.move(["a", "b"], from: 0, to: 5) == ["a", "b"], "out of range: unchanged")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
