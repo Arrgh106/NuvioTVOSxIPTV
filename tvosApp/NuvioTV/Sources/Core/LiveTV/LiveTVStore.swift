@@ -231,7 +231,9 @@ final class LiveTVStore: ObservableObject {
 
     /// Loads the provider's XMLTV guide for the channels in visible groups
     /// (in the background; the set is built off the main thread).
-    func refreshGuide(force: Bool) {
+    /// `reuseDownloads`: read the guide files kept from last time (after
+    /// Assign EPG) instead of downloading them again.
+    func refreshGuide(force: Bool, reuseDownloads: Bool = false) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
         let visible = allVisible
@@ -242,9 +244,11 @@ final class LiveTVStore: ObservableObject {
                 visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.name) }
             }.value
             guard let self, self.account == account else { return }
+            let sources = LiveTVEPGSources.shared
             LiveTVGuide.shared.refreshIfNeeded(
                 account: account, password: password, channels: channels,
-                overrides: LiveTVEPGOverrides.load(), force: force)
+                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
+                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
         }
     }
 

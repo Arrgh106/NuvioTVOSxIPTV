@@ -89,12 +89,13 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
-        // A guide channel chosen by hand: the guide is read again once the
-        // screen closes (its programmes aren't stored yet).
+        // A guide channel chosen by hand whose programmes aren't stored yet
+        // (or Automatic): the guide files from last time are read again once
+        // the screen closes, without downloading.
         .fullScreenCover(item: $assignEPGChannel, onDismiss: {
             if epgChanged {
                 epgChanged = false
-                store.refreshGuide(force: true)
+                store.refreshGuide(force: true, reuseDownloads: true)
             }
         }) { channel in
             LiveTVAssignEPG(channel: channel, onChanged: { epgChanged = true })

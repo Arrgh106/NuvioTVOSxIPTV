@@ -80,6 +80,7 @@ The password is stored in the Apple TV Keychain. Each Nuvio profile has its own 
 - **Reminders:** OK on a show to come: *Remind me*. A minute before it starts you can switch to it from anywhere in the app. Settings → Live TV lists them.
 - **Home:** your favorite channels with what's on, below Continue Watching (Settings → Live TV → Integration).
 - **Wrong or missing programmes?** Long press a channel in the guide → *Assign EPG* and pick the right guide channel.
+- **More guides:** Settings → Live TV → Guide Sources → *Add XMLTV Guide* (a link to an `.xml` or `.xml.gz` file). Each guide can be turned off and moved in time; a channel takes the guide with real listings that goes furthest ahead. The provider's own guide can be turned off there too.
 
 ## nuvio.tv account sync
 
@@ -119,7 +120,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Full EPG (`xmltv.php`) | ✅ Done |
 | Guide matching by name, "Assign EPG" | ✅ Done |
 | Programme reminders, Live TV row on Home | ✅ Done |
-| Extra XMLTV guides, merging | 🗓 Planned |
+| Extra XMLTV guides, merging, time shift per guide | ✅ Done |
 | TiviMate-style TV guide grid, info panel, overlay mode | ✅ Done |
 | Reorder / rename channels, custom groups, name cleaner | 🗓 Planned |
 | Parental controls (PIN lock for groups) | 🗓 Planned |

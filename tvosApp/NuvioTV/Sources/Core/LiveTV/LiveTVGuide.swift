@@ -1,28 +1,42 @@
+import Compression
 import Foundation
 import SQLite3
 
-/// The provider's full programme guide (`xmltv.php`), stored on the device
-/// in SQLite. Tens of thousands of channels make the XMLTV file hundreds of
-/// MB, so it is downloaded to a file, read as a stream, and only programmes
-/// of channels in visible groups within a time window are kept.
+/// The programme guide, stored on the device in SQLite: the provider's own
+/// (`xmltv.php`) and any added XMLTV guides (step 9). Tens of thousands of
+/// channels make an XMLTV file hundreds of MB, so each is downloaded to a
+/// file, read as a stream, and only programmes of guide channels the
+/// provider's channels use within a time window are kept.
 ///
-/// Refreshes in the background when older than `maxAge`; progress is
-/// published for the Live TV header.
+/// Refreshes in the background when older than `maxAge` or when the guides
+/// change; progress is published for the activity pill.
 @MainActor
 final class LiveTVGuide: ObservableObject {
     static let shared = LiveTVGuide()
 
     enum Status: Equatable {
         case idle
-        case downloading(fraction: Double?)
+        /// `part`: which guide, when there are several ("2 / 3").
+        case downloading(fraction: Double?, part: String?)
         case importing(programmes: Int)
         case ready(programmes: Int, updated: Date)
         case failed(String)
     }
 
+    /// How one guide did at the last import, for Settings → Live TV.
+    struct FeedResult: Codable, Equatable, Sendable {
+        var programmes = 0
+        /// Guide channels in use (matched or chosen).
+        var channels = 0
+        var error: String?
+    }
+
     @Published private(set) var status: Status = .idle {
         didSet { reportActivity() }
     }
+    /// Source id ("" = the provider's guide) → result of the last import.
+    @Published private(set) var results: [String: FeedResult] = [:]
+    @Published private(set) var updated: Date?
 
     private func reportActivity() {
         let id = "livetv.guide"
@@ -30,8 +44,9 @@ final class LiveTVGuide: ObservableObject {
         switch status {
         case .idle, .ready:
             center.finish(id)
-        case .downloading(let fraction):
-            center.update(id, label: L10n.string("livetv_guide_downloading_label", fallback: "Downloading guide"), fraction: fraction)
+        case .downloading(let fraction, let part):
+            let label = L10n.string("livetv_guide_downloading_label", fallback: "Downloading guide")
+            center.update(id, label: part.map { label + " · " + $0 } ?? label, fraction: fraction)
         case .importing(let count):
             center.update(id, label: L10n.format("livetv_guide_importing_label", fallback: "Reading guide · %@ programmes", count.formatted()))
         case .failed(let message):
@@ -48,11 +63,26 @@ final class LiveTVGuide: ObservableObject {
     private var database: GuideDatabase?
     private var scope: String?
     private var refreshTask: Task<Void, Never>?
-    /// Stream → guide channel, worked out at import (step 8a). Empty for a
-    /// guide stored before matching: then the provider's guide id counts.
+    /// Stream → guide channel key, worked out at import (steps 8a, 9).
+    /// Empty for a guide stored before matching: then the provider's guide
+    /// id counts.
     private var links: [Int: String] = [:]
     /// Bumped when the stored guide changes how it reads (re-import once).
-    private static let formatVersion = "2"
+    private static let formatVersion = "3"
+    /// A forced refresh asked for while one runs: done right after it.
+    private var queued: (force: Bool, reuseDownloads: Bool)?
+    private var sourcesObserver: NSObjectProtocol?
+
+    private init() {
+        // "Update now" in Settings → Live TV → Guide Sources, also while
+        // Live TV hasn't been opened yet.
+        sourcesObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVEPGSources.changedNotification, object: nil, queue: .main
+        ) { note in
+            let force = note.userInfo?["force"] as? Bool ?? false
+            Task { @MainActor in LiveTVGuide.shared.refreshAgain(force: force) }
+        }
+    }
 
     // MARK: Reading
 
@@ -83,39 +113,98 @@ final class LiveTVGuide: ObservableObject {
 
     // MARK: Refresh
 
-    /// Starts a background refresh when the stored guide is missing or older
-    /// than `maxAge` (or always with `force`). `channels`: the channels to
-    /// find guide channels for (by id or name, as on Android); `overrides`:
-    /// the user's choices (stream → guide id, "" for none).
+    /// Starts a background refresh when the stored guide is missing, older
+    /// than `maxAge` or read from other guides (or always with `force`).
+    /// `channels`: the channels to find guide channels for (by id or name,
+    /// as on Android); `overrides`: the user's choices (stream → guide
+    /// channel key, "" for none); `extra`: the added guides, in order;
+    /// `providerGuide`: whether the provider's own guide is read too.
     func refreshIfNeeded(
         account: XtreamAccount, password: String, channels: [LiveTVEPGChannelRef],
-        overrides: [Int: String] = [:], force: Bool = false
+        overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [], providerGuide: Bool = true,
+        force: Bool = false, reuseDownloads: Bool = false
     ) {
         let scope = ProfileSettings.activeProfileScope
         if scope != self.scope { closeDatabase(); self.scope = scope }
-        if refreshTask != nil { return }
-        let db = openDatabase()
-        if !force, let db, db.meta("version") == Self.formatVersion,
-           let updated = db.updatedAt(), Date().timeIntervalSince(updated) < Self.maxAge {
-            status = .ready(programmes: db.storedCount(), updated: updated)
+        if refreshTask != nil {
+            if force {
+                queued = (true, (queued?.reuseDownloads ?? true) && reuseDownloads)
+            }
             return
         }
-        guard !channels.isEmpty, let url = Self.xmltvURL(account: account, password: password),
-              let target = Self.databaseURL(scope: scope) else { return }
+        // Added guides first: they win a tie (as on Android).
+        var feeds = extra
+        if providerGuide, let url = Self.xmltvURL(account: account, password: password) {
+            feeds.append(LiveTVGuideFeed(
+                sourceID: "", name: L10n.string("livetv_epg_provider", fallback: "Provider's guide"),
+                url: url, shiftMinutes: 0))
+        }
+        let fingerprint = LiveTVEPGSourceRules.fingerprint(feeds)
+        let db = openDatabase()
+        if !force, let db, db.meta("version") == Self.formatVersion, db.meta("sources") == fingerprint,
+           let updated = db.updatedAt(), Date().timeIntervalSince(updated) < Self.maxAge {
+            status = .ready(programmes: db.storedCount(), updated: updated)
+            Self.saveChannels(channels, scope: scope, always: false)
+            return
+        }
+        guard !channels.isEmpty, !feeds.isEmpty, let target = Self.databaseURL(scope: scope) else { return }
         let version = Self.formatVersion
 
-        status = .downloading(fraction: nil)
+        status = reuseDownloads ? .importing(programmes: 0) : .downloading(fraction: nil, part: nil)
         refreshTask = Task { [weak self] in
-            defer { Task { @MainActor in self?.refreshTask = nil } }
-            do {
-                let file = try await GuideDownloader.download(url) { fraction in
-                    Task { @MainActor in self?.status = .downloading(fraction: fraction) }
+            defer {
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.refreshTask = nil
+                    if let again = self.queued {
+                        self.queued = nil
+                        self.refreshAgain(force: again.force, reuseDownloads: again.reuseDownloads)
+                    }
                 }
-                defer { try? FileManager.default.removeItem(at: file) }
+            }
+            var files: [(feed: LiveTVGuideFeed, file: URL)] = []
+            var failures: [String: String] = [:]
+            // For a refresh from Settings or after Assign EPG.
+            Self.saveChannels(channels, scope: scope, always: true)
+            do {
+                for (index, feed) in feeds.enumerated() {
+                    let part = feeds.count > 1 ? "\(index + 1) / \(feeds.count)" : nil
+                    guard let kept = Self.feedURL(feed, scope: scope) else { continue }
+                    // After Assign EPG: the files downloaded last time are read again.
+                    if reuseDownloads, FileManager.default.fileExists(atPath: kept.path) {
+                        files.append((feed, kept))
+                        continue
+                    }
+                    await MainActor.run { self?.status = .downloading(fraction: nil, part: part) }
+                    do {
+                        let file = try await GuideDownloader.download(feed.url) { fraction in
+                            Task { @MainActor in self?.status = .downloading(fraction: fraction, part: part) }
+                        }
+                        try await Task.detached(priority: .utility) {
+                            let unpacked = try GuideFiles.unpacked(file)
+                            try? FileManager.default.removeItem(at: kept)
+                            try FileManager.default.moveItem(at: unpacked, to: kept)
+                        }.value
+                        files.append((feed, kept))
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // One guide that fails doesn't stop the others.
+                        failures[feed.sourceID] = error.localizedDescription
+                    }
+                }
+                guard !files.isEmpty else {
+                    throw GuideImporter.Failed.feeds(failures)
+                }
+                let wanted = Set(files.map(\.file.lastPathComponent))
+                Self.removeOldFeeds(scope: scope, keeping: wanted)
                 await MainActor.run { self?.status = .importing(programmes: 0) }
+                let inputs = files
+                let known = failures
                 let count = try await Task.detached(priority: .utility) {
                     try GuideImporter.importXMLTV(
-                        file: file, into: target, channels: channels, overrides: overrides, version: version
+                        files: inputs, into: target, channels: channels, overrides: overrides,
+                        failures: known, fingerprint: fingerprint, version: version
                     ) { imported in
                         Task { @MainActor in self?.status = .importing(programmes: imported) }
                     }
@@ -123,13 +212,26 @@ final class LiveTVGuide: ObservableObject {
                 await MainActor.run {
                     guard let self else { return }
                     self.closeDatabase()
+                    _ = self.openDatabase()
                     self.status = .ready(programmes: count, updated: Date())
                     NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
                 }
             } catch is CancellationError {
                 await MainActor.run { self?.status = .idle }
             } catch {
-                await MainActor.run { self?.status = .failed(error.localizedDescription) }
+                var reasons = failures
+                var message = error.localizedDescription
+                if let failed = error as? GuideImporter.Failed, case .feeds(let all) = failed {
+                    reasons.merge(all) { _, new in new }
+                    message = failed.message
+                }
+                let known = reasons
+                let text = message
+                await MainActor.run {
+                    guard let self else { return }
+                    self.results = known.mapValues { FeedResult(error: $0) }
+                    self.status = .failed(text)
+                }
             }
         }
     }
@@ -147,9 +249,17 @@ final class LiveTVGuide: ObservableObject {
         if let database { return database }
         let scope = self.scope ?? ProfileSettings.activeProfileScope
         guard let url = Self.databaseURL(scope: scope),
-              FileManager.default.fileExists(atPath: url.path) else { return nil }
+              FileManager.default.fileExists(atPath: url.path) else {
+            // Only when it changes: this runs on every read while there's no guide.
+            if !results.isEmpty { results = [:] }
+            if updated != nil { updated = nil }
+            return nil
+        }
         database = GuideDatabase(url: url, readOnly: true)
         links = database?.links() ?? [:]
+        results = database?.meta("results")
+            .flatMap { try? JSONDecoder().decode([String: FeedResult].self, from: Data($0.utf8)) } ?? [:]
+        updated = database?.updatedAt()
         return database
     }
 
@@ -165,6 +275,72 @@ final class LiveTVGuide: ObservableObject {
         return dir.appendingPathComponent("guide-\(scope).sqlite")
     }
 
+    /// The provider's channels the last import matched (JSON).
+    nonisolated static func channelsURL(scope: String) -> URL? {
+        databaseURL(scope: scope)?.deletingPathExtension().appendingPathExtension("channels.json")
+    }
+
+    /// Kept for `refreshAgain` (Settings → Guide Sources → Update now).
+    nonisolated static func saveChannels(_ channels: [LiveTVEPGChannelRef], scope: String, always: Bool) {
+        guard let url = channelsURL(scope: scope) else { return }
+        Task.detached(priority: .utility) {
+            if !always, FileManager.default.fileExists(atPath: url.path) { return }
+            try? JSONEncoder().encode(channels).write(to: url, options: .atomic)
+        }
+    }
+
+    /// Where a guide's file is kept between refreshes (Caches: the system
+    /// may clear it, then it's downloaded again).
+    nonisolated static func feedURL(_ feed: LiveTVGuideFeed, scope: String) -> URL? {
+        let name = String(LiveTVEPGSourceRules.fnv1a(feed.sourceID + "|" + feed.url.absoluteString), radix: 36)
+        return databaseURL(scope: scope)?.deletingLastPathComponent()
+            .appendingPathComponent("feed-\(scope)-\(name).xml")
+    }
+
+    /// Files of guides no longer read (removed or changed links).
+    nonisolated static func removeOldFeeds(scope: String, keeping: Set<String>) {
+        guard let dir = databaseURL(scope: scope)?.deletingLastPathComponent(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.hasPrefix("feed-\(scope)-") && !keeping.contains(name) {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
+    /// Refreshes without Live TV open: the account, the channels of the
+    /// last import, the guides as set now. `reuseDownloads`: read the files
+    /// kept from last time instead of downloading.
+    func refreshAgain(force: Bool, reuseDownloads: Bool = false) {
+        guard let account = XtreamAccountStore.load(),
+              let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
+        let password = XtreamAccountStore.password(for: account)
+        Task {
+            let channels = await Task.detached(priority: .utility) {
+                (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([LiveTVEPGChannelRef].self, from: $0) } ?? []
+            }.value
+            guard !channels.isEmpty else { return }
+            let sources = LiveTVEPGSources.shared
+            refreshIfNeeded(
+                account: account, password: password, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
+                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
+        }
+    }
+
+    /// A choice from Assign EPG. True when the stored guide already has it
+    /// (the guide channel's programmes are kept, or no guide): written at
+    /// once, nothing is read again.
+    func apply(streamID: Int, choice: String?) -> Bool {
+        _ = reader()
+        guard refreshTask == nil, let choice = choice?.lowercased(),
+              choice.isEmpty || links.values.contains(choice),
+              let url = Self.databaseURL(scope: scope ?? ProfileSettings.activeProfileScope),
+              let writer = GuideDatabase(url: url, readOnly: false) else { return false }
+        writer.setLink(stream: streamID, key: choice.isEmpty ? nil : choice)
+        links[streamID] = choice.isEmpty ? nil : choice
+        NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
+        return true
+    }
+
     nonisolated static func xmltvURL(account: XtreamAccount, password: String) -> URL? {
         guard var components = URLComponents(string: "\(account.server)/xmltv.php") else { return nil }
         components.queryItems = [
@@ -177,7 +353,7 @@ final class LiveTVGuide: ObservableObject {
     }
 }
 
-/// Guide refresh failures, worded for the Live TV header.
+/// Guide refresh failures, worded for the Live TV header and Settings.
 enum GuideError: LocalizedError {
     case storage
     case unreadable
@@ -192,9 +368,9 @@ enum GuideError: LocalizedError {
         case .unreadable:
             return L10n.string("livetv_guide_error_unreadable", fallback: "The downloaded guide file couldn't be opened.")
         case .notXMLTV:
-            return L10n.string("livetv_guide_error_not_xmltv", fallback: "The provider didn't send an XMLTV guide.")
+            return L10n.string("livetv_guide_error_not_xmltv", fallback: "This isn't an XMLTV guide.")
         case .empty:
-            return L10n.string("livetv_guide_error_empty", fallback: "The provider's guide is empty.")
+            return L10n.string("livetv_guide_error_empty", fallback: "The guide is empty.")
         case .noMatchingChannels:
             return L10n.string("livetv_guide_error_no_match", fallback: "The guide has no programmes for your visible channels.")
         }
@@ -229,7 +405,7 @@ final class GuideDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS programmes (ch TEXT NOT NULL, start INTEGER NOT NULL, stop INTEGER NOT NULL, title TEXT NOT NULL, descr TEXT);
             CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
             CREATE TABLE IF NOT EXISTS links (stream INTEGER PRIMARY KEY, ch TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL DEFAULT '');
             """)
     }
 
@@ -258,16 +434,17 @@ final class GuideDatabase: @unchecked Sendable {
         return result
     }
 
-    /// The guide's channels (id, first name), for choosing one by hand.
-    func guideChannels() -> [(id: String, name: String)] {
+    /// The guides' channels (key, first name, guide name), for choosing one by hand.
+    func guideChannels() -> [(id: String, name: String, source: String)] {
         lock.lock(); defer { lock.unlock() }
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT id, name FROM channels ORDER BY name COLLATE NOCASE", -1, &statement, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, "SELECT id, name, source FROM channels ORDER BY name COLLATE NOCASE", -1, &statement, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(statement) }
-        var result: [(id: String, name: String)] = []
+        var result: [(id: String, name: String, source: String)] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let id = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else { continue }
-            result.append((String(cString: id), String(cString: name)))
+            let source = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? ""
+            result.append((String(cString: id), String(cString: name), source))
         }
         return result
     }
@@ -284,13 +461,26 @@ final class GuideDatabase: @unchecked Sendable {
         }
     }
 
-    func writeChannels(_ channels: [(id: String, name: String)]) {
+    /// One stream's guide channel; nil: none.
+    func setLink(stream: Int, key: String?) {
+        lock.lock(); defer { lock.unlock() }
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO channels (id, name) VALUES (?, ?)", -1, &statement, nil) == SQLITE_OK else { return }
+        let sql = key == nil ? "DELETE FROM links WHERE stream = ?" : "INSERT OR REPLACE INTO links (stream, ch) VALUES (?, ?)"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(stream))
+        if let key { sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT_DESTRUCTOR) }
+        sqlite3_step(statement)
+    }
+
+    func writeChannels(_ channels: [(id: String, name: String, source: String)]) {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO channels (id, name, source) VALUES (?, ?, ?)", -1, &statement, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(statement) }
         for channel in channels {
             sqlite3_bind_text(statement, 1, channel.id, -1, SQLITE_TRANSIENT_DESTRUCTOR)
             sqlite3_bind_text(statement, 2, channel.name, -1, SQLITE_TRANSIENT_DESTRUCTOR)
+            sqlite3_bind_text(statement, 3, channel.source, -1, SQLITE_TRANSIENT_DESTRUCTOR)
             sqlite3_step(statement)
             sqlite3_reset(statement)
         }
@@ -455,16 +645,105 @@ private final class GuideDownloader: NSObject, URLSessionDownloadDelegate, @unch
     }
 }
 
+// MARK: - Unpacking
+
+/// Guides often come as `.xml.gz`: unpacked to a file next to the download
+/// in steps of 1 MB, so the whole guide never sits in memory.
+enum GuideFiles {
+    static func unpacked(_ file: URL) throws -> URL {
+        let input = try FileHandle(forReadingFrom: file)
+        defer { try? input.close() }
+        let head = [UInt8](input.readData(ofLength: 64 * 1024))
+        guard LiveTVEPGSourceRules.isGzip(head) else { return file }
+        guard let start = LiveTVEPGSourceRules.gzipHeaderLength(head) else { throw GuideError.unreadable }
+        try input.seek(toOffset: UInt64(start))
+
+        let target = file.deletingPathExtension().appendingPathExtension("unpacked.xml")
+        FileManager.default.createFile(atPath: target.path, contents: nil)
+        let output = try FileHandle(forWritingTo: target)
+        var keep = false
+        defer {
+            try? output.close()
+            if !keep { try? FileManager.default.removeItem(at: target) }
+        }
+        // Far above any real guide: a broken or hostile file can't fill the disk.
+        let limit: UInt64 = 2 << 30
+        var total: UInt64 = 0
+
+        let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { stream.deallocate() }
+        guard compression_stream_init(stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
+            throw GuideError.unreadable
+        }
+        defer { compression_stream_destroy(stream) }
+        let size = 1 << 20
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+        defer { buffer.deallocate() }
+
+        var finished = false
+        var wrote = false
+        var tooBig = false
+        while !finished {
+            if Task.isCancelled { throw CancellationError() }
+            let chunk = input.readData(ofLength: size)
+            let last = chunk.isEmpty
+            var failed = false
+            chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                stream.pointee.src_ptr = raw.bindMemory(to: UInt8.self).baseAddress ?? UnsafePointer(buffer)
+                stream.pointee.src_size = raw.count
+                while true {
+                    stream.pointee.dst_ptr = buffer
+                    stream.pointee.dst_size = size
+                    let flags = last ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0
+                    let status = compression_stream_process(stream, flags)
+                    let produced = size - stream.pointee.dst_size
+                    if produced > 0 {
+                        total += UInt64(produced)
+                        if total > limit { failed = true; tooBig = true; return }
+                        output.write(Data(bytes: buffer, count: produced))
+                        wrote = true
+                    }
+                    if status == COMPRESSION_STATUS_END { finished = true; return }
+                    if status != COMPRESSION_STATUS_OK { failed = true; return }
+                    // All taken in and room left: on to the next chunk.
+                    if stream.pointee.src_size == 0 && stream.pointee.dst_size > 0 { return }
+                }
+            }
+            // A cut-off file: what came so far is read (the parser stops at the cut).
+            if failed || last { break }
+        }
+        guard wrote, !tooBig else { throw GuideError.unreadable }
+        keep = true
+        try? FileManager.default.removeItem(at: file)
+        return target
+    }
+}
+
 // MARK: - Import
 
-/// Streams the XMLTV file into a fresh database next to the live one, then
+/// Streams the XMLTV files into a fresh database next to the live one, then
 /// swaps it in.
 private enum GuideImporter {
+    /// No guide brought anything (each one's reason by source id).
+    enum Failed: Error {
+        case feeds([String: String])
+
+        var message: String {
+            switch self {
+            case .feeds(let all):
+                return all[""] ?? all.values.first
+                    ?? GuideError.noMatchingChannels.localizedDescription
+            }
+        }
+    }
+
     static func importXMLTV(
-        file: URL,
+        files: [(feed: LiveTVGuideFeed, file: URL)],
         into target: URL,
         channels: [LiveTVEPGChannelRef],
         overrides: [Int: String],
+        failures: [String: String],
+        fingerprint: String,
         version: String,
         onProgress: @escaping @Sendable (Int) -> Void
     ) throws -> Int {
@@ -478,51 +757,76 @@ private enum GuideImporter {
         guard let inserter = GuideDatabase.Inserter(database: database) else {
             throw GuideError.storage
         }
-        guard let stream = InputStream(url: file) else {
-            throw GuideError.unreadable
-        }
-        database.execute("BEGIN")
 
         let now = Date().timeIntervalSince1970
-        let delegate = XMLTVParserDelegate(
-            picker: LiveTVEPGMatch.Picker(channels: channels, overrides: overrides),
-            from: Int64(now - LiveTVGuide.pastWindow),
-            to: Int64(now + LiveTVGuide.futureWindow)
-        ) { programme in
-            inserter.insert(channel: programme.channel, start: programme.start, stop: programme.stop,
-                            title: programme.title, descr: programme.descr)
-        } onCount: { count in
-            if count % 5000 == 0 {
-                database.execute("COMMIT; BEGIN")
-                onProgress(count)
+        let state = GuideImportState(picker: LiveTVEPGMatch.Picker(channels: channels, overrides: overrides))
+        var errors = failures
+        database.execute("BEGIN")
+        for (index, item) in files.enumerated() {
+            guard let stream = InputStream(url: item.file) else {
+                errors[item.feed.sourceID] = GuideError.unreadable.localizedDescription
+                continue
+            }
+            let before = state.count
+            let delegate = XMLTVParserDelegate(
+                state: state, feed: item.feed, guide: index,
+                from: Int64(now - LiveTVGuide.pastWindow),
+                to: Int64(now + LiveTVGuide.futureWindow)
+            ) { programme in
+                inserter.insert(channel: programme.channel, start: programme.start, stop: programme.stop,
+                                title: programme.title, descr: programme.descr)
+            } onCount: { count in
+                if count % 5000 == 0 {
+                    database.execute("COMMIT; BEGIN")
+                    onProgress(count)
+                }
+            }
+            let parser = XMLParser(stream: stream)
+            parser.delegate = delegate
+            parser.shouldResolveExternalEntities = false
+            let ok = parser.parse()
+            if Task.isCancelled {
+                database.execute("COMMIT")
+                throw CancellationError()
+            }
+            if state.count == before {
+                // Typically an HTML error page or an empty answer instead of XMLTV.
+                let error: GuideError = delegate.sawProgrammes ? .noMatchingChannels : (ok ? .empty : .notXMLTV)
+                errors[item.feed.sourceID] = error.localizedDescription
             }
         }
-        let parser = XMLParser(stream: stream)
-        parser.delegate = delegate
-        parser.shouldResolveExternalEntities = false
-        let ok = parser.parse()
         database.execute("COMMIT")
-        if Task.isCancelled { throw CancellationError() }
-        guard ok || delegate.count > 0 else {
-            // Typically an HTML error page or an empty answer instead of XMLTV.
-            throw GuideError.notXMLTV
-        }
-        guard delegate.count > 0 else {
-            throw delegate.sawProgrammes ? GuideError.noMatchingChannels : GuideError.empty
-        }
+        guard state.count > 0 else { throw Failed.feeds(errors) }
+
         // Which guide channel each stream reads; programmes of guide channels
         // kept as candidates but not picked go again.
-        let links = delegate.picker.links(listed: delegate.listed)
+        let links = state.picker.links(stats: state.stats, now: Int64(now))
         database.execute("BEGIN")
         database.writeLinks(links)
-        database.writeChannels(delegate.guideChannels)
+        database.writeChannels(state.guideChannels)
         database.execute("DELETE FROM programmes WHERE ch NOT IN (SELECT ch FROM links)")
         database.execute("COMMIT")
         database.createIndex()
         let count = database.programmeCount()
-        guard count > 0 else { throw GuideError.noMatchingChannels }
+        guard count > 0 else { throw Failed.feeds(errors) }
+
+        // How each guide did, for Settings → Live TV.
+        var results: [String: LiveTVGuide.FeedResult] = [:]
+        for item in files { results[item.feed.sourceID] = LiveTVGuide.FeedResult() }
+        for key in Set(links.values) {
+            let source = state.sourceOf[key] ?? ""
+            results[source, default: LiveTVGuide.FeedResult()].channels += 1
+            results[source, default: LiveTVGuide.FeedResult()].programmes += state.stats[key]?.count ?? 0
+        }
+        for (source, message) in errors where (results[source]?.channels ?? 0) == 0 {
+            results[source] = LiveTVGuide.FeedResult(error: message)
+        }
+        if let data = try? JSONEncoder().encode(results), let text = String(data: data, encoding: .utf8) {
+            database.setMeta("results", text)
+        }
         database.setMeta("updated", String(Date().timeIntervalSince1970))
         database.setMeta("count", String(count))
+        database.setMeta("sources", fingerprint)
         database.setMeta("version", version)
 
         // Swap: the reader opens the file again after the refresh.
@@ -532,7 +836,24 @@ private enum GuideImporter {
     }
 }
 
-/// SAX handler for `<programme start stop channel><title/><desc/></programme>`.
+/// What the import gathers over all guide files.
+private final class GuideImportState {
+    var picker: LiveTVEPGMatch.Picker
+    /// Guide channel key → its listings kept.
+    var stats: [String: LiveTVEPGMatch.ChannelStat] = [:]
+    /// Guide channel key → source id ("" = the provider's).
+    var sourceOf: [String: String] = [:]
+    /// Every guide channel (key, first name, guide name), for choosing by hand.
+    var guideChannels: [(id: String, name: String, source: String)] = []
+    var count = 0
+
+    init(picker: LiveTVEPGMatch.Picker) {
+        self.picker = picker
+    }
+}
+
+/// SAX handler for `<programme start stop channel><title/><desc/></programme>`,
+/// one per guide file.
 private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     struct Programme {
         let channel: String
@@ -542,22 +863,20 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         let descr: String?
     }
 
-    private(set) var picker: LiveTVEPGMatch.Picker
+    private let state: GuideImportState
+    private let feed: LiveTVGuideFeed
+    private let guide: Int
+    private let shift: Int64
     private let from: Int64
     private let to: Int64
     private let onProgramme: (Programme) -> Void
     private let onCount: (Int) -> Void
-    private(set) var count = 0
     /// Any <programme> at all, matched or not (tells "no guide" from "no
     /// matching channels").
     private(set) var sawProgrammes = false
-    /// Guide channels with programmes stored.
-    private(set) var listed: Set<String> = []
-    /// Every guide channel (id lowercased, first name), for choosing by hand.
-    private(set) var guideChannels: [(id: String, name: String)] = []
     /// The names of each `<channel>` (they come before the programmes).
     private var displayNames: [String: [String]] = [:]
-    /// Per guide channel: worth keeping? Decided when its first programme comes.
+    /// Per guide channel id: worth keeping? Decided at its first programme.
     private var decided: [String: Bool] = [:]
     private var channelID: String?
     private var channelNames: [String] = []
@@ -568,13 +887,20 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     private var descr = ""
     private var element: String?
 
-    init(picker: LiveTVEPGMatch.Picker, from: Int64, to: Int64,
+    init(state: GuideImportState, feed: LiveTVGuideFeed, guide: Int, from: Int64, to: Int64,
          onProgramme: @escaping (Programme) -> Void, onCount: @escaping (Int) -> Void) {
-        self.picker = picker
+        self.state = state
+        self.feed = feed
+        self.guide = guide
+        self.shift = Int64(feed.shiftMinutes) * 60
         self.from = from
         self.to = to
         self.onProgramme = onProgramme
         self.onCount = onCount
+    }
+
+    private func key(_ id: String) -> String {
+        LiveTVEPGSourceRules.key(sourceID: feed.sourceID, guideID: id)
     }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
@@ -588,16 +914,17 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
             displayName = channelID == nil ? nil : ""
         case "programme":
             sawProgrammes = true
-            // Guide ids are matched without regard to case (as on Android).
-            guard let channel = attributes["channel"]?.trimmingCharacters(in: .whitespaces).lowercased(),
-                  wanted(channel),
-                  let start = attributes["start"].flatMap(Self.parseTime),
-                  let stop = attributes["stop"].flatMap(Self.parseTime),
+            // Guide ids are matched without regard to case (as on Android);
+            // the guide's time shift moves its listings.
+            guard let id = attributes["channel"]?.trimmingCharacters(in: .whitespaces).lowercased(),
+                  wanted(id),
+                  let start = attributes["start"].flatMap(Self.parseTime).map({ $0 + shift }),
+                  let stop = attributes["stop"].flatMap(Self.parseTime).map({ $0 + shift }),
                   stop > from, start < to, stop > start else {
                 current = nil
                 return
             }
-            current = (channel, start, stop)
+            current = (key(id), start, stop)
             title = ""
             descr = ""
         case "title", "desc":
@@ -608,16 +935,22 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     }
 
     /// Asked once per guide channel, at its first programme.
-    private func wanted(_ channel: String) -> Bool {
-        if let known = decided[channel] { return known }
-        let names = displayNames[channel] ?? []
-        if displayNames[channel] == nil {
+    private func wanted(_ id: String) -> Bool {
+        if let known = decided[id] { return known }
+        let names = displayNames[id] ?? []
+        if displayNames[id] == nil {
             // A guide without a <channel> list: only the id to go by.
-            guideChannels.append((channel, channel))
+            addChannel(id, name: id)
         }
-        let keep = picker.saw(guideID: channel, names: names)
-        decided[channel] = keep
+        let keep = state.picker.saw(key: key(id), id: id, names: names, guide: guide)
+        decided[id] = keep
         return keep
+    }
+
+    private func addChannel(_ id: String, name: String) {
+        let key = key(id)
+        state.guideChannels.append((key, name, feed.name))
+        state.sourceOf[key] = feed.sourceID
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
@@ -639,7 +972,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
         case "channel":
             if let channelID, displayNames[channelID] == nil {
                 displayNames[channelID] = channelNames
-                guideChannels.append((channelID, channelNames.first ?? channelID))
+                addChannel(channelID, name: channelNames.first ?? channelID)
             }
             channelID = nil
         case "title", "desc":
@@ -648,12 +981,13 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
             if let current {
                 let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !cleanTitle.isEmpty {
-                    listed.insert(current.channel)
+                    state.stats[current.channel, default: LiveTVEPGMatch.ChannelStat()]
+                        .add(stop: current.stop, placeholder: LiveTVEPGMatch.isPlaceholder(cleanTitle))
                     let cleanDescr = descr.trimmingCharacters(in: .whitespacesAndNewlines)
                     onProgramme(Programme(channel: current.channel, start: current.start, stop: current.stop,
                                           title: cleanTitle, descr: cleanDescr.isEmpty ? nil : cleanDescr))
-                    count += 1
-                    onCount(count)
+                    state.count += 1
+                    onCount(state.count)
                 }
             }
             current = nil
