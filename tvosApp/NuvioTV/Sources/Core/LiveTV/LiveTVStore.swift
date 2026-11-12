@@ -189,6 +189,9 @@ final class LiveTVStore: ObservableObject {
     /// Groups that need the PIN now (step 11): their channels stay out of
     /// every list until unlocked.
     private var lockedGroupIDs: Set<String> = []
+    /// The same with the ones unlocked this session: kept out of what's
+    /// saved (the Home row), so a restart doesn't show them.
+    private var savedLockedGroupIDs: Set<String> = []
     private var renameTask: Task<Void, Never>?
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
@@ -275,10 +278,11 @@ final class LiveTVStore: ObservableObject {
     }
 
     /// The channels for these ids, without ones in a locked group.
-    private func unlockedChannels(_ ids: [Int]) -> [XtreamLiveChannel] {
-        ids.compactMap { id in
+    private func unlockedChannels(_ ids: [Int], locked: Set<String>? = nil) -> [XtreamLiveChannel] {
+        let locked = locked ?? lockedGroupIDs
+        return ids.compactMap { id in
             guard let channel = channelsByID[id] else { return nil }
-            return isLocked(channel) ? nil : channel
+            return !locked.isEmpty && locked.contains(groupID(of: channel)) ? nil : channel
         }
     }
 
@@ -304,7 +308,7 @@ final class LiveTVStore: ObservableObject {
 
     /// Provider groups and yours that need the PIN; adult names count by
     /// the shown and the provider's name.
-    private func computeLockedGroups() -> Set<String> {
+    private func computeLockedGroups(ignoringUnlocked: Bool = false) -> Set<String> {
         let parental = LiveTVParentalControls.shared
         guard parental.isEnabled else { return [] }
         var providerNames: [String: String] = [:]
@@ -313,7 +317,7 @@ final class LiveTVStore: ObservableObject {
         }
         var candidates = categoryGroups.map { (id: $0.id, name: $0.name + " " + (providerNames[$0.id] ?? "")) }
         candidates += LiveTVChannelEdits.shared.customGroups.map { (id: $0.id, name: $0.name) }
-        return parental.lockedIDs(candidates)
+        return parental.lockedIDs(candidates, ignoringUnlocked: ignoringUnlocked)
     }
 
     /// The group open now is one of yours.
@@ -429,8 +433,8 @@ final class LiveTVStore: ObservableObject {
     private func publishHomeChannels() {
         guard !channelsByID.isEmpty else { return }
         LiveTVHomeRowModel.shared.remember(
-            favorites: unlockedChannels(favoriteIDs),
-            recent: unlockedChannels(recentIDs))
+            favorites: unlockedChannels(favoriteIDs, locked: savedLockedGroupIDs),
+            recent: unlockedChannels(recentIDs, locked: savedLockedGroupIDs))
     }
 
     func setHidden(_ ids: Set<String>, hidden: Bool) {
@@ -465,6 +469,8 @@ final class LiveTVStore: ObservableObject {
     /// then the provider's groups that aren't hidden.
     private func rebuildGroups() {
         lockedGroupIDs = computeLockedGroups()
+        savedLockedGroupIDs = LiveTVParentalControls.shared.unlocked.isEmpty
+            ? lockedGroupIDs : computeLockedGroups(ignoringUnlocked: true)
         publishHomeChannels()
         let hideSeparators = hidesSeparators
         let separators = separatorIDs

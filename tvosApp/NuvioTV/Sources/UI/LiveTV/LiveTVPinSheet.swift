@@ -153,14 +153,21 @@ struct LiveTVPinSheet: View {
 
     private func confirm() {
         let wrong = L10n.string("livetv_parental_wrong", fallback: "Wrong PIN, try again")
+        if asksCurrent, let wait = parental.retryAfter {
+            problem = L10n.format("livetv_parental_wait", fallback: "Too many wrong PINs. Try again in %@ s", wait.formatted())
+            current = ""
+            return
+        }
         if asksCurrent, !parental.check(current) {
-            problem = wrong
+            problem = parental.retryAfter.map {
+                L10n.format("livetv_parental_wait", fallback: "Too many wrong PINs. Try again in %@ s", $0.formatted())
+            } ?? wrong
             current = ""
             return
         }
         switch purpose {
         case .unlock(let group):
-            guard parental.unlock(group.id, pin: current) else { problem = wrong; return }
+            parental.open(group.id)
             dismiss()
             onUnlocked(group.id)
         case .removeLock(let group):

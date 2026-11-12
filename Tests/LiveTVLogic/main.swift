@@ -417,6 +417,8 @@ check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult:
 check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: true, unlocked: [], enabled: true) == ["2", "3"], "locked by you and by name")
 check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: false, unlocked: [], enabled: true) == ["3"], "automatic lock off")
 check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult: true, unlocked: ["2"], enabled: true) == ["3"], "unlocked stays open")
+check(LiveTVParental.lockout(afterFailures: 4) == 0 && LiveTVParental.lockout(afterFailures: 5) == 30, "wait after 5 wrong PINs")
+check(LiveTVParental.lockout(afterFailures: 6) == 60 && LiveTVParental.lockout(afterFailures: 30) == 900, "wait doubles, at most 15 min")
 
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

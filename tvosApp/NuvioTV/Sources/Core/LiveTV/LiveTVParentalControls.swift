@@ -18,6 +18,10 @@ final class LiveTVParentalControls: ObservableObject {
 
     private static let lockedKey = "nuvio.tv.livetv.lockedGroups"
     private static let lockAdultKey = "nuvio.tv.livetv.lockAdultContent"
+    /// Wrong PINs in a row and the time of the last one, per profile, so
+    /// closing the app doesn't reset the wait.
+    private static let failuresKey = "nuvio.tv.livetv.pinFailures"
+    private static let lastFailureKey = "nuvio.tv.livetv.pinLastFailure"
     private static let keychainService = "nuvio.tv.livetv.parental"
     private var pin = ""
     private var profileObserver: NSObjectProtocol?
@@ -43,14 +47,37 @@ final class LiveTVParentalControls: ObservableObject {
         changed()
     }
 
+    /// Right PIN. Wrong ones in a row make the next try wait
+    /// (`retryAfter`); while waiting every PIN counts as wrong.
     func check(_ entered: String) -> Bool {
-        hasPin && LiveTVParental.normalized(entered) == pin
+        guard hasPin, retryAfter == nil else { return false }
+        let settings = ProfileSettings.current
+        if LiveTVParental.normalized(entered) == pin {
+            settings.removeObject(forKey: Self.failuresKey)
+            settings.removeObject(forKey: Self.lastFailureKey)
+            return true
+        }
+        settings.set(settings.integer(forKey: Self.failuresKey) + 1, forKey: Self.failuresKey)
+        settings.set(Date().timeIntervalSince1970, forKey: Self.lastFailureKey)
+        return false
     }
 
-    /// The groups of these that need the PIN now.
-    func lockedIDs(_ groups: [(id: String, name: String)]) -> Set<String> {
+    /// Seconds to wait before the next PIN, nil when one can be tried now.
+    var retryAfter: Int? {
+        let settings = ProfileSettings.current
+        let wait = LiveTVParental.lockout(afterFailures: settings.integer(forKey: Self.failuresKey))
+        guard wait > 0 else { return nil }
+        let last = Date(timeIntervalSince1970: settings.double(forKey: Self.lastFailureKey))
+        let left = last.addingTimeInterval(wait).timeIntervalSinceNow
+        return left > 0 ? Int(left.rounded(.up)) : nil
+    }
+
+    /// The groups of these that need the PIN now; `ignoringUnlocked`: also
+    /// the ones opened this session (for what's saved, e.g. the Home row).
+    func lockedIDs(_ groups: [(id: String, name: String)], ignoringUnlocked: Bool = false) -> Set<String> {
         LiveTVParental.lockedIDs(
-            groups: groups, locked: lockedGroups, lockAdult: lockAdult, unlocked: unlocked, enabled: hasPin)
+            groups: groups, locked: lockedGroups, lockAdult: lockAdult,
+            unlocked: ignoringUnlocked ? [] : unlocked, enabled: hasPin)
     }
 
     func isLockSet(_ groupID: String) -> Bool { lockedGroups.contains(groupID) }
@@ -58,9 +85,14 @@ final class LiveTVParentalControls: ObservableObject {
     /// Opens the group until the app is closed, if the PIN is right.
     func unlock(_ groupID: String, pin entered: String) -> Bool {
         guard check(entered) else { return false }
+        open(groupID)
+        return true
+    }
+
+    /// Opens the group until the app is closed (the caller checked the PIN).
+    func open(_ groupID: String) {
         unlocked.insert(groupID)
         changed()
-        return true
     }
 
     func lock(_ groupID: String) {

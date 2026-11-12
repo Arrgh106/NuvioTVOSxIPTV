@@ -18,6 +18,13 @@ enum LiveTVParental {
         (4...8).contains(pin.count) && pin.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
+    /// Wrong PINs in a row before a wait: none for the first 4, then 30 s,
+    /// doubling each time, at most 15 minutes.
+    static func lockout(afterFailures failures: Int) -> TimeInterval {
+        guard failures >= 5 else { return 0 }
+        return min(30 * pow(2, Double(failures - 5)), 15 * 60)
+    }
+
     static func normalized(_ pin: String) -> String {
         pin.trimmingCharacters(in: .whitespacesAndNewlines)
     }
