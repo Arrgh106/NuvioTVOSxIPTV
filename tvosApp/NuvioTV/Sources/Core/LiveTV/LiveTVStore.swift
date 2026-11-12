@@ -191,7 +191,6 @@ final class LiveTVStore: ObservableObject {
     private var channelsByGroupWithoutSeparators: [String: [XtreamLiveChannel]] = [:]
     private var hidesSeparators: Bool { LiveTVSettings.shared.hideSeparators && !separatorIDs.isEmpty }
     private var settingsObserver: AnyCancellable?
-    private var sourcesObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
 
     init() {
@@ -208,13 +207,6 @@ final class LiveTVStore: ObservableObject {
                     self.listRevision &+= 1
                 }
             }
-        // Guides added, changed or removed in Settings: read them (step 9).
-        sourcesObserver = NotificationCenter.default.addObserver(
-            forName: LiveTVEPGSources.changedNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            let force = note.userInfo?["force"] as? Bool ?? false
-            Task { @MainActor in self?.refreshGuide(force: force) }
-        }
     }
 
     var hasAccount: Bool { account != nil }
@@ -239,7 +231,9 @@ final class LiveTVStore: ObservableObject {
 
     /// Loads the provider's XMLTV guide for the channels in visible groups
     /// (in the background; the set is built off the main thread).
-    func refreshGuide(force: Bool) {
+    /// `reuseDownloads`: read the guide files kept from last time (after
+    /// Assign EPG) instead of downloading them again.
+    func refreshGuide(force: Bool, reuseDownloads: Bool = false) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
         let visible = allVisible
@@ -254,7 +248,7 @@ final class LiveTVStore: ObservableObject {
             LiveTVGuide.shared.refreshIfNeeded(
                 account: account, password: password, channels: channels,
                 overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
-                providerGuide: sources.providerGuide, force: force)
+                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
         }
     }
 

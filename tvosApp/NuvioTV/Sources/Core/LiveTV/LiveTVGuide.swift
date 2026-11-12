@@ -69,6 +69,20 @@ final class LiveTVGuide: ObservableObject {
     private var links: [Int: String] = [:]
     /// Bumped when the stored guide changes how it reads (re-import once).
     private static let formatVersion = "3"
+    /// A forced refresh asked for while one runs: done right after it.
+    private var queued: (force: Bool, reuseDownloads: Bool)?
+    private var sourcesObserver: NSObjectProtocol?
+
+    private init() {
+        // "Update now" in Settings → Live TV → Guide Sources, also while
+        // Live TV hasn't been opened yet.
+        sourcesObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVEPGSources.changedNotification, object: nil, queue: .main
+        ) { note in
+            let force = note.userInfo?["force"] as? Bool ?? false
+            Task { @MainActor in LiveTVGuide.shared.refreshAgain(force: force) }
+        }
+    }
 
     // MARK: Reading
 
@@ -108,11 +122,16 @@ final class LiveTVGuide: ObservableObject {
     func refreshIfNeeded(
         account: XtreamAccount, password: String, channels: [LiveTVEPGChannelRef],
         overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [], providerGuide: Bool = true,
-        force: Bool = false
+        force: Bool = false, reuseDownloads: Bool = false
     ) {
         let scope = ProfileSettings.activeProfileScope
         if scope != self.scope { closeDatabase(); self.scope = scope }
-        if refreshTask != nil { return }
+        if refreshTask != nil {
+            if force {
+                queued = (true, (queued?.reuseDownloads ?? true) && reuseDownloads)
+            }
+            return
+        }
         // Added guides first: they win a tie (as on Android).
         var feeds = extra
         if providerGuide, let url = Self.xmltvURL(account: account, password: password) {
@@ -125,29 +144,48 @@ final class LiveTVGuide: ObservableObject {
         if !force, let db, db.meta("version") == Self.formatVersion, db.meta("sources") == fingerprint,
            let updated = db.updatedAt(), Date().timeIntervalSince(updated) < Self.maxAge {
             status = .ready(programmes: db.storedCount(), updated: updated)
+            Self.saveChannels(channels, scope: scope, always: false)
             return
         }
         guard !channels.isEmpty, !feeds.isEmpty, let target = Self.databaseURL(scope: scope) else { return }
         let version = Self.formatVersion
 
-        status = .downloading(fraction: nil, part: nil)
+        status = reuseDownloads ? .importing(programmes: 0) : .downloading(fraction: nil, part: nil)
         refreshTask = Task { [weak self] in
-            defer { Task { @MainActor in self?.refreshTask = nil } }
+            defer {
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.refreshTask = nil
+                    if let again = self.queued {
+                        self.queued = nil
+                        self.refreshAgain(force: again.force, reuseDownloads: again.reuseDownloads)
+                    }
+                }
+            }
             var files: [(feed: LiveTVGuideFeed, file: URL)] = []
-            defer { for item in files { try? FileManager.default.removeItem(at: item.file) } }
             var failures: [String: String] = [:]
+            // For a refresh from Settings or after Assign EPG.
+            Self.saveChannels(channels, scope: scope, always: true)
             do {
                 for (index, feed) in feeds.enumerated() {
                     let part = feeds.count > 1 ? "\(index + 1) / \(feeds.count)" : nil
+                    guard let kept = Self.feedURL(feed, scope: scope) else { continue }
+                    // After Assign EPG: the files downloaded last time are read again.
+                    if reuseDownloads, FileManager.default.fileExists(atPath: kept.path) {
+                        files.append((feed, kept))
+                        continue
+                    }
                     await MainActor.run { self?.status = .downloading(fraction: nil, part: part) }
                     do {
                         let file = try await GuideDownloader.download(feed.url) { fraction in
                             Task { @MainActor in self?.status = .downloading(fraction: fraction, part: part) }
                         }
-                        let unpacked = try await Task.detached(priority: .utility) {
-                            try GuideFiles.unpacked(file)
+                        try await Task.detached(priority: .utility) {
+                            let unpacked = try GuideFiles.unpacked(file)
+                            try? FileManager.default.removeItem(at: kept)
+                            try FileManager.default.moveItem(at: unpacked, to: kept)
                         }.value
-                        files.append((feed, unpacked))
+                        files.append((feed, kept))
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -158,6 +196,8 @@ final class LiveTVGuide: ObservableObject {
                 guard !files.isEmpty else {
                     throw GuideImporter.Failed.feeds(failures)
                 }
+                let wanted = Set(files.map(\.file.lastPathComponent))
+                Self.removeOldFeeds(scope: scope, keeping: wanted)
                 await MainActor.run { self?.status = .importing(programmes: 0) }
                 let inputs = files
                 let known = failures
@@ -233,6 +273,72 @@ final class LiveTVGuide: ObservableObject {
             .appendingPathComponent("LiveTV", isDirectory: true) else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("guide-\(scope).sqlite")
+    }
+
+    /// The provider's channels the last import matched (JSON).
+    nonisolated static func channelsURL(scope: String) -> URL? {
+        databaseURL(scope: scope)?.deletingPathExtension().appendingPathExtension("channels.json")
+    }
+
+    /// Kept for `refreshAgain` (Settings → Guide Sources → Update now).
+    nonisolated static func saveChannels(_ channels: [LiveTVEPGChannelRef], scope: String, always: Bool) {
+        guard let url = channelsURL(scope: scope) else { return }
+        Task.detached(priority: .utility) {
+            if !always, FileManager.default.fileExists(atPath: url.path) { return }
+            try? JSONEncoder().encode(channels).write(to: url, options: .atomic)
+        }
+    }
+
+    /// Where a guide's file is kept between refreshes (Caches: the system
+    /// may clear it, then it's downloaded again).
+    nonisolated static func feedURL(_ feed: LiveTVGuideFeed, scope: String) -> URL? {
+        let name = String(LiveTVEPGSourceRules.fnv1a(feed.sourceID + "|" + feed.url.absoluteString), radix: 36)
+        return databaseURL(scope: scope)?.deletingLastPathComponent()
+            .appendingPathComponent("feed-\(scope)-\(name).xml")
+    }
+
+    /// Files of guides no longer read (removed or changed links).
+    nonisolated static func removeOldFeeds(scope: String, keeping: Set<String>) {
+        guard let dir = databaseURL(scope: scope)?.deletingLastPathComponent(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.hasPrefix("feed-\(scope)-") && !keeping.contains(name) {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
+    /// Refreshes without Live TV open: the account, the channels of the
+    /// last import, the guides as set now. `reuseDownloads`: read the files
+    /// kept from last time instead of downloading.
+    func refreshAgain(force: Bool, reuseDownloads: Bool = false) {
+        guard let account = XtreamAccountStore.load(),
+              let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
+        let password = XtreamAccountStore.password(for: account)
+        Task {
+            let channels = await Task.detached(priority: .utility) {
+                (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([LiveTVEPGChannelRef].self, from: $0) } ?? []
+            }.value
+            guard !channels.isEmpty else { return }
+            let sources = LiveTVEPGSources.shared
+            refreshIfNeeded(
+                account: account, password: password, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
+                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
+        }
+    }
+
+    /// A choice from Assign EPG. True when the stored guide already has it
+    /// (the guide channel's programmes are kept, or no guide): written at
+    /// once, nothing is read again.
+    func apply(streamID: Int, choice: String?) -> Bool {
+        _ = reader()
+        guard refreshTask == nil, let choice = choice?.lowercased(),
+              choice.isEmpty || links.values.contains(choice),
+              let url = Self.databaseURL(scope: scope ?? ProfileSettings.activeProfileScope),
+              let writer = GuideDatabase(url: url, readOnly: false) else { return false }
+        writer.setLink(stream: streamID, key: choice.isEmpty ? nil : choice)
+        links[streamID] = choice.isEmpty ? nil : choice
+        NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
+        return true
     }
 
     nonisolated static func xmltvURL(account: XtreamAccount, password: String) -> URL? {
@@ -353,6 +459,18 @@ final class GuideDatabase: @unchecked Sendable {
             sqlite3_step(statement)
             sqlite3_reset(statement)
         }
+    }
+
+    /// One stream's guide channel; nil: none.
+    func setLink(stream: Int, key: String?) {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        let sql = key == nil ? "DELETE FROM links WHERE stream = ?" : "INSERT OR REPLACE INTO links (stream, ch) VALUES (?, ?)"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(stream))
+        if let key { sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT_DESTRUCTOR) }
+        sqlite3_step(statement)
     }
 
     func writeChannels(_ channels: [(id: String, name: String, source: String)]) {

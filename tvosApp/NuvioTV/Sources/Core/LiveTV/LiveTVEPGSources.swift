@@ -64,10 +64,10 @@ final class LiveTVEPGSources: ObservableObject {
         store()
     }
 
+    /// Takes effect at the next update (Update Guides Now, or opening Live TV).
     func setProviderGuide(_ on: Bool) {
         providerGuide = on
         ProfileSettings.current.set(on, forKey: Self.providerKey)
-        changed(force: false)
     }
 
     /// Read all guides again now.
@@ -83,11 +83,11 @@ final class LiveTVEPGSources: ObservableObject {
         }
     }
 
+    /// Read at the next update; Settings asks whether that's now.
     private func store() {
         if let data = try? JSONEncoder().encode(sources) {
             ProfileSettings.current.set(data, forKey: Self.listKey)
         }
-        changed(force: false)
     }
 
     private func changed(force: Bool) {

@@ -6,7 +6,8 @@ import SwiftUI
 /// The guide is read again when the screen closes after a change.
 struct LiveTVAssignEPG: View {
     let channel: XtreamLiveChannel
-    /// Called when a choice was made (the guide has to be read again).
+    /// Called when a choice needs the guide read again (its programmes
+    /// aren't stored, or Automatic).
     let onChanged: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -148,7 +149,10 @@ struct LiveTVAssignEPG: View {
 
     private func pick(_ guideID: String?) {
         LiveTVEPGOverrides.set(streamID: channel.streamID, guideID: guideID)
-        onChanged()
+        // Kept already (another channel uses it) or No guide: done at once.
+        if !LiveTVGuide.shared.apply(streamID: channel.streamID, choice: guideID) {
+            onChanged()
+        }
         dismiss()
     }
 

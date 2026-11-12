@@ -1,7 +1,7 @@
 import Foundation
 
 /// One of the provider's channels, as the guide import sees it.
-struct LiveTVEPGChannelRef: Sendable {
+struct LiveTVEPGChannelRef: Codable, Sendable {
     let streamID: Int
     let epgID: String?
     let name: String

@@ -98,6 +98,7 @@ struct LiveTVGuideSourceEditor: View {
     @State private var enabled = true
     @State private var shift = 0
     @State private var invalid = false
+    @State private var asksUpdate = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -167,7 +168,7 @@ struct LiveTVGuideSourceEditor: View {
                 if !target.isNew {
                     Button(role: .destructive) {
                         LiveTVEPGSources.shared.remove(target.source)
-                        dismiss()
+                        asksUpdate = true
                     } label: {
                         Label(L10n.string("livetv_epg_source_delete", fallback: "Delete"), systemImage: "trash")
                     }
@@ -184,6 +185,18 @@ struct LiveTVGuideSourceEditor: View {
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black.opacity(0.92).ignoresSafeArea())
+        // Read the guides now, or at the next update (opening Live TV, every 12 h).
+        .alert(L10n.string("livetv_epg_source_ask_title", fallback: "Update the guide now?"), isPresented: $asksUpdate) {
+            Button(L10n.string("livetv_epg_source_ask_now", fallback: "Update now")) {
+                LiveTVEPGSources.shared.refreshNow()
+                dismiss()
+            }
+            Button(L10n.string("livetv_epg_source_ask_later", fallback: "Later"), role: .cancel) {
+                dismiss()
+            }
+        } message: {
+            Text(L10n.string("livetv_epg_source_ask_detail", fallback: "All guides are downloaded and read again. Later: when Live TV opens next."))
+        }
         .onAppear {
             name = target.source.name
             url = target.url
@@ -205,6 +218,6 @@ struct LiveTVGuideSourceEditor: View {
         source.enabled = enabled
         source.shiftMinutes = shift
         LiveTVEPGSources.shared.save(source, url: link)
-        dismiss()
+        asksUpdate = true
     }
 }
