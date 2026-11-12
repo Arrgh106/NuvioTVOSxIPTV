@@ -15,6 +15,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     /// Reorder Groups (step 10b): set while it runs, to the group picked up
     /// first.
     var reorderStartID: String?
+    /// Goes up on Back while reordering: save and finish.
+    var reorderFinishRequest = 0
     var onReorderStart: (LiveTVGroup) -> Void = { _ in }
     var onReorderPicked: (String?) -> Void = { _ in }
     /// Menu: the groups in the order they were left in.
@@ -59,6 +61,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         let pressLeft = UITapGestureRecognizer(target: gate, action: #selector(LiveTVLeftGate.holdIfClosed))
         pressLeft.allowedPressTypes = [NSNumber(value: UIPress.PressType.leftArrow.rawValue)]
         view.addGestureRecognizer(pressLeft)
+        context.coordinator.finishRequest = reorderFinishRequest
         return container
     }
 
@@ -73,6 +76,7 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
         context.coordinator.updateReorder(reorderStartID, in: container.collectionView)
+        context.coordinator.requestFinish(reorderFinishRequest)
     }
 
     @MainActor
@@ -111,6 +115,15 @@ struct LiveTVGroupCollection: UIViewRepresentable {
                 pickedID = nil
                 restyleMoving(in: view)
             }
+        }
+
+        var finishRequest = 0
+
+        func requestFinish(_ request: Int) {
+            guard request != finishRequest else { return }
+            finishRequest = request
+            // Not inside SwiftUI's update: the callback changes its state.
+            DispatchQueue.main.async { [weak self] in self?.finishReorder() }
         }
 
         func finishReorder() {

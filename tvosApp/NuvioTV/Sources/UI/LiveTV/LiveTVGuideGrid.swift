@@ -24,6 +24,9 @@ struct LiveTVGuideGrid: UIViewRepresentable {
     /// Reorder Channels (step 10b): set while it runs, to the channel picked
     /// up first.
     var reorderStartID: Int?
+    /// Goes up on Back while reordering (Live TV's exit command gets the
+    /// press): save and finish.
+    var reorderFinishRequest = 0
     /// The group can be put in your order (not Search or Recently watched).
     var canReorder = false
     var onReorderStart: (XtreamLiveChannel) -> Void = { _ in }
@@ -51,6 +54,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         context.coordinator.updateReorder(reorderStartID)
+        context.coordinator.finishRequest = reorderFinishRequest
         return view
     }
 
@@ -66,6 +70,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         context.coordinator.update(listID: listID, channels: channels, onSelect: onSelect)
         context.coordinator.updateFavorites(favoriteIDs, onToggle: onToggleFavorite)
         context.coordinator.updateReorder(reorderStartID)
+        context.coordinator.requestFinish(reorderFinishRequest)
     }
 
     static func dismantleUIView(_ view: LiveTVGuideGridView, coordinator: Coordinator) {
@@ -353,7 +358,17 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             onReorderPicked(nil)
         }
 
+        var finishRequest = 0
+
+        func requestFinish(_ request: Int) {
+            guard request != finishRequest else { return }
+            finishRequest = request
+            // Not inside SwiftUI's update: the callback changes its state.
+            DispatchQueue.main.async { [weak self] in self?.finishReorder() }
+        }
+
         private func finishReorder() {
+            guard reordering else { return }
             let ids = channels.map(\.streamID)
             reordering = false
             pickedID = nil

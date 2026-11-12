@@ -28,6 +28,8 @@ struct LiveTVView: View {
     @State private var reorderGroupStart: String?
     /// The channel or group picked up now, for the hint.
     @State private var reorderPicked: String?
+    /// Back while reordering: the guide or the groups save and finish.
+    @State private var reorderFinish = 0
     private var isReordering: Bool { reorderChannelStart != nil || reorderGroupStart != nil }
     /// Watch from outside Live TV (reminder, Home row): the channel full
     /// screen. Not observed: nothing here redraws for it.
@@ -103,7 +105,7 @@ struct LiveTVView: View {
         }
         // While reordering Back saves (in the guide or the groups) and
         // never opens the app's sidebar.
-        .onExitCommand(perform: isReordering ? {} : nil)
+        .onExitCommand(perform: isReordering ? { reorderFinish &+= 1 } : nil)
         .onChange(of: showsQuickMenu) { _, shows in player.previewCovered = shows }
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
@@ -225,6 +227,7 @@ struct LiveTVView: View {
                     kind: .group(group.id), current: group.name, providerName: store.providerGroupName(group.id))
             },
             reorderStartID: reorderGroupStart,
+            reorderFinishRequest: reorderFinish,
             onReorderStart: { group in
                 reorderPicked = group.name
                 reorderGroupStart = group.id
@@ -300,6 +303,7 @@ struct LiveTVView: View {
                 onAssignEPG: { assignEPGChannel = $0 },
                 onRename: { renaming = .channel($0) },
                 reorderStartID: reorderChannelStart,
+                reorderFinishRequest: reorderFinish,
                 canReorder: store.canReorder(store.selectedGroupID),
                 onReorderStart: { channel in
                     reorderPicked = channel.name
