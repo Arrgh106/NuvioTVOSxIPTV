@@ -78,8 +78,8 @@ struct OnDemandSettingsGroup: View {
         switch library.status {
         case .idle:
             return L10n.string("livetv_ondemand_none", fallback: "Not read yet")
-        case .importing(let label):
-            return label
+        case .importing(let label, let fraction):
+            return fraction.map { label + " \u{00B7} \(Int(($0 * 100).rounded())) %" } ?? label
         case .ready(let movies, let series, let updated):
             return L10n.format(
                 "livetv_ondemand_counts", fallback: "%@ movies · %@ series · %@",

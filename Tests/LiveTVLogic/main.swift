@@ -523,6 +523,16 @@ check(OnDemandLanguage.code(name: "Dune: Part Two", category: "Movies") == nil, 
 let languageFilter = OnDemandLanguageFilter(languages: ["de", "en"], keepUnknown: true)
 check(languageFilter.allows("de") && !languageFilter.allows("ar") && languageFilter.allows(nil), "language filter: picked and unknown")
 check(!OnDemandLanguageFilter(languages: ["de"], keepUnknown: false).allows(nil) && OnDemandLanguageFilter().allows("ar"), "language filter: unknown off, none picked")
+check(!OnDemandLanguageFilter(languages: ["de"]).allows(nil), "language filter: unknown out by default once one is picked")
+check(OnDemandLanguage.code(name: "4K-SC - GOAT (2026)", category: "NORDIC BARN") == OnDemandLanguage.nordic
+      && OnDemandLanguage.code(name: "GOAT", category: "NORDIC FILM") == OnDemandLanguage.nordic, "language: Nordic packs")
+check(OnDemandLanguage.code(name: "4K-A+ - Nocturne (2026) (US)", category: "APPLE+ SERIES") == nil
+      && OnDemandLanguage.code(name: "4K-DE-DV - Nocturne (2026) (US)", category: "GERMANY DV") == "de", "language: the head tag, not the country after")
+let versionLanguages: [String?] = ["de", nil, "nordic", nil]
+check(OnDemandLanguageFilter(languages: ["de"], keepUnknown: true).versions(versionLanguages) { $0 } == ["de"]
+      && OnDemandLanguageFilter(languages: ["fr"], keepUnknown: true).versions(versionLanguages) { $0 } == [nil, nil],
+      "versions: unknown ones go when a picked language is there")
+check(OnDemandLanguage.displayName("nordic") == "Nordic (Scandinavian)", "language: Nordic name")
 let tiers12c = [vod(1, "Goat 4K", year: 2026), vod(2, "Goat 4K HDR", year: 2026), vod(3, "Goat UHD", year: 2026),
                 vod(4, "Goat FHD", year: 2026), vod(5, "Goat HD", year: 2026), vod(6, "Goat 2160p", year: 2026)]
 check(OnDemandMatch.copies(of: tiers12c, name: "Goat", year: 2026, tmdb: nil, limit: 4).map { OnDemandTitle.quality($0.name) }

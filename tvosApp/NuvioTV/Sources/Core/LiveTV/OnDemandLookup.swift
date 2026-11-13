@@ -42,14 +42,14 @@ enum OnDemandLookup {
             let candidates = database.candidates(kind: kind, tmdb: tmdb, key: key)
             guard !candidates.isEmpty else { return [] }
             let categories = database.categoryNames(kind)
-            let allowed = candidates.filter { item in
+            let unlocked = candidates.filter { item in
                 if hiddenIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
-                if !languages.allows(item.language) { return false }
                 guard lockedNames else { return true }
                 if lockedIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
                 guard lockAdult else { return true }
                 return !LiveTVParental.isAdult(item.name) && !LiveTVParental.isAdult(categories[item.categoryID] ?? "")
             }
+            let allowed = languages.versions(unlocked) { $0.language }
             let copies = OnDemandMatch.copies(of: allowed, name: hint.name, year: hint.year, tmdb: tmdb)
             var streams: [NuvioStream] = []
             for copy in copies {

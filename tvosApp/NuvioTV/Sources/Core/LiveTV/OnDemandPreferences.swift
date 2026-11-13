@@ -20,7 +20,8 @@ final class OnDemandPreferences: ObservableObject {
     private static let mergeKey = "nuvio.tv.livetv.vodMergeDuplicates"
     private static let searchKey = "nuvio.tv.livetv.vodInSearch"
     private static let languagesKey = "nuvio.tv.livetv.vodLanguages"
-    private static let unknownLanguageKey = "nuvio.tv.livetv.vodKeepUnknownLanguage"
+    /// Off by default (was "vodKeepUnknownLanguage", on).
+    private static let unknownLanguageKey = "nuvio.tv.livetv.vodUnknownLanguageShown"
     private var profileObserver: NSObjectProtocol?
 
     private init() {
@@ -39,7 +40,7 @@ final class OnDemandPreferences: ObservableObject {
         inSearch = settings.object(forKey: Self.searchKey) as? Bool ?? true
         languageFilter = OnDemandLanguageFilter(
             languages: Set(settings.stringArray(forKey: Self.languagesKey) ?? []),
-            keepUnknown: settings.object(forKey: Self.unknownLanguageKey) as? Bool ?? true)
+            keepUnknown: settings.object(forKey: Self.unknownLanguageKey) as? Bool ?? false)
     }
 
     func setLanguage(_ code: String, shown: Bool) {

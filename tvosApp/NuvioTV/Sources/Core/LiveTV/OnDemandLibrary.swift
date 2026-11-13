@@ -12,7 +12,8 @@ final class OnDemandLibrary: ObservableObject {
 
     enum Status: Equatable {
         case idle
-        case importing(String)
+        /// `fraction`: of the list being downloaded, when the size is known.
+        case importing(String, fraction: Double?)
         case ready(movies: Int, series: Int, updated: Date)
         case failed(String)
     }
@@ -98,16 +99,33 @@ final class OnDemandLibrary: ObservableObject {
             database.clear()
             database.setMeta("account", account.id)
         }
-        status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"))
+        status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"), fraction: nil)
         importTask = Task { [weak self] in
             var errors: [String] = []
             for kind in OnDemandKind.allCases {
                 guard !Task.isCancelled else { return }
+                // As the guide's: how much is in, then how many are saved.
+                let loading = kind == .movie
+                    ? L10n.string("livetv_ondemand_loading_movies", fallback: "Loading movies")
+                    : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")
+                self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
-                    let data = try await client.onDemandList(kind)
+                    let data = try await client.onDemandList(kind) { received, expected in
+                        let size = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
+                        let fraction = expected.map { min(1, Double(received) / Double(max($0, 1))) }
+                        Task { @MainActor in
+                            guard let self, self.importTask != nil else { return }
+                            self.status = .importing(loading + " \u{00B7} " + size, fraction: fraction)
+                        }
+                    }
                     let ok = await Task.detached(priority: .utility) { () -> Bool in
                         guard let list = OnDemandParse.list(data, kind: kind) else { return false }
+                        let saving = L10n.format(
+                            kind == .movie ? "livetv_ondemand_saving_movies" : "livetv_ondemand_saving_series",
+                            fallback: kind == .movie ? "Saving movies \u{00B7} %@ titles" : "Saving series \u{00B7} %@ titles",
+                            list.items.count.formatted())
+                        Task { @MainActor in self?.status = .importing(saving, fraction: nil) }
                         database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags)
                         return true
                     }.value
@@ -143,7 +161,7 @@ final class OnDemandLibrary: ObservableObject {
     private func reportActivity() {
         let id = "livetv.ondemand"
         switch status {
-        case .importing(let label): ActivityCenter.shared.update(id, label: label)
+        case .importing(let label, let fraction): ActivityCenter.shared.update(id, label: label, fraction: fraction)
         case .failed(let message):
             ActivityCenter.shared.fail(id, message: L10n.string("livetv_ondemand_title", fallback: "VOD") + ": " + message)
         case .idle, .ready: ActivityCenter.shared.finish(id)
@@ -158,7 +176,8 @@ final class OnDemandDatabase: @unchecked Sendable {
     private let lock = NSLock()
     /// 2: pictures, dates, ratings and category order for the VOD
     /// page and Home row (step 12b).
-    private static let schemaVersion: Int32 = 3
+    /// 3: languages (12c). 4: the Nordic group.
+    private static let schemaVersion: Int32 = 4
 
     init?(url: URL) {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {

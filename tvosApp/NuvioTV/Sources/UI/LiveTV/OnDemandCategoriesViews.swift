@@ -288,9 +288,7 @@ struct OnDemandLanguagesSheet: View {
     private var filter: OnDemandLanguageFilter { preferences.languageFilter }
 
     static func name(_ code: String) -> String {
-        let name = Locale.current.localizedString(forLanguageCode: code) ?? code
-        let capitalized = name.prefix(1).uppercased() + String(name.dropFirst())
-        return capitalized + " (\(code.uppercased()))"
+        OnDemandLanguage.displayName(code)
     }
 
     private func row(

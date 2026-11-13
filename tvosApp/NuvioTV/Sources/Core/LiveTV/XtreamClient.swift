@@ -99,8 +99,11 @@ struct XtreamClient: Sendable {
     }
 
     /// The whole list as it came (`get_vod_streams` / `get_series`).
-    func onDemandList(_ kind: OnDemandKind) async throws -> Data {
-        try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true)
+    /// `progress`: bytes in and, when the server says it, the size.
+    func onDemandList(
+        _ kind: OnDemandKind, progress: (@Sendable (_ received: Int64, _ expected: Int64?) -> Void)? = nil
+    ) async throws -> Data {
+        try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true, progress: progress)
     }
 
     /// `get_vod_info`: plot, pictures and details of one movie.
@@ -148,7 +151,8 @@ struct XtreamClient: Sendable {
     // MARK: Transport
 
     private func get(
-        action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil, long: Bool = false
+        action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil, long: Bool = false,
+        progress: (@Sendable (Int64, Int64?) -> Void)? = nil
     ) async throws -> Data {
         guard var components = URLComponents(string: "\(server)/player_api.php"),
               components.host?.isEmpty == false else {
@@ -169,7 +173,12 @@ struct XtreamClient: Sendable {
         var request = URLRequest(url: url)
         if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await (long ? Self.longSession : Self.session).data(for: request)
+        let (data, response): (Data, URLResponse)
+        if let progress {
+            (data, response) = try await XtreamProgressFetch.data(for: request, configuration: Self.longSession.configuration, onProgress: progress)
+        } else {
+            (data, response) = try await (long ? Self.longSession : Self.session).data(for: request)
+        }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             if http.statusCode == 401 || http.statusCode == 403 { throw XtreamError.authenticationFailed }
             throw XtreamError.badStatus(http.statusCode)
@@ -181,5 +190,74 @@ struct XtreamClient: Sendable {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-_.~")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
+/// A request read with progress (the VOD lists, tens of MB): reported
+/// about every MB. The size counts only when the server sends it
+/// unpacked; packed, only what's in shows.
+private final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    private let onProgress: @Sendable (Int64, Int64?) -> Void
+    private var data = Data()
+    private var response: URLResponse?
+    private var expected: Int64?
+    private var lastReported: Int64 = 0
+
+    private init(onProgress: @escaping @Sendable (Int64, Int64?) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    static func data(
+        for request: URLRequest, configuration: URLSessionConfiguration,
+        onProgress: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (Data, URLResponse) {
+        let delegate = XtreamProgressFetch(onProgress: onProgress)
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
+        defer { session.finishTasksAndInvalidate() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.addOperation {
+                    delegate.continuation = continuation
+                    session.dataTask(with: request).resume()
+                }
+            }
+        } onCancel: {
+            session.invalidateAndCancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        self.response = response
+        let packed = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding").map { !$0.isEmpty } ?? false
+        if !packed, response.expectedContentLength > 0 {
+            expected = response.expectedContentLength
+            data.reserveCapacity(Int(response.expectedContentLength))
+        }
+        onProgress(0, expected)
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        data.append(chunk)
+        let received = Int64(data.count)
+        guard received - lastReported >= 1_000_000 else { return }
+        lastReported = received
+        onProgress(received, expected)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            continuation?.resume(throwing: (error as? URLError)?.code == .cancelled ? CancellationError() : error)
+        } else if let response {
+            onProgress(Int64(data.count), expected)
+            continuation?.resume(returning: (data, response))
+        } else {
+            continuation?.resume(throwing: URLError(.badServerResponse))
+        }
+        continuation = nil
     }
 }

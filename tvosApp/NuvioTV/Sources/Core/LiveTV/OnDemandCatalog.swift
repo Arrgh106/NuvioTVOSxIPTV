@@ -494,7 +494,13 @@ enum OnDemandLanguage {
         "IR": "fa", "FA": "fa", "PER": "fa", "IN": "hi", "HIN": "hi", "PK": "ur", "UR": "ur",
         "KU": "ku", "KUR": "ku", "HE": "he", "IL": "he", "JP": "ja", "JA": "ja", "KR": "ko", "KO": "ko",
         "CN": "zh", "ZH": "zh", "TH": "th", "VN": "vi", "VI": "vi",
+        // Scandinavian packs ("4K-SC - …", "NORDIC FILM"): one group.
+        "SC": nordic, "SCAN": nordic, "NORDIC": nordic, "NORD": nordic,
     ]
+
+    /// Scandinavian packs, mostly with Danish, Norwegian, Swedish and
+    /// Finnish subtitles: one group, not one language.
+    static let nordic = "nordic"
 
     /// Words in category names → ISO 639-1.
     private static let words: [String: String] = [
@@ -509,7 +515,15 @@ enum OnDemandLanguage {
         "swedish": "sv", "sweden": "sv", "norwegian": "no", "danish": "da", "finnish": "fi",
         "persian": "fa", "iran": "fa", "hindi": "hi", "india": "hi", "indian": "hi", "urdu": "ur", "pakistan": "ur",
         "kurdish": "ku", "hebrew": "he", "japanese": "ja", "korean": "ko", "chinese": "zh", "thai": "th", "vietnamese": "vi",
+        "nordic": nordic, "scandinavia": nordic, "scandinavian": nordic, "skandinavien": nordic, "norden": nordic,
     ]
+
+    /// "German (DE)", "Nordic (Scandinavian)".
+    static func displayName(_ code: String, locale: Locale = .current) -> String {
+        if code == nordic { return "Nordic (Scandinavian)" }
+        let name = locale.localizedString(forLanguageCode: code) ?? code
+        return name.prefix(1).uppercased() + String(name.dropFirst()) + " (\(code.uppercased()))"
+    }
 
     static func code(forTag tag: String) -> String? {
         tags[tag.uppercased()]
@@ -574,11 +588,12 @@ enum OnDemandLanguage {
     }
 }
 
-/// Which languages to show (step 12c): none picked shows all; titles
-/// nothing tells the language of stay unless turned off.
+/// Which languages to show (step 12c): none picked shows all; once one
+/// is picked, titles nothing tells the language of are out too unless
+/// turned on ("only German" means only German).
 struct OnDemandLanguageFilter: Sendable, Equatable {
     var languages: Set<String> = []
-    var keepUnknown = true
+    var keepUnknown = false
 
     var isActive: Bool { !languages.isEmpty }
 
@@ -586,5 +601,13 @@ struct OnDemandLanguageFilter: Sendable, Equatable {
         guard isActive else { return true }
         guard let code else { return keepUnknown }
         return languages.contains(code)
+    }
+
+    /// A title's versions: when one is in a picked language, the ones
+    /// without a language go, even with those kept.
+    func versions<T>(_ items: [T], language: (T) -> String?) -> [T] {
+        let allowed = items.filter { allows(language($0)) }
+        guard isActive, keepUnknown, allowed.contains(where: { language($0) != nil }) else { return allowed }
+        return allowed.filter { language($0) != nil }
     }
 }
