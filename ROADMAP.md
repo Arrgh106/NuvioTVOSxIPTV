@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- Nothing right now: step 10 is done, the next step is being chosen.
+- 🚧 **Live TV, step 11: parental controls** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -35,10 +35,11 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 10b: *Reorder Channels* (long press a channel; every group but Search and Recently watched, Favorites included) and *Reorder Groups* (long press a group; Search, Favorites, Recent and All stay on top). OK picks one up (framed), move freely to the new place (fast through long lists, unlike Android's step by step), OK puts it there; Back saves. As on Android, a channel or group the provider adds later goes right behind the one above it, not to the end. Resets in Settings → Live TV → Channel List. Going back to the provider's name no longer counts as a rename.
    - ✅ 10c: your own groups, as Android's custom groups. Long press a channel → *Add to Group…*: one of yours, or a new one made with it. Channels go in by reference (they stay in their own group, also ones from hidden groups) and get their guide. Your groups sit above the provider's and *Reorder Groups* arranges them together. In one of your groups: *Remove from This Group* and *Reorder Channels*. Long press a group: *Rename Group*, *Delete Group* (asks first), *New Group*. Settings → Live TV → Channel List → *Delete My Groups*. Per profile. A channel taken out of a list (your group, Favorites) leaves animated, focus moves on to the next one.
 
+11. 🚧 **Parental controls** (as Android's): Settings → Live TV → Parental Controls → *Set a PIN* (4 to 8 digits, in the Keychain, per profile), *Change PIN*, *Lock Adult Content Automatically* (groups named Adult, XXX, 18+ …, by the shown and the provider's name; turning it off asks for the PIN), *Turn Off Parental Controls* (asks for the PIN, locked groups are remembered). Long press a group → *Lock with PIN* / *Remove Parental Lock* (asks for the PIN), also for your own groups. A locked group shows a lock instead of its count and asks for the PIN when opened; it stays open until the app is closed. After 5 wrong PINs in a row the next try waits 30 s, doubling up to 15 minutes (kept over app restarts). Its channels stay out of All Channels, search, favorites, recently watched, your groups, the Home row and the full-screen overlay until then; the Home row never saves channels of a group only unlocked for the session. Also: Live TV keeps its channel list between visits (opens at once instead of loading again; a new list in the background when the kept one is older than 12 hours, built again after a profile switch), and Left from the channel to the groups no longer needs a second swipe when the finger rested on the remote.
+
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
-- 💡 Parental controls (PIN for groups).
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.
 - 💡 Guide focus: fine-tune the pause before Left goes on to the groups / sidebar (0.45 s now), if it feels slow or fast in daily use.
 - 💡 On Demand (provider movies and series), M3U playlists.

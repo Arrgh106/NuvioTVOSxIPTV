@@ -113,6 +113,8 @@ struct LiveTVGroup: Identifiable, Hashable {
     let id: String
     let name: String
     let count: Int
+    /// Needs the parental PIN (step 11): shown with a lock, no channels.
+    var locked = false
 
     /// Favorites, Recently watched, Search and All: built by the app, not
     /// provider categories (can't be hidden).
@@ -121,6 +123,10 @@ struct LiveTVGroup: Identifiable, Hashable {
 
 @MainActor
 final class LiveTVStore: ObservableObject {
+    /// One store for the app: going back into Live TV shows the channels at
+    /// once instead of reading and sorting the whole list again.
+    static let shared = LiveTVStore()
+
     enum LoadState: Equatable {
         case idle
         case loading
@@ -183,6 +189,17 @@ final class LiveTVStore: ObservableObject {
     private var rawChannels: [XtreamLiveChannel] = []
     private var editsObserver: NSObjectProtocol?
     private var customGroupsObserver: NSObjectProtocol?
+    private var parentalObserver: NSObjectProtocol?
+    private var profileObserver: NSObjectProtocol?
+    /// Another profile: its own account, names, favorites and groups, even
+    /// with the same provider login.
+    private var needsReload = false
+    /// Groups that need the PIN now (step 11): their channels stay out of
+    /// every list until unlocked.
+    private var lockedGroupIDs: Set<String> = []
+    /// The same with the ones unlocked this session: kept out of what's
+    /// saved (the Home row), so a restart doesn't show them.
+    private var savedLockedGroupIDs: Set<String> = []
     private var renameTask: Task<Void, Never>?
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
@@ -219,6 +236,24 @@ final class LiveTVStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.applyNames() }
         }
+        // Another profile: built again the next time Live TV opens.
+        profileObserver = NotificationCenter.default.addObserver(
+            forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // At once (not a task later): the views of the new profile may
+            // appear right away and call reloadAccount.
+            MainActor.assumeIsolated { self?.needsReload = true }
+        }
+        // Parental controls (step 11): locked groups and their channels.
+        parentalObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVParentalControls.changedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.channels.isEmpty else { return }
+                self.rebuildGroups()
+                self.listRevision &+= 1
+            }
+        }
         // Your own groups (step 10c): the sidebar and their lists only.
         customGroupsObserver = NotificationCenter.default.addObserver(
             forName: LiveTVChannelEdits.customGroupsChangedNotification, object: nil, queue: .main
@@ -239,10 +274,11 @@ final class LiveTVStore: ObservableObject {
     /// The channels a group shows (also for groups not selected, e.g. the
     /// guide over the full-screen picture).
     func channels(inGroup groupID: String) -> [XtreamLiveChannel] {
+        if lockedGroupIDs.contains(groupID) { return [] }
         switch groupID {
         case LiveTVGroup.allID: return allVisible
-        case LiveTVGroup.favoritesID: return favoriteIDs.compactMap { channelsByID[$0] }
-        case LiveTVGroup.recentID: return recentIDs.compactMap { channelsByID[$0] }
+        case LiveTVGroup.favoritesID: return unlockedChannels(favoriteIDs)
+        case LiveTVGroup.recentID: return unlockedChannels(recentIDs)
         case LiveTVGroup.searchID: return searchResults
         case _ where LiveTVCustomGroup.isCustom(groupID): return customChannels(groupID)
         default: return (hidesSeparators ? channelsByGroupWithoutSeparators : channelsByGroup)[groupID] ?? []
@@ -254,7 +290,50 @@ final class LiveTVStore: ObservableObject {
     private func customChannels(_ groupID: String) -> [XtreamLiveChannel] {
         let ids = LiveTVChannelEdits.shared.customGroup(id: groupID)?.channelIDs ?? []
         let skip = hidesSeparators ? separatorIDs : []
-        return ids.compactMap { skip.contains($0) ? nil : channelsByID[$0] }
+        return unlockedChannels(ids.filter { !skip.contains($0) })
+    }
+
+    /// The channels for these ids, without ones in a locked group.
+    private func unlockedChannels(_ ids: [Int], locked: Set<String>? = nil) -> [XtreamLiveChannel] {
+        let locked = locked ?? lockedGroupIDs
+        return ids.compactMap { id in
+            guard let channel = channelsByID[id] else { return nil }
+            return !locked.isEmpty && locked.contains(groupID(of: channel)) ? nil : channel
+        }
+    }
+
+    private func groupID(of channel: XtreamLiveChannel) -> String {
+        let category = channel.categoryID ?? ""
+        return knownCategoryIDs.contains(category) ? category : LiveTVGroup.otherID
+    }
+
+    private func isLocked(_ channel: XtreamLiveChannel) -> Bool {
+        !lockedGroupIDs.isEmpty && lockedGroupIDs.contains(groupID(of: channel))
+    }
+
+    /// The group needs the PIN now.
+    func isLocked(groupID: String) -> Bool { lockedGroupIDs.contains(groupID) }
+
+    /// Right after a group was unlocked: the lists at once, before the
+    /// change notice comes round.
+    func refreshLocks() {
+        guard !channels.isEmpty else { return }
+        rebuildGroups()
+        listRevision &+= 1
+    }
+
+    /// Provider groups and yours that need the PIN; adult names count by
+    /// the shown and the provider's name.
+    private func computeLockedGroups(ignoringUnlocked: Bool = false) -> Set<String> {
+        let parental = LiveTVParentalControls.shared
+        guard parental.isEnabled else { return [] }
+        var providerNames: [String: String] = [:]
+        if parental.lockAdult {
+            for category in rawCategories where providerNames[category.id] == nil { providerNames[category.id] = category.name }
+        }
+        var candidates = categoryGroups.map { (id: $0.id, name: $0.name + " " + (providerNames[$0.id] ?? "")) }
+        candidates += LiveTVChannelEdits.shared.customGroups.map { (id: $0.id, name: $0.name) }
+        return parental.lockedIDs(candidates, ignoringUnlocked: ignoringUnlocked)
     }
 
     /// The group open now is one of yours.
@@ -370,8 +449,8 @@ final class LiveTVStore: ObservableObject {
     private func publishHomeChannels() {
         guard !channelsByID.isEmpty else { return }
         LiveTVHomeRowModel.shared.remember(
-            favorites: favoriteIDs.compactMap { channelsByID[$0] },
-            recent: recentIDs.compactMap { channelsByID[$0] })
+            favorites: unlockedChannels(favoriteIDs, locked: savedLockedGroupIDs),
+            recent: unlockedChannels(recentIDs, locked: savedLockedGroupIDs))
     }
 
     func setHidden(_ ids: Set<String>, hidden: Bool) {
@@ -405,14 +484,17 @@ final class LiveTVStore: ObservableObject {
     /// Sidebar: Search (while searching), Favorites, Recently watched, All,
     /// then the provider's groups that aren't hidden.
     private func rebuildGroups() {
+        lockedGroupIDs = computeLockedGroups()
+        savedLockedGroupIDs = LiveTVParentalControls.shared.unlocked.isEmpty
+            ? lockedGroupIDs : computeLockedGroups(ignoringUnlocked: true)
         publishHomeChannels()
         let hideSeparators = hidesSeparators
         let separators = separatorIDs
-        allVisible = hiddenGroupIDs.isEmpty && !hideSeparators ? channels : channels.filter { channel in
+        let locked = lockedGroupIDs
+        allVisible = hiddenGroupIDs.isEmpty && !hideSeparators && locked.isEmpty ? channels : channels.filter { channel in
             if hideSeparators, separators.contains(channel.streamID) { return false }
-            let category = channel.categoryID ?? ""
-            let group = knownCategoryIDs.contains(category) ? category : LiveTVGroup.otherID
-            return !hiddenGroupIDs.contains(group)
+            let group = groupID(of: channel)
+            return !hiddenGroupIDs.contains(group) && !locked.contains(group)
         }
         if !searchQuery.isEmpty {
             searchResults = allVisible.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
@@ -424,13 +506,13 @@ final class LiveTVStore: ObservableObject {
                 name: L10n.string("livetv_search_group", fallback: "Search") + ": " + searchQuery,
                 count: searchResults.count))
         }
-        let favorites = favoriteIDs.filter { channelsByID[$0] != nil }.count
+        let favorites = unlockedChannels(favoriteIDs).count
         if favorites > 0 {
             result.append(LiveTVGroup(
                 id: LiveTVGroup.favoritesID,
                 name: L10n.string("livetv_favorites", fallback: "Favorites"), count: favorites))
         }
-        let recent = recentIDs.filter { channelsByID[$0] != nil }.count
+        let recent = unlockedChannels(recentIDs).count
         if recent > 0 {
             result.append(LiveTVGroup(
                 id: LiveTVGroup.recentID,
@@ -440,18 +522,23 @@ final class LiveTVStore: ObservableObject {
             result.append(LiveTVGroup(id: LiveTVGroup.allID, name: groupNames.all, count: allVisible.count))
         }
         let provider = categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }.map { group in
-            guard hideSeparators else { return group }
-            return LiveTVGroup(id: group.id, name: group.name, count: channelsByGroupWithoutSeparators[group.id]?.count ?? 0)
+            var shown = hideSeparators
+                ? LiveTVGroup(id: group.id, name: group.name, count: channelsByGroupWithoutSeparators[group.id]?.count ?? 0)
+                : group
+            shown.locked = locked.contains(group.id)
+            return shown
         }
         // Your own groups first, then the provider's (step 10c); Reorder
         // Groups arranges them together.
         let edits = LiveTVChannelEdits.shared
         let custom = edits.customGroups.map { group in
-            LiveTVGroup(id: group.id, name: group.name, count: customChannels(group.id).count)
+            LiveTVGroup(
+                id: group.id, name: group.name, count: customChannels(group.id).count,
+                locked: locked.contains(group.id))
         }
         result += custom.isEmpty ? provider : LiveTVListOrder.ordered(custom + provider, saved: edits.edits.groupOrder, id: \.id)
         groups = result
-        if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) {
+        if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) || locked.contains(selectedGroupID) {
             selectedGroupID = LiveTVGroup.allID
         }
     }
@@ -460,21 +547,38 @@ final class LiveTVStore: ObservableObject {
     /// the app runs).
     func reloadAccount() {
         let stored = XtreamAccountStore.load()
-        guard stored != account else { return }
+        guard stored != account || needsReload else {
+            refreshIfStale()
+            return
+        }
+        needsReload = false
+        // The store lives on between visits and profiles: nothing of the
+        // last account or profile may stay, and its loads must not land.
+        loadTask?.cancel()
+        renameTask?.cancel()
         account = stored
         userInfo = nil
         channels = []
         rawCategories = []
         rawChannels = []
-        renameTask?.cancel()
         channelsByGroup = [:]
         channelsByID = [:]
+        knownCategoryIDs = []
+        allVisible = []
+        separatorIDs = []
+        channelsByGroupWithoutSeparators = [:]
+        lockedGroupIDs = []
+        savedLockedGroupIDs = []
+        allowedFormats = []
+        lastUpdated = nil
         categoryGroups = []
         searchQuery = ""
         searchResults = []
+        state = .idle
         loadPreferences()
         groups = []
         selectedGroupID = LiveTVGroup.allID
+        listRevision &+= 1
         guard let stored else { return }
         // Decoding and sorting a large list blocks for seconds; on the main
         // thread tvOS kills the app (seen with ~56k channels).
@@ -489,7 +593,7 @@ final class LiveTVStore: ObservableObject {
                     categories: cache.categories, channels: cache.channels, names: names,
                     edits: LiveTVChannelEdits.read()))
             }.value
-            guard !Task.isCancelled, let self, self.account == stored else { return }
+            guard !Task.isCancelled, let self, self.account == stored, !self.needsReload else { return }
             self.state = .idle
             guard let prepared else {
                 self.refresh()
@@ -560,9 +664,20 @@ final class LiveTVStore: ObservableObject {
     /// Loads account, categories, then channels one after another, like
     /// Android and TiviMate. Several requests at once (right after a login)
     /// made some panels answer HTTP 404; each step also gets one retry.
+    /// Live TV opened again with the list kept: a new list from the
+    /// provider in the background once the kept one is old.
+    private func refreshIfStale() {
+        guard state == .idle, !channels.isEmpty, let lastUpdated,
+              Date().timeIntervalSince(lastUpdated) > LiveTVCache.maxAge else { return }
+        refresh()
+    }
+
     func refresh(verifiedInfo: XtreamUserInfo? = nil) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
+        // Where this account's list is kept, fixed now (the profile may
+        // change while it loads).
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope)
         loadTask?.cancel()
         state = .loading
         loadTask = Task { [weak self] in
@@ -577,13 +692,12 @@ final class LiveTVStore: ObservableObject {
                 // Optional, as on Android: without categories everything lands in "Other".
                 let categories = (try? await Self.withRetry { try await client.liveCategories() }) ?? []
                 let channels = try await Self.withRetry { try await client.liveChannels() }
-                let scopeURL = await MainActor.run { LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope) }
                 let names = await MainActor.run { LiveTVStore.groupNamesValue() }
                 let edits = LiveTVChannelEdits.read()
                 let prepared = await Task.detached(priority: .userInitiated) {
                     LiveTVStore.prepare(categories: categories, channels: channels, names: names, edits: edits)
                 }.value
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.account == account, !self.needsReload else { return }
                 self.renameTask?.cancel()
                 self.rawCategories = categories
                 self.rawChannels = channels
@@ -602,7 +716,7 @@ final class LiveTVStore: ObservableObject {
                 )
                 Task.detached(priority: .utility) { cache.save(to: scopeURL) }
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.account == account else { return }
                 self.state = .failed(error.localizedDescription)
             }
         }
@@ -612,9 +726,10 @@ final class LiveTVStore: ObservableObject {
         guard let account else { return }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         Task { [weak self] in
-            guard let info = try? await client.login() else { return }
-            self?.userInfo = info
-            self?.allowedFormats = info.allowedOutputFormats
+            guard let info = try? await client.login(),
+                  let self, self.account == account, !self.needsReload else { return }
+            self.userInfo = info
+            self.allowedFormats = info.allowedOutputFormats
         }
     }
 
@@ -778,7 +893,7 @@ final class LiveTVStore: ObservableObject {
         refreshGuide(force: false)
         if restoring, LiveTVSettings.shared.rememberLastGroup,
            let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
-           groups.contains(where: { $0.id == last }) {
+           groups.contains(where: { $0.id == last }), !lockedGroupIDs.contains(last) {
             selectedGroupID = last
         } else if !groups.contains(where: { $0.id == selectedGroupID }) {
             selectedGroupID = LiveTVGroup.allID

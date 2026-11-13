@@ -980,8 +980,8 @@ enum LiveTVFocusLinks {
     fileprivate static func touchFinished() {
         touchActiveSince = nil
         touchEnded = Date()
-        guideGate?.holdIfClosed()
-        groupGate?.holdIfClosed()
+        guideGate?.fingerLifted()
+        groupGate?.fingerLifted()
     }
 }
 
@@ -997,6 +997,10 @@ final class LiveTVLeftGate: UIFocusGuide {
     var canOpen: () -> Bool = { true }
     private(set) var isOpen = false
     private var timer: Timer?
+    /// The pause is over but a finger was still on the remote: opens the
+    /// moment it lifts, without a second pause (that one swallowed the
+    /// next swipe, so Left sometimes took two).
+    private var waitingForLift = false
 
     /// Closes now and opens after the pause.
     func hold() {
@@ -1014,14 +1018,34 @@ final class LiveTVLeftGate: UIFocusGuide {
     func close() {
         timer?.invalidate()
         timer = nil
+        waitingForLift = false
         isOpen = false
         refresh()
     }
 
+    /// The finger left the remote: open now if the pause already ran out
+    /// while it rested there, otherwise the pause starts again (a fast
+    /// swipe's momentum still stops here).
+    func fingerLifted() {
+        guard !isOpen else { return }
+        if waitingForLift {
+            waitingForLift = false
+            guard canOpen() else { return }
+            isOpen = true
+            refresh()
+        } else {
+            hold()
+        }
+    }
+
     private func tryOpen() {
         timer = nil
-        // Still swiping: opens once the finger is off (touchFinished).
-        guard canOpen(), !LiveTVFocusLinks.isTouching else { return }
+        guard canOpen() else { return }
+        // Still on the remote: opens once the finger is off (fingerLifted).
+        guard !LiveTVFocusLinks.isTouching else {
+            waitingForLift = true
+            return
+        }
         isOpen = true
         refresh()
     }

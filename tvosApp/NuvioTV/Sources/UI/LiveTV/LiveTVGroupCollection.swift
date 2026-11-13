@@ -15,6 +15,10 @@ struct LiveTVGroupCollection: UIViewRepresentable {
     /// Your own groups (step 10c).
     var onNewGroup: () -> Void = {}
     var onDeleteGroup: (LiveTVGroup) -> Void = { _ in }
+    /// Parental controls (step 11): lock a group, or take your lock off
+    /// (asks for the PIN). Not offered without a PIN.
+    var onLock: (LiveTVGroup) -> Void = { _ in }
+    var onRemoveLock: (LiveTVGroup) -> Void = { _ in }
     /// Reorder Groups (step 10b): set while it runs, to the group picked up
     /// first.
     var reorderStartID: String?
@@ -50,6 +54,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         context.coordinator.onRename = onRename
         context.coordinator.onNewGroup = onNewGroup
         context.coordinator.onDeleteGroup = onDeleteGroup
+        context.coordinator.onLock = onLock
+        context.coordinator.onRemoveLock = onRemoveLock
         context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: view)
         let container = LiveTVGroupContainer(collectionView: view)
@@ -80,6 +86,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         context.coordinator.onRename = onRename
         context.coordinator.onNewGroup = onNewGroup
         context.coordinator.onDeleteGroup = onDeleteGroup
+        context.coordinator.onLock = onLock
+        context.coordinator.onRemoveLock = onRemoveLock
         context.coordinator.setReorderCallbacks(start: onReorderStart, picked: onReorderPicked, done: onReorderDone)
         context.coordinator.update(groups: groups, selectedID: selectedID, onSelect: onSelect, in: container.collectionView)
         context.coordinator.updateReorder(reorderStartID, in: container.collectionView)
@@ -94,6 +102,8 @@ struct LiveTVGroupCollection: UIViewRepresentable {
         var onRename: (LiveTVGroup) -> Void = { _ in }
         var onNewGroup: () -> Void = {}
         var onDeleteGroup: (LiveTVGroup) -> Void = { _ in }
+        var onLock: (LiveTVGroup) -> Void = { _ in }
+        var onRemoveLock: (LiveTVGroup) -> Void = { _ in }
         var showCounts = true
         private var onReorderStart: (LiveTVGroup) -> Void = { _ in }
         private var onReorderPicked: (String?) -> Void = { _ in }
@@ -236,6 +246,9 @@ struct LiveTVGroupCollection: UIViewRepresentable {
             let group = groups[indexPath.item]
             let several = groups.filter { !$0.isSpecial }.count > 1
             let isCustom = LiveTVCustomGroup.isCustom(group.id)
+            let parental = LiveTVParentalControls.shared
+            let lockSet = parental.isLockSet(group.id)
+            let canLock = parental.isEnabled
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 let newGroup = UIAction(
                     title: L10n.string("livetv_group_new", fallback: "New Group"),
@@ -257,6 +270,17 @@ struct LiveTVGroupCollection: UIViewRepresentable {
                     ) { _ in self?.onDeleteGroup(group) })
                 }
                 children.append(newGroup)
+                if canLock {
+                    children.append(lockSet
+                        ? UIAction(
+                            title: L10n.string("livetv_parental_unlock_group", fallback: "Remove Parental Lock"),
+                            image: UIImage(systemName: "lock.open")
+                        ) { _ in self?.onRemoveLock(group) }
+                        : UIAction(
+                            title: L10n.string("livetv_parental_lock_group", fallback: "Lock with PIN"),
+                            image: UIImage(systemName: "lock")
+                        ) { _ in self?.onLock(group) })
+                }
                 if several {
                     children.append(UIAction(
                         title: L10n.string("livetv_reorder_groups", fallback: "Reorder Groups"),
@@ -336,7 +360,11 @@ final class LiveTVGroupCell: UICollectionViewCell {
     private let background = UIView()
     private let nameLabel = UILabel()
     private let countLabel = UILabel()
+    /// Parental lock (step 11): in place of the count.
+    private let lockView = UIImageView(image: UIImage(systemName: "lock.fill"))
     private var isGroupSelected = false
+    private var showsCount = true
+    private var isLocked = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -351,7 +379,12 @@ final class LiveTVGroupCell: UICollectionViewCell {
         countLabel.setContentHuggingPriority(.required, for: .horizontal)
         countLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let stack = UIStackView(arrangedSubviews: [nameLabel, countLabel])
+        lockView.contentMode = .scaleAspectFit
+        lockView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        lockView.setContentHuggingPriority(.required, for: .horizontal)
+        lockView.isHidden = true
+
+        let stack = UIStackView(arrangedSubviews: [nameLabel, countLabel, lockView])
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 16
@@ -377,11 +410,15 @@ final class LiveTVGroupCell: UICollectionViewCell {
         nameLabel.text = group.name
         countLabel.text = group.count.formatted()
         isGroupSelected = selected
+        isLocked = group.locked
+        lockView.isHidden = !isLocked
+        countLabel.isHidden = !showsCount || isLocked
         applyStyle()
     }
 
     func setShowsCount(_ shows: Bool) {
-        countLabel.isHidden = !shows
+        showsCount = shows
+        countLabel.isHidden = !shows || isLocked
     }
 
     /// Picked up in Reorder Groups (step 10b).
@@ -410,6 +447,7 @@ final class LiveTVGroupCell: UICollectionViewCell {
         nameLabel.font = .systemFont(ofSize: 24, weight: isGroupSelected ? .bold : .regular)
         nameLabel.textColor = focused ? .black : .white
         countLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
+        lockView.tintColor = countLabel.textColor
         transform = focused ? CGAffineTransform(scaleX: 1.02, y: 1.02) : .identity
     }
 }
