@@ -104,31 +104,41 @@ final class OnDemandLibrary: ObservableObject {
             var errors: [String] = []
             for kind in OnDemandKind.allCases {
                 guard !Task.isCancelled else { return }
-                // As the guide's: how much is in, then how many are saved.
+                // As Jellyfin's: "12,500 / 45,312" while it comes in (the
+                // total from the last time; the list has none), then saved.
                 let loading = kind == .movie
                     ? L10n.string("livetv_ondemand_loading_movies", fallback: "Loading movies")
                     : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")
+                let saving = kind == .movie
+                    ? L10n.string("livetv_ondemand_saving_movies", fallback: "Saving movies")
+                    : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")
+                let lastKey = "nuvio.tv.livetv.vodLastCount." + kind.rawValue
+                let previous = ProfileSettings.current.integer(forKey: lastKey)
                 self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
                     let data = try await client.onDemandList(kind) { titles in
                         Task { @MainActor in
                             guard let self, self.importTask != nil, titles > 0 else { return }
-                            self.status = .importing(loading + " \u{00B7} " + L10n.format(
-                                "livetv_ondemand_titles_count", fallback: "%@ titles", titles.formatted()), fraction: nil)
+                            self.status = .importing(Self.progressText(loading, titles, of: previous), fraction: nil)
                         }
                     }
-                    let ok = await Task.detached(priority: .utility) { () -> Bool in
-                        guard let list = OnDemandParse.list(data, kind: kind) else { return false }
-                        let saving = L10n.format(
-                            kind == .movie ? "livetv_ondemand_saving_movies" : "livetv_ondemand_saving_series",
-                            fallback: kind == .movie ? "Saving movies \u{00B7} %@ titles" : "Saving series \u{00B7} %@ titles",
-                            list.items.count.formatted())
-                        Task { @MainActor in self?.status = .importing(saving, fraction: nil) }
-                        database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags)
-                        return true
+                    let saved = await Task.detached(priority: .utility) { () -> Int? in
+                        guard let list = OnDemandParse.list(data, kind: kind) else { return nil }
+                        let total = list.items.count
+                        database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags) { done in
+                            Task { @MainActor in
+                                guard let self, self.importTask != nil else { return }
+                                self.status = .importing(Self.progressText(saving, done, of: total), fraction: nil)
+                            }
+                        }
+                        return total
                     }.value
-                    if !ok { errors.append(kind == .movie ? "movies" : "series") }
+                    if let saved {
+                        ProfileSettings.current.set(saved, forKey: lastKey)
+                    } else {
+                        errors.append(kind == .movie ? "movies" : "series")
+                    }
                 } catch {
                     errors.append(error.localizedDescription)
                 }
@@ -145,6 +155,13 @@ final class OnDemandLibrary: ObservableObject {
                 self.publishCounts()
             }
         }
+    }
+
+    /// "Loading movies · 12,500 / 45,312", or without the total when
+    /// there's none (or it's passed).
+    nonisolated static func progressText(_ label: String, _ done: Int, of total: Int) -> String {
+        let count = total > done ? "\(done.formatted()) / \(total.formatted())" : done.formatted()
+        return label + " \u{00B7} " + count
     }
 
     private func publishCounts() {
@@ -243,7 +260,10 @@ final class OnDemandDatabase: @unchecked Sendable {
     /// One kind's list and categories (in the provider's order), replaced
     /// in one transaction. The tags learned from the list are kept for
     /// cleaning titles later.
-    func replace(kind: OnDemandKind, items: [OnDemandItem], categories: [XtreamCategory], tags: Set<String>) {
+    func replace(
+        kind: OnDemandKind, items: [OnDemandItem], categories: [XtreamCategory], tags: Set<String>,
+        progress: ((Int) -> Void)? = nil
+    ) {
         lock.lock(); defer { lock.unlock() }
         sqlite3_exec(db, "BEGIN", nil, nil, nil)
         run("DELETE FROM items WHERE kind = ?", kind.rawValue)
@@ -253,7 +273,8 @@ final class OnDemandDatabase: @unchecked Sendable {
         // The language (step 12c): from the name's tag, else the category.
         let categoryNames = Dictionary(categories.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
-            for item in items {
+            for (index, item) in items.enumerated() {
+                if index % 2000 == 0 { progress?(index) }
                 sqlite3_reset(statement)
                 sqlite3_bind_text(statement, 1, kind.rawValue, -1, onDemandTransient)
                 sqlite3_bind_int64(statement, 2, Int64(item.id))
