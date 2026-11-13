@@ -104,23 +104,20 @@ final class OnDemandLibrary: ObservableObject {
             var errors: [String] = []
             for kind in OnDemandKind.allCases {
                 guard !Task.isCancelled else { return }
-                // As Jellyfin's: "12,500 / 45,312" while it comes in (the
-                // total from the last time; the list has none), then saved.
+                // As Jellyfin's: how many are in, then how many are saved.
                 let loading = kind == .movie
                     ? L10n.string("livetv_ondemand_loading_movies", fallback: "Loading movies")
                     : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")
                 let saving = kind == .movie
                     ? L10n.string("livetv_ondemand_saving_movies", fallback: "Saving movies")
                     : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")
-                let lastKey = "nuvio.tv.livetv.vodLastCount." + kind.rawValue
-                let previous = ProfileSettings.current.integer(forKey: lastKey)
                 self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
                     let data = try await client.onDemandList(kind) { titles in
                         Task { @MainActor in
                             guard let self, self.importTask != nil, titles > 0 else { return }
-                            self.status = .importing(Self.progressText(loading, titles, of: previous), fraction: nil)
+                            self.status = .importing(Self.progressText(loading, titles), fraction: nil)
                         }
                     }
                     let saved = await Task.detached(priority: .utility) { () -> Int? in
@@ -129,16 +126,12 @@ final class OnDemandLibrary: ObservableObject {
                         database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags) { done in
                             Task { @MainActor in
                                 guard let self, self.importTask != nil else { return }
-                                self.status = .importing(Self.progressText(saving, done, of: total), fraction: nil)
+                                self.status = .importing(Self.progressText(saving, done), fraction: nil)
                             }
                         }
                         return total
                     }.value
-                    if let saved {
-                        ProfileSettings.current.set(saved, forKey: lastKey)
-                    } else {
-                        errors.append(kind == .movie ? "movies" : "series")
-                    }
+                    if saved == nil { errors.append(kind == .movie ? "movies" : "series") }
                 } catch {
                     errors.append(error.localizedDescription)
                 }
@@ -157,11 +150,9 @@ final class OnDemandLibrary: ObservableObject {
         }
     }
 
-    /// "Loading movies · 12,500 / 45,312", or without the total when
-    /// there's none (or it's passed).
-    nonisolated static func progressText(_ label: String, _ done: Int, of total: Int) -> String {
-        let count = total > done ? "\(done.formatted()) / \(total.formatted())" : done.formatted()
-        return label + " \u{00B7} " + count
+    /// "Loading movies · 12,500".
+    nonisolated static func progressText(_ label: String, _ done: Int) -> String {
+        label + " \u{00B7} " + done.formatted()
     }
 
     private func publishCounts() {
