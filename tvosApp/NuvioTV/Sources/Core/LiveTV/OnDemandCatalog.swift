@@ -1,0 +1,290 @@
+import Foundation
+
+/// The provider's movies and series (step 12, Android's "On Demand"):
+/// what's kept of each, and how a title in Nuvio finds its copy at the
+/// provider. Pure, so the logic tests run it on Linux.
+enum OnDemandKind: String, Sendable, CaseIterable {
+    case movie
+    case series
+}
+
+struct OnDemandItem: Sendable, Equatable {
+    let kind: OnDemandKind
+    /// `stream_id` (movies) or `series_id` (series).
+    let id: Int
+    let name: String
+    /// `OnDemandTitle.key(name)`: what titles are matched by.
+    let key: String
+    let categoryID: String
+    /// Movies: `container_extension`.
+    let ext: String?
+    let tmdb: Int?
+    let year: Int?
+}
+
+/// One episode from `get_series_info`.
+struct OnDemandEpisode: Sendable, Equatable {
+    let id: Int
+    let season: Int
+    let episode: Int
+    let ext: String
+    let title: String
+}
+
+enum OnDemandTitle {
+    /// Words that say nothing about which title it is.
+    private static let noise: Set<String> = [
+        "4k", "uhd", "fhd", "hd", "sd", "hq", "2160p", "1080p", "720p", "480p", "hevc", "x265", "x264", "h264", "h265",
+        "multi", "sub", "subs", "dub", "dubbed", "vostfr", "remux", "bluray", "webrip", "webdl", "hdr", "dv", "imax",
+    ]
+
+    /// Provider tags before the title ("EN - ", "|DE| ", "[US] ", "NF: "):
+    /// a short leading part, cut off at " - ", "|" or ":".
+    static func leadingTag(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        for separator in [" - ", "|", ": ", " : "] {
+            guard let range = trimmed.range(of: separator) else { continue }
+            let head = trimmed[..<range.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: " |[]"))
+            let rest = trimmed[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !head.isEmpty, !rest.isEmpty, head.split(separator: " ").count <= 4, head.count <= 24 else { continue }
+            return head.lowercased()
+        }
+        return nil
+    }
+
+    /// Tags that start many names of one catalog (as Android: at least
+    /// max(15, total / 500) times): those come off before matching.
+    static func learnTags(_ names: [String]) -> Set<String> {
+        var counts: [String: Int] = [:]
+        for name in names {
+            if let tag = leadingTag(name) { counts[tag, default: 0] += 1 }
+        }
+        let needed = max(15, names.count / 500)
+        return Set(counts.filter { $0.value >= needed }.map(\.key))
+    }
+
+    /// The name without a learned tag, brackets ("[US]", "(2021)"), a year
+    /// at the end and quality words; lowercased letters and digits only.
+    static func key(_ name: String, tags: Set<String> = []) -> String {
+        var text = name.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("|"), let close = text.dropFirst().firstIndex(of: "|") {
+            text = String(text[text.index(after: close)...])
+        }
+        if let tag = leadingTag(text), tags.contains(tag) {
+            for separator in [" - ", "|", ": ", " : "] {
+                if let range = text.range(of: separator) {
+                    text = String(text[range.upperBound...])
+                    break
+                }
+            }
+        }
+        text = stripBrackets(text.lowercased())
+        var words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        words.removeAll { noise.contains($0) }
+        if words.count > 1, let last = words.last, isYear(last) { words.removeLast() }
+        return words.joined()
+    }
+
+    /// A year in brackets or at the end of the name; "1917" or "2001: A
+    /// Space Odyssey" alone are titles, not years.
+    static func yearInName(_ name: String) -> Int? {
+        let text = name.trimmingCharacters(in: .whitespaces)
+        if let open = text.lastIndex(where: { $0 == "(" || $0 == "[" }) {
+            let inside = text[text.index(after: open)...].prefix(4)
+            if isYear(String(inside)) { return Int(inside) }
+        }
+        let words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        if words.count > 1, let last = words.last, isYear(String(last)) { return Int(last) }
+        return nil
+    }
+
+    /// The first 19xx / 20xx year in a date or year field, not after next year.
+    static func year(field: String?, now: Date = Date()) -> Int? {
+        guard let field else { return nil }
+        let digits = Array(field)
+        guard digits.count >= 4 else { return nil }
+        let thisYear = Calendar(identifier: .gregorian).component(.year, from: now)
+        for start in 0...(digits.count - 4) {
+            let candidate = String(digits[start..<(start + 4)])
+            if isYear(candidate), let year = Int(candidate), year <= thisYear + 1 { return year }
+        }
+        return nil
+    }
+
+    static func isYear(_ text: String) -> Bool {
+        text.count == 4 && (text.hasPrefix("19") || text.hasPrefix("20")) && text.allSatisfy(\.isNumber)
+    }
+
+    private static func stripBrackets(_ text: String) -> String {
+        var out = ""
+        var depth = 0
+        for char in text {
+            if char == "(" || char == "[" || char == "{" { depth += 1; out.append(" "); continue }
+            if char == ")" || char == "]" || char == "}" { depth = max(0, depth - 1); out.append(" "); continue }
+            if depth == 0 { out.append(char) }
+        }
+        return out
+    }
+
+    /// "4K", "1080p", "720p" or nil, read from the provider's name.
+    static func quality(_ name: String) -> String? {
+        let lower = name.lowercased()
+        let words = Set(lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        if !words.isDisjoint(with: ["4k", "uhd", "2160p"]) { return "4K" }
+        if !words.isDisjoint(with: ["1080p", "fhd"]) { return "1080p" }
+        if !words.isDisjoint(with: ["720p", "hd"]) { return "720p" }
+        if words.contains("sd") || words.contains("480p") { return "SD" }
+        return nil
+    }
+
+    static func qualityRank(_ quality: String?) -> Int {
+        switch quality {
+        case "4K": return 0
+        case "1080p": return 1
+        case "720p": return 2
+        case "SD": return 4
+        default: return 3
+        }
+    }
+}
+
+enum OnDemandMatch {
+    /// The provider's copies of a title: by TMDB id when both sides have
+    /// one, otherwise by name with the year within one (or unknown on either
+    /// side). Best quality first, at most `limit`.
+    static func copies(
+        of candidates: [OnDemandItem], name: String, year: Int?, tmdb: Int?, limit: Int = 6
+    ) -> [OnDemandItem] {
+        let key = OnDemandTitle.key(name)
+        var found: [OnDemandItem] = []
+        if let tmdb {
+            found = candidates.filter { $0.tmdb == tmdb }
+        }
+        if found.isEmpty, !key.isEmpty {
+            found = candidates.filter { item in
+                // A copy with another TMDB id is another title of that name.
+                if let tmdb, let itemTMDB = item.tmdb, itemTMDB != tmdb { return false }
+                guard item.key == key else { return false }
+                guard let year, let itemYear = item.year else { return true }
+                return abs(year - itemYear) <= 1
+            }
+        }
+        var seen = Set<Int>()
+        return found
+            .filter { seen.insert($0.id).inserted }
+            .sorted { lhs, rhs in
+                let l = OnDemandTitle.qualityRank(OnDemandTitle.quality(lhs.name))
+                let r = OnDemandTitle.qualityRank(OnDemandTitle.quality(rhs.name))
+                if l != r { return l < r }
+                return lhs.name != rhs.name ? lhs.name < rhs.name : lhs.id < rhs.id
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// The episode in a series' list. When the provider has only one
+    /// season, the episode number alone is enough (as on Android).
+    static func episode(_ episodes: [OnDemandEpisode], season: Int, episode: Int) -> OnDemandEpisode? {
+        if let exact = episodes.first(where: { $0.season == season && $0.episode == episode }) { return exact }
+        let seasons = Set(episodes.map(\.season))
+        guard seasons.count == 1 else { return nil }
+        return episodes.first { $0.episode == episode }
+    }
+}
+
+enum OnDemandParse {
+    /// `get_series_info` → its episodes, by season then number.
+    static func episodes(_ data: Data) -> [OnDemandEpisode] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        var lists: [(String, [[String: Any]])] = []
+        if let bySeason = root["episodes"] as? [String: Any] {
+            for (key, value) in bySeason {
+                if let list = value as? [[String: Any]] { lists.append((key, list)) }
+            }
+        } else if let flat = root["episodes"] as? [[String: Any]] {
+            lists.append(("", flat))
+        }
+        var out: [OnDemandEpisode] = []
+        for (seasonKey, list) in lists {
+            for (index, entry) in list.enumerated() {
+                guard let id = int(entry["id"]) else { continue }
+                let season = int(entry["season"]) ?? Int(seasonKey) ?? 1
+                let number = int(entry["episode_num"]) ?? index + 1
+                let ext = (entry["container_extension"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "mp4"
+                let title = (entry["title"] as? String) ?? "Episode \(number)"
+                out.append(OnDemandEpisode(id: id, season: season, episode: number, ext: ext, title: title))
+            }
+        }
+        return out.sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
+    }
+
+    /// Ids and numbers come as numbers or strings, depending on the panel.
+    static func int(_ value: Any?) -> Int? {
+        switch value {
+        case let number as Int: return number
+        case let number as Double: return Int(number)
+        case let text as String: return Int(text.trimmingCharacters(in: .whitespaces))
+        case let number as NSNumber: return number.intValue
+        default: return nil
+        }
+    }
+}
+
+/// One entry of `get_vod_streams` / `get_series`, read leniently: panels
+/// send ids and years as numbers or strings, and some fields are missing.
+struct OnDemandRawItem: Decodable, Sendable {
+    let id: Int?
+    let name: String
+    let categoryID: String
+    let ext: String?
+    let tmdb: Int?
+    let yearField: String?
+
+    private struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ string: String) { stringValue = string }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Key.self)
+        func text(_ key: String) -> String? {
+            let k = Key(key)
+            if let value = try? c.decodeIfPresent(String.self, forKey: k) { return value }
+            if let value = try? c.decodeIfPresent(Int.self, forKey: k) { return String(value) }
+            if let value = try? c.decodeIfPresent(Double.self, forKey: k) { return String(Int(value)) }
+            return nil
+        }
+        func number(_ key: String) -> Int? {
+            text(key).flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        }
+        id = number("stream_id") ?? number("series_id")
+        let rawName = (text("name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        name = rawName.isEmpty ? (text("title") ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : rawName
+        categoryID = text("category_id") ?? ""
+        let extension_ = text("container_extension")?.trimmingCharacters(in: .whitespaces)
+        ext = extension_?.isEmpty == false ? extension_ : nil
+        let tmdbID = number("tmdb") ?? number("tmdb_id")
+        tmdb = tmdbID == 0 ? nil : tmdbID
+        yearField = ["year", "releaseDate", "release_date"].compactMap { text($0) }.first { !$0.isEmpty }
+    }
+}
+
+extension OnDemandParse {
+    /// A whole list → items with their match keys (tags learned from the
+    /// list itself). Entries without id or name are left out.
+    static func items(_ data: Data, kind: OnDemandKind) -> [OnDemandItem]? {
+        guard let raw = try? JSONDecoder().decode([OnDemandRawItem].self, from: data) else { return nil }
+        let usable = raw.filter { $0.id != nil && !$0.name.isEmpty }
+        let tags = OnDemandTitle.learnTags(usable.map(\.name))
+        return usable.map { entry in
+            OnDemandItem(
+                kind: kind, id: entry.id!, name: entry.name,
+                key: OnDemandTitle.key(entry.name, tags: tags),
+                categoryID: entry.categoryID, ext: entry.ext, tmdb: entry.tmdb,
+                year: OnDemandTitle.year(field: entry.yearField) ?? OnDemandTitle.yearInName(entry.name))
+        }
+    }
+}

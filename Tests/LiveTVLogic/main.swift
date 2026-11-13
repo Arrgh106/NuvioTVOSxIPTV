@@ -420,5 +420,46 @@ check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult:
 check(LiveTVParental.lockout(afterFailures: 4) == 0 && LiveTVParental.lockout(afterFailures: 5) == 30, "wait after 5 wrong PINs")
 check(LiveTVParental.lockout(afterFailures: 6) == 60 && LiveTVParental.lockout(afterFailures: 30) == 900, "wait doubles, at most 15 min")
 
+// MARK: On Demand (step 12a)
+
+check(OnDemandTitle.key("EN - Dune (2021)", tags: ["en"]) == "dune", "learned tag, year in brackets off")
+check(OnDemandTitle.key("|DE| Der Pate") == "derpate", "pipe tag off")
+check(OnDemandTitle.key("Dune 2021 4K") == "dune", "year and quality off")
+check(OnDemandTitle.key("1917") == "1917", "a year alone is the title")
+check(OnDemandTitle.key("EN - Dune") == "endune", "a tag not learned stays")
+check(OnDemandTitle.yearInName("Dune (2021)") == 2021 && OnDemandTitle.yearInName("Dune 2021") == 2021, "year in name")
+check(OnDemandTitle.yearInName("1917") == nil && OnDemandTitle.yearInName("2001: A Space Odyssey") == nil, "titles are no years")
+check(OnDemandTitle.year(field: "2021-10-22") == 2021 && OnDemandTitle.year(field: nil) == nil && OnDemandTitle.year(field: "abc") == nil, "year field")
+let tagNames = (0..<20).map { "EN - Film \($0)" } + ["NF: One", "NF: Two"]
+check(OnDemandTitle.learnTags(tagNames) == ["en"], "tags learned from 15+ names only")
+check(OnDemandTitle.quality("Dune 4K") == "4K" && OnDemandTitle.quality("Dune FHD") == "1080p" && OnDemandTitle.quality("Dune") == nil, "quality from name")
+
+func vod(_ id: Int, _ name: String, tmdb: Int? = nil, year: Int? = nil) -> OnDemandItem {
+    OnDemandItem(kind: .movie, id: id, name: name, key: OnDemandTitle.key(name), categoryID: "1", ext: "mkv", tmdb: tmdb, year: year)
+}
+let vods = [vod(1, "Dune", tmdb: 438631, year: 2021), vod(2, "Dune 4K", year: 2021), vod(3, "Dune", tmdb: 841, year: 1984), vod(4, "Dune", year: 2020)]
+check(OnDemandMatch.copies(of: vods, name: "Dune", year: 2021, tmdb: 438631).map(\.id) == [1], "by TMDB id first")
+check(OnDemandMatch.copies(of: vods, name: "Dune", year: 2021, tmdb: nil).map(\.id) == [2, 1, 4], "by name, year within one, 4K first")
+check(OnDemandMatch.copies(of: vods, name: "Dune", year: 2021, tmdb: 999).map(\.id) == [2, 4], "another TMDB id is another title")
+check(OnDemandMatch.copies(of: vods, name: "Arrival", year: 2016, tmdb: nil).isEmpty, "no match")
+
+let episodeList = [
+    OnDemandEpisode(id: 11, season: 1, episode: 1, ext: "mkv", title: "A"),
+    OnDemandEpisode(id: 12, season: 1, episode: 2, ext: "mkv", title: "B"),
+]
+check(OnDemandMatch.episode(episodeList, season: 1, episode: 2)?.id == 12, "episode by season and number")
+check(OnDemandMatch.episode(episodeList, season: 3, episode: 2)?.id == 12, "one season only: number alone")
+check(OnDemandMatch.episode(episodeList + [OnDemandEpisode(id: 21, season: 2, episode: 1, ext: "mp4", title: "C")], season: 3, episode: 2) == nil, "several seasons: exact only")
+
+let seriesJSON = #"{"episodes": {"2": [{"id": "21", "episode_num": 1, "container_extension": "mkv", "title": "C"}], "1": [{"id": 11, "season": "1", "episode_num": "1"}]}}"#
+let parsedEpisodes = OnDemandParse.episodes(Data(seriesJSON.utf8))
+check(parsedEpisodes.map(\.id) == [11, 21] && parsedEpisodes[0].ext == "mp4" && parsedEpisodes[1].season == 2, "series info parsed, sorted")
+
+let listJSON = #"[{"stream_id": "5", "name": "Dune (2021)", "category_id": 7, "container_extension": "mkv", "tmdb": "438631"}, {"stream_id": 6, "name": "", "title": "Arrival", "year": "", "releaseDate": "2016-11-10", "tmdb": "0"}, {"name": "no id"}]"#
+let parsedItems = OnDemandParse.items(Data(listJSON.utf8), kind: .movie) ?? []
+check(parsedItems.count == 2, "entries without id left out")
+check(parsedItems.first?.id == 5 && parsedItems.first?.tmdb == 438631 && parsedItems.first?.year == 2021 && parsedItems.first?.categoryID == "7" && parsedItems.first?.key == "dune", "numbers as strings, year from name")
+check(parsedItems.last?.name == "Arrival" && parsedItems.last?.tmdb == nil && parsedItems.last?.year == 2016 && parsedItems.last?.ext == nil, "title fallback, tmdb 0 ignored, first non-empty year field")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

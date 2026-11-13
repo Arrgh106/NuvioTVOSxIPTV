@@ -304,6 +304,11 @@ final class StreamsRepository: ObservableObject {
             ? Task { await JellyfinLiveLookup.streams(videoId: videoId) }
             : nil
         if liveJellyfin != nil { ownedGroups.append(Self.jellyfinLiveGroup(streams: [], isLoading: true)) }
+        // Fork (Live TV step 12a): the Xtream provider's own movies and
+        // episodes, as Android's "On Demand"; last in the list.
+        let onDemand: Task<[NuvioStream], Never>? = OnDemandLookup.isAvailable
+            ? Task { await OnDemandLookup.streams(videoId: videoId) }
+            : nil
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -316,6 +321,10 @@ final class StreamsRepository: ObservableObject {
         guard !enabledURLs.isEmpty else {
             if let liveJellyfin {
                 ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
+                guard !Task.isCancelled, activeRequestKey == requestKey else { return }
+            }
+            if let onDemand {
+                ownedGroups += await Self.resolvedOnDemand(onDemand)
                 guard !Task.isCancelled, activeRequestKey == requestKey else { return }
             }
             state = StreamsDiscoveryState(
@@ -357,6 +366,10 @@ final class StreamsRepository: ObservableObject {
                 ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
                 guard !Task.isCancelled, activeRequestKey == requestKey else { return }
             }
+            if let onDemand {
+                ownedGroups += await Self.resolvedOnDemand(onDemand)
+                guard !Task.isCancelled, activeRequestKey == requestKey else { return }
+            }
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -369,7 +382,7 @@ final class StreamsRepository: ObservableObject {
         }
 
         // Create every group as loading *before* any request so chips appear immediately.
-        let initialGroups = ownedGroups + targets.map {
+        var initialGroups = ownedGroups + targets.map {
             AddonStreamGroup(
                 addonId: $0.addonId,
                 displayName: $0.displayName,
@@ -378,6 +391,7 @@ final class StreamsRepository: ObservableObject {
                 error: nil
             )
         }
+        if onDemand != nil { initialGroups.append(Self.onDemandGroup(streams: [], isLoading: true)) }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -402,14 +416,24 @@ final class StreamsRepository: ObservableObject {
                     )
                 }
             }
+            if let onDemand {
+                group.addTask {
+                    let streams = await onDemand.value
+                    return GroupUpdate(
+                        addonId: OnDemandLookup.groupID,
+                        group: Self.onDemandGroup(streams: streams, isLoading: false)
+                    )
+                }
+            }
 
             for await update in group {
                 guard !Task.isCancelled else { break }
                 guard self.activeRequestKey == requestKey else { break }
-                if update.addonId == Self.jellyfinLiveID, update.group.streams.isEmpty {
+                if update.addonId == Self.jellyfinLiveID || update.addonId == OnDemandLookup.groupID,
+                   update.group.streams.isEmpty {
                     // Nothing on the servers: drop the placeholder chip.
                     publish(
-                        groups: state.groups.filter { $0.addonId != Self.jellyfinLiveID },
+                        groups: state.groups.filter { $0.addonId != update.addonId },
                         requestKey: requestKey,
                         forceLoading: true
                     )
@@ -483,6 +507,21 @@ final class StreamsRepository: ObservableObject {
     // MARK: Fork: Jellyfin live lookup
 
     nonisolated static let jellyfinLiveID = "local.jellyfin"
+
+    nonisolated static func onDemandGroup(streams: [NuvioStream], isLoading: Bool) -> AddonStreamGroup {
+        AddonStreamGroup(
+            addonId: OnDemandLookup.groupID,
+            displayName: OnDemandLookup.groupName,
+            streams: streams,
+            isLoading: isLoading,
+            error: nil
+        )
+    }
+
+    private static func resolvedOnDemand(_ task: Task<[NuvioStream], Never>) async -> [AddonStreamGroup] {
+        let streams = await task.value
+        return streams.isEmpty ? [] : [onDemandGroup(streams: streams, isLoading: false)]
+    }
 
     nonisolated static func jellyfinLiveGroup(streams: [NuvioStream], isLoading: Bool) -> AddonStreamGroup {
         AddonStreamGroup(

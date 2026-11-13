@@ -71,6 +71,7 @@ struct LiveTVSettingsView: View {
 
             LiveTVChannelNamesGroup(accentColor: accentColor)
             LiveTVParentalGroup(accentColor: accentColor)
+            OnDemandSettingsGroup(accentColor: accentColor)
 
             LiveTVSettingsRows.group(
                 title: L10n.string("livetv_settings_playback", fallback: "Playback"),

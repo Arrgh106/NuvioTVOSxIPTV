@@ -864,6 +864,12 @@ struct ContentView: View {
                 await SMBSessionManager.shared.connectAll()
                 await JellyfinSessionManager.shared.connectAll()
             }
+            // Fork (Live TV step 12a): the provider's movies and series,
+            // read once a day, a little after the start (as on Android).
+            Task(priority: .utility) { @MainActor in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                OnDemandLibrary.shared.refreshIfNeeded()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
