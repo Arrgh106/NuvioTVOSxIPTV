@@ -19,6 +19,9 @@ enum OnDemandLookup {
     }
 
     static func streams(videoId: String) async -> [NuvioStream] {
+        // One of the provider's own titles (opened from the On Demand page
+        // or Home row without a match): its file, nothing to look up.
+        if let own = OnDemandID.parse(videoId) { return await ownStreams(own) }
         guard isAvailable, let database = OnDemandLibrary.shared.database,
               let account = XtreamAccountStore.load(),
               let hint = await JellyfinLiveLookup.hint(forVideoId: videoId) else { return [] }
@@ -61,6 +64,25 @@ enum OnDemandLookup {
             }
             return streams
         }.value
+    }
+
+    private static func ownStreams(_ own: (kind: OnDemandKind, id: Int, season: Int?, episode: Int?)) async -> [NuvioStream] {
+        guard let database = OnDemandLibrary.shared.database,
+              let item = database.item(kind: own.kind, id: own.id),
+              let account = XtreamAccountStore.load() else { return [] }
+        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
+        let category = database.categoryNames(own.kind)[item.categoryID]
+        let title = OnDemandTitle.searchName(item.name, tags: database.tags(own.kind))
+        if let season = own.season, let number = own.episode {
+            guard let data = try? await client.seriesInfo(seriesID: own.id),
+                  let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: number),
+                  let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { return [] }
+            return [stream(url: url, copy: item, ext: found.ext, category: category, client: client,
+                           title: title, year: nil, season: season, episode: number)]
+        }
+        guard own.kind == .movie, let url = client.movieURL(streamID: own.id, ext: item.ext) else { return [] }
+        return [stream(url: url, copy: item, ext: item.ext ?? "mp4", category: category, client: client,
+                       title: title, year: item.year, season: nil, episode: nil)]
     }
 
     /// Parental lock ids for a VOD category (step 12c lets you lock them).

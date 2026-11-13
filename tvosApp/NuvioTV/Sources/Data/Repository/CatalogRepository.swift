@@ -1211,6 +1211,10 @@ final class CinemetaCatalogRepository: CatalogRepository {
         if let jellyfinMeta = await JellyfinLibraryIndex.shared.meta(forContentId: id) {
             return jellyfinMeta
         }
+        // Fork (Live TV step 12b): a provider title that matched nothing.
+        if OnDemandID.parse(id) != nil, let onDemandMeta = await OnDemandDetails.meta(forContentId: id) {
+            return onDemandMeta
+        }
         let cached = cachedMetadata(for: id)
         if let cached, isCachedFullMetadata(id: id) {
             return await TmdbDetailsService.localizedMetadata(for: cached)
@@ -1222,6 +1226,10 @@ final class CinemetaCatalogRepository: CatalogRepository {
     func refreshMetadata(id: String, type: String) async throws -> NuvioMeta {
         if let jellyfinMeta = await JellyfinLibraryIndex.shared.meta(forContentId: id) {
             return jellyfinMeta
+        }
+        // Fork (Live TV step 12b): a provider title that matched nothing.
+        if OnDemandID.parse(id) != nil, let onDemandMeta = await OnDemandDetails.meta(forContentId: id) {
+            return onDemandMeta
         }
         // A catalog can report `type: movie` while its nonempty videos prove
         // that it is a series. Keep that inference while replacing the cache,
@@ -1438,6 +1446,12 @@ final class CinemetaCatalogRepository: CatalogRepository {
         tmdbToImdbLock.lock()
         defer { tmdbToImdbLock.unlock() }
         tmdbToImdbCache["\(tmdbId):\(type)"] = imdbId
+    }
+
+    /// Fork (Live TV step 12b): the IMDb id of a TMDB title, for the
+    /// provider's On Demand titles (needs a TMDB key).
+    static func imdbID(forTmdbID tmdbID: Int, type: String) async -> String? {
+        await resolveImdbFromTmdb(tmdbId: tmdbID, type: type)
     }
 
     /// Best-effort TMDB external_ids lookup so More Like This / production

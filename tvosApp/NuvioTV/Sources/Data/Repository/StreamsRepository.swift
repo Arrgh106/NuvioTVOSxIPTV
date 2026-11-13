@@ -306,7 +306,7 @@ final class StreamsRepository: ObservableObject {
         if liveJellyfin != nil { ownedGroups.append(Self.jellyfinLiveGroup(streams: [], isLoading: true)) }
         // Fork (Live TV step 12a): the Xtream provider's own movies and
         // episodes, as Android's "On Demand"; last in the list.
-        let onDemand: Task<[NuvioStream], Never>? = OnDemandLookup.isAvailable
+        let onDemand: Task<[NuvioStream], Never>? = OnDemandID.parse(videoId) != nil || OnDemandLookup.isAvailable
             ? Task { await OnDemandLookup.streams(videoId: videoId) }
             : nil
         state = StreamsDiscoveryState(

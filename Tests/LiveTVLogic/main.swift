@@ -461,5 +461,20 @@ check(parsedItems.count == 2, "entries without id left out")
 check(parsedItems.first?.id == 5 && parsedItems.first?.tmdb == 438631 && parsedItems.first?.year == 2021 && parsedItems.first?.categoryID == "7" && parsedItems.first?.key == "dune", "numbers as strings, year from name")
 check(parsedItems.last?.name == "Arrival" && parsedItems.last?.tmdb == nil && parsedItems.last?.year == 2016 && parsedItems.last?.ext == nil, "title fallback, tmdb 0 ignored, first non-empty year field")
 
+// MARK: On Demand page and Home row (step 12b)
+
+check(OnDemandID.make(.movie, 5) == "ondemand:movie:5" && OnDemandID.episode(seriesID: 7, season: 1, episode: 2) == "ondemand:series:7:1:2", "ids")
+let parsedID = OnDemandID.parse("ondemand:series:7:1:2")
+check(parsedID?.kind == .series && parsedID?.id == 7 && parsedID?.season == 1 && parsedID?.episode == 2, "episode id parsed")
+check(OnDemandID.parse("ondemand:movie:5")?.season == nil && OnDemandID.parse("tt123") == nil && OnDemandID.parse("ondemand:book:1") == nil, "title ids, others")
+check(OnDemandTitle.searchName("EN - Dune (2021) 4K", tags: ["en"]) == "Dune", "search name: tag, year, quality off")
+check(OnDemandTitle.searchName("|DE| Der Pate 1972") == "Der Pate", "search name: pipe tag, year at the end")
+check(OnDemandTitle.searchName("1917") == "1917", "search name: a year alone stays")
+let found: [(id: String, name: String, year: Int?)] = [("tt1", "Dune", 1984), ("tt2", "Dune", 2021), ("tt3", "Dune: Part Two", 2024)]
+check(OnDemandMatch.pick(found, key: "dune", year: 2021) == "tt2", "closest year")
+check(OnDemandMatch.pick(found, key: "dune", year: 2010) == nil, "year too far")
+check(OnDemandMatch.pick(found, key: "dune", year: nil) == "tt1", "no year: first of that name")
+check(OnDemandMatch.pick(found, key: "arrival", year: 2016) == nil, "other name")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

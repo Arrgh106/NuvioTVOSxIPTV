@@ -20,6 +20,35 @@ struct OnDemandItem: Sendable, Equatable {
     let ext: String?
     let tmdb: Int?
     let year: Int?
+    /// `stream_icon` / `cover` (web links only).
+    var icon: String? = nil
+    /// When the provider added it (seconds since 1970).
+    var added: Int? = nil
+    var rating: String? = nil
+}
+
+/// Ids of the provider's titles in Nuvio (step 12b): `ondemand:movie:5`,
+/// `ondemand:series:7`, episodes `ondemand:series:7:1:2`.
+enum OnDemandID {
+    static let prefix = "ondemand:"
+
+    static func make(_ kind: OnDemandKind, _ id: Int) -> String {
+        "\(prefix)\(kind.rawValue):\(id)"
+    }
+
+    static func episode(seriesID: Int, season: Int, episode: Int) -> String {
+        "\(prefix)series:\(seriesID):\(season):\(episode)"
+    }
+
+    /// Kind and id of a title or episode id (season and episode as well).
+    static func parse(_ value: String) -> (kind: OnDemandKind, id: Int, season: Int?, episode: Int?)? {
+        guard value.hasPrefix(prefix) else { return nil }
+        let parts = value.dropFirst(prefix.count).split(separator: ":").map(String.init)
+        guard parts.count >= 2, let kind = OnDemandKind(rawValue: parts[0]), let id = Int(parts[1]) else { return nil }
+        let season = parts.count >= 4 ? Int(parts[2]) : nil
+        let episode = parts.count >= 4 ? Int(parts[3]) : nil
+        return (kind, id, season, episode)
+    }
 }
 
 /// One episode from `get_series_info`.
@@ -126,6 +155,29 @@ enum OnDemandTitle {
         return out
     }
 
+    /// The name to search other catalogs with: without a learned tag,
+    /// brackets, a year at the end and quality words ("EN - Dune (2021) 4K"
+    /// → "Dune").
+    static func searchName(_ name: String, tags: Set<String> = []) -> String {
+        var text = name.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("|"), let close = text.dropFirst().firstIndex(of: "|") {
+            text = String(text[text.index(after: close)...])
+        }
+        if let tag = leadingTag(text), tags.contains(tag) {
+            for separator in [" - ", "|", ": ", " : "] {
+                if let range = text.range(of: separator) {
+                    text = String(text[range.upperBound...])
+                    break
+                }
+            }
+        }
+        text = stripBrackets(text)
+        var words = text.split(separator: " ").map(String.init)
+        words.removeAll { noise.contains($0.lowercased().filter { $0.isLetter || $0.isNumber }) }
+        if words.count > 1, let last = words.last, isYear(last) { words.removeLast() }
+        return words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " -|:"))
+    }
+
     /// "4K", "1080p", "720p" or nil, read from the provider's name.
     static func quality(_ name: String) -> String? {
         let lower = name.lowercased()
@@ -180,6 +232,18 @@ enum OnDemandMatch {
             }
             .prefix(limit)
             .map { $0 }
+    }
+
+    /// The catalog title that is this provider title: the same match key,
+    /// the year within one when both are known (the closest year first).
+    static func pick(_ results: [(id: String, name: String, year: Int?)], key: String, year: Int?) -> String? {
+        let same = results.filter { result in
+            guard OnDemandTitle.key(result.name) == key else { return false }
+            guard let year, let resultYear = result.year else { return true }
+            return abs(year - resultYear) <= 1
+        }
+        guard let year else { return same.first?.id }
+        return same.min { abs(($0.year ?? year) - year) < abs(($1.year ?? year) - year) }?.id
     }
 
     /// The episode in a series' list. When the provider has only one
@@ -239,6 +303,9 @@ struct OnDemandRawItem: Decodable, Sendable {
     let ext: String?
     let tmdb: Int?
     let yearField: String?
+    let icon: String?
+    let added: Int?
+    let rating: String?
 
     private struct Key: CodingKey {
         let stringValue: String
@@ -269,6 +336,11 @@ struct OnDemandRawItem: Decodable, Sendable {
         let tmdbID = number("tmdb") ?? number("tmdb_id")
         tmdb = tmdbID == 0 ? nil : tmdbID
         yearField = ["year", "releaseDate", "release_date"].compactMap { text($0) }.first { !$0.isEmpty }
+        let picture = (text("stream_icon") ?? text("cover"))?.trimmingCharacters(in: .whitespaces)
+        icon = picture?.lowercased().hasPrefix("http") == true ? picture : nil
+        added = number("added") ?? number("last_modified")
+        let score = text("rating")?.trimmingCharacters(in: .whitespaces)
+        rating = score == nil || score == "" || score == "0" ? nil : score
     }
 }
 
@@ -276,15 +348,22 @@ extension OnDemandParse {
     /// A whole list → items with their match keys (tags learned from the
     /// list itself). Entries without id or name are left out.
     static func items(_ data: Data, kind: OnDemandKind) -> [OnDemandItem]? {
+        list(data, kind: kind)?.items
+    }
+
+    /// The items and the tags learned from them.
+    static func list(_ data: Data, kind: OnDemandKind) -> (items: [OnDemandItem], tags: Set<String>)? {
         guard let raw = try? JSONDecoder().decode([OnDemandRawItem].self, from: data) else { return nil }
         let usable = raw.filter { $0.id != nil && !$0.name.isEmpty }
         let tags = OnDemandTitle.learnTags(usable.map(\.name))
-        return usable.map { entry in
+        let items = usable.map { entry in
             OnDemandItem(
                 kind: kind, id: entry.id!, name: entry.name,
                 key: OnDemandTitle.key(entry.name, tags: tags),
                 categoryID: entry.categoryID, ext: entry.ext, tmdb: entry.tmdb,
-                year: OnDemandTitle.year(field: entry.yearField) ?? OnDemandTitle.yearInName(entry.name))
+                year: OnDemandTitle.year(field: entry.yearField) ?? OnDemandTitle.yearInName(entry.name),
+                icon: entry.icon, added: entry.added, rating: entry.rating)
         }
+        return (items, tags)
     }
 }

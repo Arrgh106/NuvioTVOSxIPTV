@@ -198,6 +198,11 @@ enum SettingsKey {
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
     /// Settings → Appearance → Sidebar → Calendar.
     static let showCalendarTab = "nuvio.tv.settings.layout.showCalendarTab"
+    /// Fork (Live TV step 12b): the On Demand and Jellyfin pages in the
+    /// sidebar, and the On Demand row on Home.
+    static let showOnDemandTab = "nuvio.tv.settings.layout.showOnDemandTab"
+    static let showJellyfinTab = "nuvio.tv.settings.layout.showJellyfinTab"
+    static let onDemandHomeRow = "nuvio.tv.settings.layout.onDemandHomeRow"
     /// Settings → Appearance → Sidebar → Watch Party.
     static let showWatchPartyTab = "nuvio.tv.settings.layout.showWatchPartyTab"
     /// Settings → Layout → Calendar → Today Row.
@@ -417,7 +422,7 @@ enum SettingsKey {
         homeLayout, sidebarClockFormat, gridRows, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, homeHeroRatingSource, posterLabels, catalogAddonNames, landscapePosters, customPosterURLPattern, customPosterEnabledScreens, discoverLocation,
         searchStyle, preferAddonArtworkInSearch,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp, continueWatchingEpisodeRatings,
-        showCalendarTab, showWatchPartyTab, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes,
+        showCalendarTab, showWatchPartyTab, showOnDemandTab, showJellyfinTab, onDemandHomeRow, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates, detailsActionsBelowInfo,
         detailsSectionOrder, detailsSectionDisabled,
@@ -2373,6 +2378,11 @@ private struct AppearanceSettingsView: View {
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
     @AppStorage(SettingsKey.showCalendarTab) private var showCalendarTab = true
     @AppStorage(SettingsKey.showWatchPartyTab) private var showWatchPartyTab = true
+    // Fork (Live TV step 12b): the provider's and Jellyfin's pages and rows.
+    @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
+    @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
+    @AppStorage(SettingsKey.onDemandHomeRow) private var onDemandHomeRow = true
+    @AppStorage(SettingsKey.jellyfinLocalRowEnabled) private var jellyfinHomeRows = true
     @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
     @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
     @State private var customPosterURLDraft = ""
@@ -2414,6 +2424,52 @@ private struct AppearanceSettingsView: View {
                         fallback: "Show Watch Party in the sidebar"
                     ),
                     isOn: $showWatchPartyTab,
+                    accentColor: accentColor
+                )
+                SettingsToggleRow(
+                    title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+                    subtitle: L10n.string(
+                        "settings_show_ondemand_tab_subtitle",
+                        fallback: "Your Live TV provider's movies and series, a row per category. Their streams stay in the stream lists either way."
+                    ),
+                    isOn: $showOnDemandTab,
+                    accentColor: accentColor
+                )
+                SettingsToggleRow(
+                    title: "Jellyfin",
+                    subtitle: L10n.string(
+                        "settings_show_jellyfin_tab_subtitle",
+                        fallback: "Your Jellyfin libraries, a row each. Their streams stay in the stream lists either way."
+                    ),
+                    isOn: $showJellyfinTab,
+                    accentColor: accentColor
+                )
+            }
+
+            SettingsGroup(
+                title: L10n.string("settings_home_source_rows", fallback: "Home Rows"),
+                subtitle: L10n.string(
+                    "settings_home_source_rows_subtitle",
+                    fallback: "Rows on the Home screen from your own sources. Only what's shown changes; streams stay."
+                )
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+                    subtitle: L10n.string(
+                        "settings_ondemand_home_row_subtitle",
+                        fallback: "What your Live TV provider added last, movies and series"
+                    ),
+                    isOn: $onDemandHomeRow,
+                    accentColor: accentColor
+                )
+                .onChange(of: onDemandHomeRow) { _, _ in OnDemandHomeRowModel.shared.reload() }
+                SettingsToggleRow(
+                    title: "Jellyfin",
+                    subtitle: L10n.string(
+                        "settings_jellyfin_home_rows_subtitle",
+                        fallback: "A row for each Jellyfin library"
+                    ),
+                    isOn: $jellyfinHomeRows,
                     accentColor: accentColor
                 )
             }

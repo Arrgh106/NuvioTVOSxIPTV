@@ -103,6 +103,11 @@ struct XtreamClient: Sendable {
         try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true)
     }
 
+    /// `get_vod_info`: plot, pictures and details of one movie.
+    func vodInfo(vodID: Int) async throws -> Data {
+        try await get(action: "get_vod_info", extra: [URLQueryItem(name: "vod_id", value: String(vodID))], timeout: 15)
+    }
+
     /// `get_series_info`: seasons and episodes of one series.
     func seriesInfo(seriesID: Int) async throws -> Data {
         try await get(action: "get_series_info", extra: [URLQueryItem(name: "series_id", value: String(seriesID))], timeout: 15)
