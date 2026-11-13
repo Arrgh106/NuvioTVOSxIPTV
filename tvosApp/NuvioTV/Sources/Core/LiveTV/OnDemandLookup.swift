@@ -33,6 +33,8 @@ enum OnDemandLookup {
         let lockedNames = parental.isEnabled
         let lockedIDs = parental.lockedGroups
         let lockAdult = parental.isEnabled && parental.lockAdult
+        let hiddenIDs = OnDemandPreferences.shared.hidden
+        let languages = OnDemandPreferences.shared.languageFilter
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
 
         return await Task.detached(priority: .userInitiated) { () -> [NuvioStream] in
@@ -40,12 +42,14 @@ enum OnDemandLookup {
             let candidates = database.candidates(kind: kind, tmdb: tmdb, key: key)
             guard !candidates.isEmpty else { return [] }
             let categories = database.categoryNames(kind)
-            let allowed = candidates.filter { item in
+            let unlocked = candidates.filter { item in
+                if hiddenIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
                 guard lockedNames else { return true }
                 if lockedIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
                 guard lockAdult else { return true }
                 return !LiveTVParental.isAdult(item.name) && !LiveTVParental.isAdult(categories[item.categoryID] ?? "")
             }
+            let allowed = languages.versions(unlocked) { $0.language }
             let copies = OnDemandMatch.copies(of: allowed, name: hint.name, year: hint.year, tmdb: tmdb)
             var streams: [NuvioStream] = []
             for copy in copies {
@@ -76,16 +80,33 @@ enum OnDemandLookup {
         guard !OnDemandBrowse.isHidden(item, categoryName: category ?? "") else { return [] }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         let title = OnDemandTitle.searchName(item.name, tags: database.tags(own.kind))
-        if let season = own.season, let number = own.episode {
-            guard let data = try? await client.seriesInfo(seriesID: own.id),
-                  let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: number),
-                  let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { return [] }
-            return [stream(url: url, copy: item, ext: found.ext, category: category, client: client,
-                           title: title, year: nil, season: season, episode: number)]
-        }
-        guard own.kind == .movie, let url = client.movieURL(streamID: own.id, ext: item.ext) else { return [] }
-        return [stream(url: url, copy: item, ext: item.ext ?? "mp4", category: category, client: client,
-                       title: title, year: item.year, season: nil, episode: nil)]
+        // Every version (step 12c): the other copies of this title (other
+        // qualities, other categories), this one first, then the best.
+        let names = database.categoryNames(own.kind)
+        let others = OnDemandMatch.copies(
+            of: database.candidates(kind: own.kind, tmdb: item.tmdb, key: item.key)
+                .filter { $0.id != item.id && !OnDemandBrowse.isHidden($0, categoryName: names[$0.categoryID] ?? "") },
+            name: title, year: item.year, tmdb: item.tmdb, limit: 7)
+        let versions = [item] + others
+        if own.season == nil, own.kind == .series { return [] }
+        return await Task.detached(priority: .userInitiated) { () -> [NuvioStream] in
+            var streams: [NuvioStream] = []
+            for copy in versions {
+                let copyCategory = names[copy.categoryID]
+                if let season = own.season, let number = own.episode {
+                    guard let data = try? await client.seriesInfo(seriesID: copy.id),
+                          let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: number),
+                          let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { continue }
+                    streams.append(stream(url: url, copy: copy, ext: found.ext, category: copyCategory, client: client,
+                                          title: title, year: nil, season: season, episode: number))
+                } else {
+                    guard let url = client.movieURL(streamID: copy.id, ext: copy.ext) else { continue }
+                    streams.append(stream(url: url, copy: copy, ext: copy.ext ?? "mp4", category: copyCategory, client: client,
+                                          title: title, year: copy.year ?? item.year, season: nil, episode: nil))
+                }
+            }
+            return streams
+        }.value
     }
 
     /// Parental lock ids for a VOD category (step 12c lets you lock them).

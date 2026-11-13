@@ -184,7 +184,9 @@ class SearchViewModel: ObservableObject {
         searchTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let outcome = try await self.repository.searchWithOutcome(query: trimmed)
+                // Fork (Live TV step 12c): the provider's VOD titles at the end.
+                let addonOutcome = try await self.repository.searchWithOutcome(query: trimmed)
+                let outcome = await OnDemandSearch.adding(to: addonOutcome, query: trimmed)
                 guard !Task.isCancelled, self.searchGeneration == generation else { return }
                 self.searchTimeoutTask?.cancel()
                 let found = outcome.results

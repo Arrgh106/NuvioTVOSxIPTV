@@ -12,7 +12,8 @@ final class OnDemandLibrary: ObservableObject {
 
     enum Status: Equatable {
         case idle
-        case importing(String)
+        /// `fraction`: of the list being downloaded, when the size is known.
+        case importing(String, fraction: Double?)
         case ready(movies: Int, series: Int, updated: Date)
         case failed(String)
     }
@@ -98,20 +99,39 @@ final class OnDemandLibrary: ObservableObject {
             database.clear()
             database.setMeta("account", account.id)
         }
-        status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"))
+        status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"), fraction: nil)
         importTask = Task { [weak self] in
             var errors: [String] = []
             for kind in OnDemandKind.allCases {
                 guard !Task.isCancelled else { return }
+                // As Jellyfin's: how many are in, then how many are saved.
+                let loading = kind == .movie
+                    ? L10n.string("livetv_ondemand_loading_movies", fallback: "Loading movies")
+                    : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")
+                let saving = kind == .movie
+                    ? L10n.string("livetv_ondemand_saving_movies", fallback: "Saving movies")
+                    : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")
+                self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
-                    let data = try await client.onDemandList(kind)
-                    let ok = await Task.detached(priority: .utility) { () -> Bool in
-                        guard let list = OnDemandParse.list(data, kind: kind) else { return false }
-                        database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags)
-                        return true
+                    let data = try await client.onDemandList(kind) { titles in
+                        Task { @MainActor in
+                            guard let self, self.importTask != nil, titles > 0 else { return }
+                            self.status = .importing(Self.progressText(loading, titles), fraction: nil)
+                        }
+                    }
+                    let saved = await Task.detached(priority: .utility) { () -> Int? in
+                        guard let list = OnDemandParse.list(data, kind: kind) else { return nil }
+                        let total = list.items.count
+                        database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags) { done in
+                            Task { @MainActor in
+                                guard let self, self.importTask != nil else { return }
+                                self.status = .importing(Self.progressText(saving, done), fraction: nil)
+                            }
+                        }
+                        return total
                     }.value
-                    if !ok { errors.append(kind == .movie ? "movies" : "series") }
+                    if saved == nil { errors.append(kind == .movie ? "movies" : "series") }
                 } catch {
                     errors.append(error.localizedDescription)
                 }
@@ -130,6 +150,11 @@ final class OnDemandLibrary: ObservableObject {
         }
     }
 
+    /// "Loading movies · 12,500".
+    nonisolated static func progressText(_ label: String, _ done: Int) -> String {
+        label + " \u{00B7} " + done.formatted()
+    }
+
     private func publishCounts() {
         guard let database,
               let updated = database.meta("updated").flatMap(Double.init).map(Date.init(timeIntervalSince1970:)) else {
@@ -143,7 +168,7 @@ final class OnDemandLibrary: ObservableObject {
     private func reportActivity() {
         let id = "livetv.ondemand"
         switch status {
-        case .importing(let label): ActivityCenter.shared.update(id, label: label)
+        case .importing(let label, let fraction): ActivityCenter.shared.update(id, label: label, fraction: fraction)
         case .failed(let message):
             ActivityCenter.shared.fail(id, message: L10n.string("livetv_ondemand_title", fallback: "VOD") + ": " + message)
         case .idle, .ready: ActivityCenter.shared.finish(id)
@@ -158,7 +183,8 @@ final class OnDemandDatabase: @unchecked Sendable {
     private let lock = NSLock()
     /// 2: pictures, dates, ratings and category order for the VOD
     /// page and Home row (step 12b).
-    private static let schemaVersion: Int32 = 2
+    /// 3: languages (12c). 4: the Nordic group.
+    private static let schemaVersion: Int32 = 4
 
     init?(url: URL) {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
@@ -180,7 +206,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             CREATE TABLE IF NOT EXISTS items (kind TEXT NOT NULL, id INTEGER NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL,
-                cat TEXT NOT NULL, ext TEXT, tmdb INTEGER, year INTEGER, icon TEXT, added INTEGER, rating TEXT,
+                cat TEXT NOT NULL, ext TEXT, tmdb INTEGER, year INTEGER, icon TEXT, added INTEGER, rating TEXT, lang TEXT,
                 PRIMARY KEY (kind, id));
             CREATE INDEX IF NOT EXISTS items_key ON items (kind, key);
             CREATE INDEX IF NOT EXISTS items_tmdb ON items (kind, tmdb);
@@ -225,15 +251,21 @@ final class OnDemandDatabase: @unchecked Sendable {
     /// One kind's list and categories (in the provider's order), replaced
     /// in one transaction. The tags learned from the list are kept for
     /// cleaning titles later.
-    func replace(kind: OnDemandKind, items: [OnDemandItem], categories: [XtreamCategory], tags: Set<String>) {
+    func replace(
+        kind: OnDemandKind, items: [OnDemandItem], categories: [XtreamCategory], tags: Set<String>,
+        progress: ((Int) -> Void)? = nil
+    ) {
         lock.lock(); defer { lock.unlock() }
         sqlite3_exec(db, "BEGIN", nil, nil, nil)
         run("DELETE FROM items WHERE kind = ?", kind.rawValue)
         run("DELETE FROM categories WHERE kind = ?", kind.rawValue)
         var statement: OpaquePointer?
-        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        // The language (step 12c): from the name's tag, else the category.
+        let categoryNames = Dictionary(categories.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
-            for item in items {
+            for (index, item) in items.enumerated() {
+                if index % 2000 == 0 { progress?(index) }
                 sqlite3_reset(statement)
                 sqlite3_bind_text(statement, 1, kind.rawValue, -1, onDemandTransient)
                 sqlite3_bind_int64(statement, 2, Int64(item.id))
@@ -246,6 +278,7 @@ final class OnDemandDatabase: @unchecked Sendable {
                 bind(statement, 9, item.icon)
                 bind(statement, 10, item.added)
                 bind(statement, 11, item.rating)
+                bind(statement, 12, OnDemandLanguage.code(name: item.name, category: categoryNames[item.categoryID]))
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
@@ -283,13 +316,25 @@ final class OnDemandDatabase: @unchecked Sendable {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
-    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating"
+    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang"
 
     /// Copies that could be the title: same TMDB id or same match key.
     func candidates(kind: OnDemandKind, tmdb: Int?, key: String) -> [OnDemandItem] {
         items(
             "SELECT \(Self.itemColumns) FROM items WHERE kind = ? AND (key = ? OR tmdb = ?) LIMIT 200",
             [kind.rawValue, key, String(tmdb ?? -1)])
+    }
+
+    /// Titles whose match key has every word (step 12c, Nuvio's search):
+    /// keys starting with them first, then the shortest.
+    func search(kind: OnDemandKind, words: [String], limit: Int) -> [OnDemandItem] {
+        guard !words.isEmpty else { return [] }
+        let joined = words.joined()
+        let match = words.map { _ in "instr(key, ?) > 0" }.joined(separator: " AND ")
+        return items(
+            "SELECT \(Self.itemColumns) FROM items WHERE kind = ? AND \(match) "
+                + "ORDER BY (instr(key, ?) = 1) DESC, length(key), rowid LIMIT ?",
+            [kind.rawValue] + words + [joined, String(limit)])
     }
 
     func item(kind: OnDemandKind, id: Int) -> OnDemandItem? {
@@ -323,6 +368,20 @@ final class OnDemandDatabase: @unchecked Sendable {
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let id = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else { continue }
             out.append((String(cString: id), String(cString: name), Int(sqlite3_column_int64(statement, 2))))
+        }
+        return out
+    }
+
+    /// How many titles each language has (nil: none known), most first.
+    func languages(_ kind: OnDemandKind) -> [(code: String?, count: Int)] {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT lang, COUNT(*) FROM items WHERE kind = ? GROUP BY lang ORDER BY COUNT(*) DESC", -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, kind.rawValue, -1, onDemandTransient)
+        var out: [(code: String?, count: Int)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            out.append((sqlite3_column_text(statement, 0).map { String(cString: $0) }, Int(sqlite3_column_int64(statement, 1))))
         }
         return out
     }
@@ -367,7 +426,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             out.append(OnDemandItem(
                 kind: kind, id: number(1) ?? 0, name: text(2) ?? "", key: text(3) ?? "",
                 categoryID: text(4) ?? "", ext: text(5), tmdb: number(6), year: number(7),
-                icon: text(8), added: number(9), rating: text(10)))
+                icon: text(8), added: number(9), rating: text(10), language: text(11)))
         }
         return out
     }

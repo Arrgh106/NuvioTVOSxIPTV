@@ -25,6 +25,8 @@ struct OnDemandItem: Sendable, Equatable {
     /// When the provider added it (seconds since 1970).
     var added: Int? = nil
     var rating: String? = nil
+    /// ISO 639-1 code from the name's or the category's tag (step 12c).
+    var language: String? = nil
 }
 
 /// Ids of the provider's titles in Nuvio (step 12b): `ondemand:movie:5`,
@@ -81,6 +83,30 @@ enum OnDemandTitle {
         return nil
     }
 
+    /// The name without its provider tag: a learned one, or one that looks
+    /// like a tag ("4K-NF - ", "DE - ", "4K-AR: ": capitals and digits in
+    /// short parts, one of them a language or a quality). "CSI: Miami"
+    /// keeps its name.
+    static func stripTag(_ name: String, tags: Set<String>) -> String {
+        for separator in [" - ", "|", ": ", " : "] {
+            guard let range = name.range(of: separator) else { continue }
+            let head = name[..<range.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: " |[]"))
+            let rest = name[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !head.isEmpty, !rest.isEmpty, head.split(separator: " ").count <= 4, head.count <= 24 else { continue }
+            return tags.contains(head.lowercased()) || looksLikeTag(head) ? rest : name
+        }
+        return name
+    }
+
+    private static let tagQualities: Set<String> = ["4k", "8k", "uhd", "fhd", "hd", "sd", "hdr", "dv", "hevc", "3d"]
+
+    static func looksLikeTag(_ head: String) -> Bool {
+        guard !head.contains(where: { $0.isLowercase }) else { return false }
+        let parts = head.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        guard !parts.isEmpty, parts.allSatisfy({ $0.count <= 5 }) else { return false }
+        return parts.contains { OnDemandLanguage.code(forTag: String($0)) != nil || tagQualities.contains($0.lowercased()) }
+    }
+
     /// Tags that start many names of one catalog (as Android: at least
     /// max(15, total / 500) times): those come off before matching.
     static func learnTags(_ names: [String]) -> Set<String> {
@@ -99,14 +125,7 @@ enum OnDemandTitle {
         if text.hasPrefix("|"), let close = text.dropFirst().firstIndex(of: "|") {
             text = String(text[text.index(after: close)...])
         }
-        if let tag = leadingTag(text), tags.contains(tag) {
-            for separator in [" - ", "|", ": ", " : "] {
-                if let range = text.range(of: separator) {
-                    text = String(text[range.upperBound...])
-                    break
-                }
-            }
-        }
+        text = stripTag(text, tags: tags)
         text = stripBrackets(text.lowercased())
         var words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         words.removeAll { noise.contains($0) }
@@ -163,14 +182,7 @@ enum OnDemandTitle {
         if text.hasPrefix("|"), let close = text.dropFirst().firstIndex(of: "|") {
             text = String(text[text.index(after: close)...])
         }
-        if let tag = leadingTag(text), tags.contains(tag) {
-            for separator in [" - ", "|", ": ", " : "] {
-                if let range = text.range(of: separator) {
-                    text = String(text[range.upperBound...])
-                    break
-                }
-            }
-        }
+        text = stripTag(text, tags: tags)
         text = stripBrackets(text)
         var words = text.split(separator: " ").map(String.init)
         words.removeAll { noise.contains($0.lowercased().filter { $0.isLetter || $0.isNumber }) }
@@ -205,7 +217,7 @@ enum OnDemandMatch {
     /// one, otherwise by name with the year within one (or unknown on either
     /// side). Best quality first, at most `limit`.
     static func copies(
-        of candidates: [OnDemandItem], name: String, year: Int?, tmdb: Int?, limit: Int = 6
+        of candidates: [OnDemandItem], name: String, year: Int?, tmdb: Int?, limit: Int = 8
     ) -> [OnDemandItem] {
         let key = OnDemandTitle.key(name)
         var found: [OnDemandItem] = []
@@ -222,7 +234,7 @@ enum OnDemandMatch {
             }
         }
         var seen = Set<Int>()
-        return found
+        let sorted = found
             .filter { seen.insert($0.id).inserted }
             .sorted { lhs, rhs in
                 let l = OnDemandTitle.qualityRank(OnDemandTitle.quality(lhs.name))
@@ -230,8 +242,24 @@ enum OnDemandMatch {
                 if l != r { return l < r }
                 return lhs.name != rhs.name ? lhs.name < rhs.name : lhs.id < rhs.id
             }
-            .prefix(limit)
-            .map { $0 }
+        // Best first, but one of each quality before the next of any: many
+        // 4K copies don't crowd out the HD ones.
+        var tiers: [[OnDemandItem]] = []
+        var lastRank: Int?
+        for item in sorted {
+            let rank = OnDemandTitle.qualityRank(OnDemandTitle.quality(item.name))
+            if rank != lastRank { tiers.append([]); lastRank = rank }
+            tiers[tiers.count - 1].append(item)
+        }
+        var out: [OnDemandItem] = []
+        var round = 0
+        while out.count < limit, tiers.contains(where: { $0.count > round }) {
+            for tier in tiers where tier.count > round && out.count < limit {
+                out.append(tier[round])
+            }
+            round += 1
+        }
+        return out
     }
 
     /// The catalog title that is this provider title: the same match key,
@@ -365,5 +393,221 @@ extension OnDemandParse {
                 icon: entry.icon, added: entry.added, rating: entry.rating)
         }
         return (items, tags)
+    }
+}
+
+// MARK: Search, duplicates (step 12c)
+
+extension OnDemandTitle {
+    /// What's typed in search as parts of match keys ("The Dark Knight
+    /// 2008" → ["dark", "knight"]): words that never make it into a key
+    /// (noise, a year after other words) are left out.
+    static func searchWords(_ query: String) -> [String] {
+        var words = query.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !noise.contains($0) }
+        if words.count > 1 { words.removeAll { isYear($0) } }
+        return words
+    }
+}
+
+/// "Merge Duplicates", as Android: the same TMDB id, or the same name with
+/// the same year (a copy without a year matches any year), is one title.
+/// The first copy seen stays; its details still offer every copy.
+struct OnDemandDedupe: Sendable {
+    private var tmdbSeen: Set<String> = []
+    /// Kind and key → the years seen with it (0: none).
+    private var years: [String: Set<Int>] = [:]
+
+    init() {}
+
+    mutating func isNew(_ item: OnDemandItem) -> Bool {
+        let tmdbKey = item.tmdb.map { "\(item.kind.rawValue):\($0)" }
+        if let tmdbKey, tmdbSeen.contains(tmdbKey) { return false }
+        let nameKey = "\(item.kind.rawValue):\(item.key)"
+        let year = item.year ?? 0
+        if !item.key.isEmpty, let seen = years[nameKey],
+           year == 0 || seen.contains(0) || seen.contains(year) {
+            return false
+        }
+        if let tmdbKey { tmdbSeen.insert(tmdbKey) }
+        if !item.key.isEmpty { years[nameKey, default: []].insert(year) }
+        return true
+    }
+
+    mutating func filter(_ items: [OnDemandItem]) -> [OnDemandItem] {
+        items.filter { isNew($0) }
+    }
+}
+
+enum OnDemandSearchMatch {
+    /// Provider titles that none of `known` (the add-ons' search results)
+    /// already is: not the same TMDB id, not the same name with the year
+    /// within one.
+    static func providerOnly(
+        _ items: [OnDemandItem], known: [(name: String, year: Int?, tmdb: Int?)]
+    ) -> [OnDemandItem] {
+        let tmdbs = Set(known.compactMap(\.tmdb))
+        var yearsByKey: [String: [Int?]] = [:]
+        for entry in known {
+            let key = OnDemandTitle.key(entry.name)
+            if !key.isEmpty { yearsByKey[key, default: []].append(entry.year) }
+        }
+        return items.filter { item in
+            if let tmdb = item.tmdb, tmdbs.contains(tmdb) { return false }
+            guard let years = yearsByKey[item.key] else { return true }
+            return !years.contains { year in
+                guard let year, let itemYear = item.year else { return true }
+                return abs(year - itemYear) <= 1
+            }
+        }
+    }
+
+    /// Some of each, as Android: a long list of movies doesn't hide the
+    /// series.
+    static func mix(movies: [OnDemandItem], series: [OnDemandItem], limit: Int) -> [OnDemandItem] {
+        let takeMovies = min(movies.count, max(limit / 2, limit - series.count))
+        let movieHalf = Array(movies.prefix(takeMovies))
+        return movieHalf + series.prefix(max(0, limit - movieHalf.count))
+    }
+}
+
+// MARK: Languages (step 12c)
+
+/// The language of a provider title, from its tag ("4K-AR: ", "DE - ",
+/// "|TR| "), its category ("FR - ANIMATION", "Arabic Movies") or the
+/// script of the category's name. nil: nothing says.
+enum OnDemandLanguage {
+    /// Tags in names and categories → ISO 639-1.
+    private static let tags: [String: String] = [
+        "EN": "en", "ENG": "en", "US": "en", "USA": "en", "UK": "en", "GB": "en", "AU": "en",
+        "DE": "de", "GER": "de", "DEU": "de", "AT": "de", "CH": "de",
+        "FR": "fr", "FRA": "fr", "FRE": "fr", "VF": "fr", "VFF": "fr",
+        "AR": "ar", "ARA": "ar", "ARAB": "ar", "TR": "tr", "TUR": "tr", "GR": "el", "GRE": "el", "EL": "el",
+        "ES": "es", "ESP": "es", "SPA": "es", "LAT": "es", "LATAM": "es", "MX": "es",
+        "IT": "it", "ITA": "it", "NL": "nl", "NLD": "nl", "DUT": "nl", "PL": "pl", "POL": "pl",
+        "PT": "pt", "POR": "pt", "BR": "pt", "RU": "ru", "RUS": "ru", "UA": "uk", "UKR": "uk",
+        "AL": "sq", "ALB": "sq", "RO": "ro", "ROM": "ro", "BG": "bg", "BUL": "bg", "HU": "hu", "HUN": "hu",
+        "CZ": "cs", "CZE": "cs", "SK": "sk", "HR": "hr", "RS": "sr", "SRB": "sr", "BA": "bs", "EXYU": "sr",
+        "SE": "sv", "SV": "sv", "SWE": "sv", "NO": "no", "NOR": "no", "DK": "da", "DAN": "da", "FI": "fi", "FIN": "fi",
+        "IR": "fa", "FA": "fa", "PER": "fa", "IN": "hi", "HIN": "hi", "PK": "ur", "UR": "ur",
+        "KU": "ku", "KUR": "ku", "HE": "he", "IL": "he", "JP": "ja", "JA": "ja", "KR": "ko", "KO": "ko",
+        "CN": "zh", "ZH": "zh", "TH": "th", "VN": "vi", "VI": "vi",
+        // Scandinavian packs ("4K-SC - …", "NORDIC FILM"): one group.
+        "SC": nordic, "SCAN": nordic, "NORDIC": nordic, "NORD": nordic,
+    ]
+
+    /// Scandinavian packs, mostly with Danish, Norwegian, Swedish and
+    /// Finnish subtitles: one group, not one language.
+    static let nordic = "nordic"
+
+    /// Words in category names → ISO 639-1.
+    private static let words: [String: String] = [
+        "english": "en", "german": "de", "deutsch": "de", "deutsche": "de", "germany": "de",
+        "french": "fr", "france": "fr", "francais": "fr", "arabic": "ar", "arab": "ar",
+        "turkish": "tr", "turkey": "tr", "turk": "tr", "turkce": "tr", "greek": "el", "greece": "el",
+        "spanish": "es", "spain": "es", "espanol": "es", "latino": "es", "italian": "it", "italia": "it", "italy": "it",
+        "dutch": "nl", "netherlands": "nl", "polish": "pl", "poland": "pl", "polska": "pl",
+        "portuguese": "pt", "portugal": "pt", "brazil": "pt", "brasil": "pt", "russian": "ru", "russia": "ru",
+        "ukrainian": "uk", "ukraine": "uk", "albanian": "sq", "albania": "sq", "romanian": "ro", "romania": "ro",
+        "bulgarian": "bg", "hungarian": "hu", "czech": "cs", "croatian": "hr", "serbian": "sr", "bosnian": "bs",
+        "swedish": "sv", "sweden": "sv", "norwegian": "no", "danish": "da", "finnish": "fi",
+        "persian": "fa", "iran": "fa", "hindi": "hi", "india": "hi", "indian": "hi", "urdu": "ur", "pakistan": "ur",
+        "kurdish": "ku", "hebrew": "he", "japanese": "ja", "korean": "ko", "chinese": "zh", "thai": "th", "vietnamese": "vi",
+        "nordic": nordic, "scandinavia": nordic, "scandinavian": nordic, "skandinavien": nordic, "norden": nordic,
+    ]
+
+    /// "German (DE)", "Nordic (Scandinavian)".
+    static func displayName(_ code: String, locale: Locale = .current) -> String {
+        if code == nordic { return "Nordic (Scandinavian)" }
+        let name = locale.localizedString(forLanguageCode: code) ?? code
+        return name.prefix(1).uppercased() + String(name.dropFirst()) + " (\(code.uppercased()))"
+    }
+
+    static func code(forTag tag: String) -> String? {
+        tags[tag.uppercased()]
+    }
+
+    static func code(name: String, category: String?) -> String? {
+        if let code = fromTag(name) { return code }
+        if let category {
+            if let code = fromTag(category) ?? fromWords(category) ?? fromScript(category) { return code }
+        }
+        return fromScript(name)
+    }
+
+    /// The tag's parts: "|DE| …", "[FR] …", or what comes before " - ",
+    /// "|" or ":" when it's short and in capitals.
+    private static func fromTag(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        var head: Substring?
+        if let first = trimmed.first, "|[(".contains(first),
+           let close = trimmed.dropFirst().firstIndex(where: { "|])".contains($0) }) {
+            head = trimmed[trimmed.index(after: trimmed.startIndex)..<close]
+        } else {
+            for separator in [" - ", "|", ": ", " : ", ":"] {
+                if let range = trimmed.range(of: separator) {
+                    head = trimmed[..<range.lowerBound]
+                    break
+                }
+            }
+        }
+        guard let head, head.count <= 24, !head.contains(where: { $0.isLowercase }) else { return nil }
+        for part in head.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            if let code = tags[String(part)] { return code }
+        }
+        return nil
+    }
+
+    private static func fromWords(_ text: String) -> String? {
+        for word in text.lowercased().split(whereSeparator: { !$0.isLetter }) {
+            if let code = words[String(word)] { return code }
+        }
+        return nil
+    }
+
+    /// Mostly Arabic, Greek, Hebrew, Thai, Korean or Japanese letters.
+    private static func fromScript(_ text: String) -> String? {
+        var counts: [String: Int] = [:]
+        var letters = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            letters += 1
+            switch scalar.value {
+            case 0x0600...0x06FF, 0x0750...0x077F, 0xFB50...0xFDFF, 0xFE70...0xFEFF: counts["ar", default: 0] += 1
+            case 0x0370...0x03FF: counts["el", default: 0] += 1
+            case 0x0590...0x05FF: counts["he", default: 0] += 1
+            case 0x0E00...0x0E7F: counts["th", default: 0] += 1
+            case 0xAC00...0xD7AF: counts["ko", default: 0] += 1
+            case 0x3040...0x30FF: counts["ja", default: 0] += 1
+            default: break
+            }
+        }
+        guard letters > 0, let best = counts.max(by: { $0.value < $1.value }), best.value * 2 >= letters else { return nil }
+        return best.key
+    }
+}
+
+/// Which languages to show (step 12c): none picked shows all; once one
+/// is picked, titles nothing tells the language of are out too unless
+/// turned on ("only German" means only German).
+struct OnDemandLanguageFilter: Sendable, Equatable {
+    var languages: Set<String> = []
+    var keepUnknown = false
+
+    var isActive: Bool { !languages.isEmpty }
+
+    func allows(_ code: String?) -> Bool {
+        guard isActive else { return true }
+        guard let code else { return keepUnknown }
+        return languages.contains(code)
+    }
+
+    /// A title's versions: when one is in a picked language, the ones
+    /// without a language go, even with those kept.
+    func versions<T>(_ items: [T], language: (T) -> String?) -> [T] {
+        let allowed = items.filter { allows(language($0)) }
+        guard isActive, keepUnknown, allowed.contains(where: { language($0) != nil }) else { return allowed }
+        return allowed.filter { language($0) != nil }
     }
 }
