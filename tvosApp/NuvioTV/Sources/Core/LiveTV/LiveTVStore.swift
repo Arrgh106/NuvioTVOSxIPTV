@@ -552,20 +552,33 @@ final class LiveTVStore: ObservableObject {
             return
         }
         needsReload = false
+        // The store lives on between visits and profiles: nothing of the
+        // last account or profile may stay, and its loads must not land.
+        loadTask?.cancel()
+        renameTask?.cancel()
         account = stored
         userInfo = nil
         channels = []
         rawCategories = []
         rawChannels = []
-        renameTask?.cancel()
         channelsByGroup = [:]
         channelsByID = [:]
+        knownCategoryIDs = []
+        allVisible = []
+        separatorIDs = []
+        channelsByGroupWithoutSeparators = [:]
+        lockedGroupIDs = []
+        savedLockedGroupIDs = []
+        allowedFormats = []
+        lastUpdated = nil
         categoryGroups = []
         searchQuery = ""
         searchResults = []
+        state = .idle
         loadPreferences()
         groups = []
         selectedGroupID = LiveTVGroup.allID
+        listRevision &+= 1
         guard let stored else { return }
         // Decoding and sorting a large list blocks for seconds; on the main
         // thread tvOS kills the app (seen with ~56k channels).
@@ -580,7 +593,7 @@ final class LiveTVStore: ObservableObject {
                     categories: cache.categories, channels: cache.channels, names: names,
                     edits: LiveTVChannelEdits.read()))
             }.value
-            guard !Task.isCancelled, let self, self.account == stored else { return }
+            guard !Task.isCancelled, let self, self.account == stored, !self.needsReload else { return }
             self.state = .idle
             guard let prepared else {
                 self.refresh()
@@ -662,6 +675,9 @@ final class LiveTVStore: ObservableObject {
     func refresh(verifiedInfo: XtreamUserInfo? = nil) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)
+        // Where this account's list is kept, fixed now (the profile may
+        // change while it loads).
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope)
         loadTask?.cancel()
         state = .loading
         loadTask = Task { [weak self] in
@@ -676,13 +692,12 @@ final class LiveTVStore: ObservableObject {
                 // Optional, as on Android: without categories everything lands in "Other".
                 let categories = (try? await Self.withRetry { try await client.liveCategories() }) ?? []
                 let channels = try await Self.withRetry { try await client.liveChannels() }
-                let scopeURL = await MainActor.run { LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope) }
                 let names = await MainActor.run { LiveTVStore.groupNamesValue() }
                 let edits = LiveTVChannelEdits.read()
                 let prepared = await Task.detached(priority: .userInitiated) {
                     LiveTVStore.prepare(categories: categories, channels: channels, names: names, edits: edits)
                 }.value
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.account == account, !self.needsReload else { return }
                 self.renameTask?.cancel()
                 self.rawCategories = categories
                 self.rawChannels = channels
@@ -701,7 +716,7 @@ final class LiveTVStore: ObservableObject {
                 )
                 Task.detached(priority: .utility) { cache.save(to: scopeURL) }
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.account == account else { return }
                 self.state = .failed(error.localizedDescription)
             }
         }
@@ -711,9 +726,10 @@ final class LiveTVStore: ObservableObject {
         guard let account else { return }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         Task { [weak self] in
-            guard let info = try? await client.login() else { return }
-            self?.userInfo = info
-            self?.allowedFormats = info.allowedOutputFormats
+            guard let info = try? await client.login(),
+                  let self, self.account == account, !self.needsReload else { return }
+            self.userInfo = info
+            self.allowedFormats = info.allowedOutputFormats
         }
     }
 
