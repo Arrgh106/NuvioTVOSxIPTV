@@ -541,10 +541,16 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// The focused row, where the focus guide on the left leads back to.
         private weak var focusedCell: LiveTVGuideRowCell?
 
-        private func setOnChannel(_ value: Bool) {
+        /// `pause`: the way to the groups opens after a pause, so a fast
+        /// swipe left through the programmes stops on the channel. Coming in
+        /// from the groups or the header there's no such swipe: open at once.
+        private func setOnChannel(_ value: Bool, pause: Bool = true) {
             onChannel = value
-            // On the channel the way to the groups opens after a pause.
-            if value { view?.leftTrap.hold() } else { view?.leftTrap.close() }
+            guard value else {
+                view?.leftTrap.close()
+                return
+            }
+            if pause { view?.leftTrap.hold() } else { view?.leftTrap.openNow() }
         }
 
         private func tick() {
@@ -635,7 +641,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     // Entering the guide (from the groups, the header or the
                     // player): on the channel, as on Android.
                     timeline.resetToNow(now)
-                    setOnChannel(true)
+                    setOnChannel(true, pause: false)
                     landOnChannel = false
                     refreshAll(now: now)
                 }
@@ -1029,6 +1035,15 @@ final class LiveTVLeftGate: UIFocusGuide {
         timer = nil
         waitingForLift = false
         isOpen = false
+        refresh()
+    }
+
+    /// Open right away (focus came in from the groups or the header).
+    func openNow() {
+        timer?.invalidate()
+        timer = nil
+        waitingForLift = false
+        isOpen = canOpen()
         refresh()
     }
 
