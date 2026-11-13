@@ -529,7 +529,10 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             let earliest = LiveTVCatchup.earliest(archiveDays: cell.channel?.archiveDays ?? 0, now: now)
             let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now, earliest: earliest)
             if !moved {
-                setOnChannel(true)
+                // On the channel the next swipe goes on to the groups, no
+                // waiting: only this swipe's own momentum stops here.
+                onChannel = true
+                view?.leftTrap.openOnLift()
                 // From the channel the groups are the next step.
                 LiveTVFocusLinks.endReturn("left on now")
             }
@@ -1070,7 +1073,22 @@ final class LiveTVLeftGate: UIFocusGuide {
 
     /// A press or swipe that was held back: the pause starts again.
     @objc func holdIfClosed() {
-        if !isOpen { hold() }
+        if !isOpen && !waitingForLift { hold() }
+    }
+
+    /// Opens the moment the finger leaves the remote (a press: a moment
+    /// later, so the same press doesn't go on too): the swipe that got
+    /// here stops here, the next one goes on.
+    func openOnLift() {
+        close()
+        guard canOpen() else { return }
+        if LiveTVFocusLinks.isTouching {
+            waitingForLift = true
+        } else {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tryOpen() }
+            }
+        }
     }
 
     func close() {
