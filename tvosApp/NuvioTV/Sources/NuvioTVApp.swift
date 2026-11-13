@@ -286,11 +286,13 @@ private enum DetailsReturnDestination {
 }
 
 enum TVTab: Hashable, Identifiable, CaseIterable {
-    case profile, home, liveTV, party, search, library, calendar, settings
+    case profile, home, liveTV, onDemand, jellyfin, party, search, library, calendar, settings
     case collection(CollectionHomeID)
 
     static var allCases: [Self] {
         var tabs: [Self] = [.profile, .home, .liveTV]
+        if isOnDemandEnabled { tabs.append(.onDemand) }
+        if isJellyfinEnabled { tabs.append(.jellyfin) }
         if isWatchPartyEnabled { tabs.append(.party) }
         tabs += [.search, .library]
         if isCalendarEnabled { tabs.append(.calendar) }
@@ -301,6 +303,19 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
     /// Settings → Appearance → Sidebar → Calendar (on unless turned off).
     static var isCalendarEnabled: Bool {
         ProfileSettings.current.object(forKey: SettingsKey.showCalendarTab) as? Bool ?? true
+    }
+
+    /// Fork (Live TV step 12b): Settings → Appearance → Sidebar → VOD
+    /// (on unless turned off), with a provider login.
+    static var isOnDemandEnabled: Bool {
+        (ProfileSettings.current.object(forKey: SettingsKey.showOnDemandTab) as? Bool ?? true)
+            && XtreamAccountStore.load() != nil
+    }
+
+    /// Fork: Settings → Appearance → Sidebar → Jellyfin (shown once a
+    /// server is added; the tab shell checks that).
+    static var isJellyfinEnabled: Bool {
+        ProfileSettings.current.object(forKey: SettingsKey.showJellyfinTab) as? Bool ?? true
     }
 
     /// Settings → Appearance → Sidebar → Watch Party (on unless turned off).
@@ -314,6 +329,8 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return "Profile"
         case .home: return "Home"
         case .liveTV: return "Live TV"
+        case .onDemand: return "VOD"
+        case .jellyfin: return "Jellyfin"
         case .search: return "Search"
         case .library: return "Library"
         case .calendar: return "Calendar"
@@ -327,6 +344,8 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return L10n.string("settings_profiles", fallback: "Profile")
         case .home: return L10n.string("nav_home", fallback: "Home")
         case .liveTV: return L10n.string("nav_live_tv", fallback: "Live TV")
+        case .onDemand: return L10n.string("livetv_ondemand_title", fallback: "VOD")
+        case .jellyfin: return "Jellyfin"
         case .search: return L10n.string("nav_search", fallback: "Search")
         case .library: return L10n.string("nav_library", fallback: "Library")
         case .calendar: return L10n.string("nav_calendar", fallback: "Calendar")
@@ -340,6 +359,8 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return "person.crop.circle"
         case .home: return "house"
         case .liveTV: return "tv"
+        case .onDemand: return "film.stack"
+        case .jellyfin: return "server.rack"
         case .search: return "magnifyingglass"
         case .library: return "rectangle.stack"
         case .calendar: return "calendar"
@@ -863,6 +884,12 @@ struct ContentView: View {
             Task(priority: .utility) {
                 await SMBSessionManager.shared.connectAll()
                 await JellyfinSessionManager.shared.connectAll()
+            }
+            // Fork (Live TV step 12a): the provider's movies and series,
+            // read once a day, a little after the start (as on Android).
+            Task(priority: .utility) { @MainActor in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                OnDemandLibrary.shared.refreshIfNeeded()
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -3016,6 +3043,17 @@ struct ContentView: View {
                 }
             },
             onNavigateToDetails: { contentId, contentType in
+                // Fork (Live TV step 12b): a provider title (VOD page or
+                // row) opens as its catalog match when there is one.
+                if OnDemandID.parse(contentId) != nil {
+                    Task { @MainActor in
+                        let target = await OnDemandDetails.target(for: contentId, type: contentType)
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            openDetailsRoot(id: target.id, type: target.type)
+                        }
+                    }
+                    return
+                }
                 // Home defers its focus-restoration render until Details closes,
                 // so every tab can now use the same presentation transaction.
                 withAnimation(.easeInOut(duration: 0.28)) {
@@ -4479,6 +4517,12 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
     @AppStorage(SettingsKey.showCalendarTab) private var showCalendarTab = true
+    /// Fork (Live TV step 12b): the VOD and Jellyfin pages.
+    @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
+    @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
+    @ObservedObject private var jellyfinServers = JellyfinServerStore.shared
+    private var showsOnDemandTab: Bool { showOnDemandTab && XtreamAccountStore.load() != nil }
+    private var showsJellyfinTab: Bool { showJellyfinTab && !jellyfinServers.servers.isEmpty }
     @AppStorage(SettingsKey.showWatchPartyTab) private var showWatchPartyTab = true
     @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
     @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
@@ -4514,6 +4558,12 @@ private struct TVMainTabView: View {
         }
         .onChange(of: showCalendarTab) { _, isShown in
             if !isShown, selectedTab == .calendar { selectedTab = .home }
+        }
+        .onChange(of: showOnDemandTab) { _, isShown in
+            if !isShown, selectedTab == .onDemand { selectedTab = .home }
+        }
+        .onChange(of: showJellyfinTab) { _, isShown in
+            if !isShown, selectedTab == .jellyfin { selectedTab = .home }
         }
         .onChange(of: showWatchPartyTab) { _, isShown in
             if !isShown, selectedTab == .party { selectedTab = .home }
@@ -4663,6 +4713,22 @@ private struct TVMainTabView: View {
             .id(activeProfile?.id ?? "none")
     }
 
+    private var onDemandTabContent: some View {
+        OnDemandPageView(
+            onOpen: { id, type in onNavigateToDetails(id, type) },
+            onOpenSettings: { selectedTab = .settings }
+        )
+            .id(activeProfile?.id ?? "none")
+    }
+
+    private var jellyfinTabContent: some View {
+        JellyfinPageView(
+            onOpen: { id, type in onNavigateToDetails(id, type) },
+            onOpenSettings: { selectedTab = .settings }
+        )
+            .id(activeProfile?.id ?? "none")
+    }
+
     private var calendarTabContent: some View {
         CalendarView(
             onOpenEntry: { entry in onOpenCalendarEntry?(entry) },
@@ -4740,6 +4806,16 @@ private struct TVMainTabView: View {
             liveTVTabContent
                 .tabItem { Label(TVTab.liveTV.title, systemImage: TVTab.liveTV.symbol) }
                 .tag(TVTab.liveTV)
+            if showsOnDemandTab {
+                onDemandTabContent
+                    .tabItem { Label(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol) }
+                    .tag(TVTab.onDemand)
+            }
+            if showsJellyfinTab {
+                jellyfinTabContent
+                    .tabItem { Label(TVTab.jellyfin.title, systemImage: TVTab.jellyfin.symbol) }
+                    .tag(TVTab.jellyfin)
+            }
             if WatchPartyConfiguration.isEnabled && showWatchPartyTab {
                 partyTabContent
                     .tabItem { Label(TVTab.party.title, systemImage: TVTab.party.symbol) }
@@ -4801,9 +4877,22 @@ private struct TVMainTabView: View {
             Tab(TVTab.liveTV.title, systemImage: TVTab.liveTV.symbol, value: TVTab.liveTV) {
                 liveTVTabContent
             }
-            if WatchPartyConfiguration.isEnabled && showWatchPartyTab {
-                Tab(TVTab.party.title, systemImage: TVTab.party.symbol, value: TVTab.party) {
-                    partyTabContent
+            // One group: a tab builder takes at most 10 entries.
+            Group {
+                if showsOnDemandTab {
+                    Tab(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol, value: TVTab.onDemand) {
+                        onDemandTabContent
+                    }
+                }
+                if showsJellyfinTab {
+                    Tab(TVTab.jellyfin.title, systemImage: TVTab.jellyfin.symbol, value: TVTab.jellyfin) {
+                        jellyfinTabContent
+                    }
+                }
+                if WatchPartyConfiguration.isEnabled && showWatchPartyTab {
+                    Tab(TVTab.party.title, systemImage: TVTab.party.symbol, value: TVTab.party) {
+                        partyTabContent
+                    }
                 }
             }
             Tab(TVTab.search.title, systemImage: TVTab.search.symbol, value: TVTab.search) {
@@ -5060,6 +5149,8 @@ private final class TVHomeFocusWork {
         let calendarToday: [NuvioMeta]
         /// Fork: Home's Live TV row.
         var liveTV: [NuvioMeta] = []
+        /// Fork: Home's VOD row.
+        var onDemand: [NuvioMeta] = []
     }
     struct CachedVisibleSections {
         let signature: VisibleSectionsSignature
@@ -5505,6 +5596,8 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.homeCalendarToday) private var homeCalendarToday = true
     /// Fork: Home's Live TV row; changes only when its channels do.
     @ObservedObject private var liveTVRow = LiveTVHomeRowModel.shared
+    /// Fork (Live TV step 12b): the provider's latest movies and series.
+    @ObservedObject private var onDemandRow = OnDemandHomeRowModel.shared
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
@@ -8454,7 +8547,8 @@ struct TVHomeView: View {
             cwLandscape: continueWatchingLandscape,
             landscapePosters: landscapePosters,
             calendarToday: homeCalendarToday ? calendarToday.metas : [],
-            liveTV: collectionHome == nil ? liveTVRow.metas : []
+            liveTV: collectionHome == nil ? liveTVRow.metas : [],
+            onDemand: collectionHome == nil ? onDemandRow.metas : []
         )
 
         if let cached = focusWork.cachedVisibleSections, cached.signature == signature {
@@ -8484,9 +8578,15 @@ struct TVHomeView: View {
             title: L10n.string("livetv_title", fallback: "Live TV"),
             items: liveTVRow.metas
         )]
+        let onDemandSections = onDemandRow.metas.isEmpty ? [] : [TVHomeSection(
+            id: OnDemandHomeRowModel.sectionID,
+            title: L10n.string("livetv_ondemand_title", fallback: "VOD"),
+            items: onDemandRow.metas
+        )]
         let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
             + ((upcomingMetas.isEmpty || !continueWatchingVisible) ? [] : [upcomingSection])
             + liveTVSections
+            + onDemandSections
             + ((calendarToday.isEmpty || !homeCalendarToday) ? [] : [calendarTodaySection])
             + [localTitlesSection].compactMap { $0 }
             + jellyfinSections
@@ -8502,6 +8602,7 @@ struct TVHomeView: View {
                 if !section.collectionFolders.isEmpty
                     || section.id == TVHomeSection.localTitlesId
                     || section.id == LiveTVHomeRowModel.sectionID
+                    || section.id == OnDemandHomeRowModel.sectionID
                     || section.id == TVHomeSection.jellyfinId
                     || section.id.hasPrefix(TVHomeSection.jellyfinLibraryIdPrefix) {
                     return section

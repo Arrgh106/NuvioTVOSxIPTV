@@ -173,6 +173,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             gate.stay = { [weak self] in self?.focusedCell }
             gate.onward = { [LiveTVFocusLinks.groups].compactMap { $0 } }
             gate.canOpen = { [weak self] in (self?.onChannel ?? false) && !(self?.reordering ?? false) }
+            gate.onBlocked = { [weak self] in self?.focusEngineLeft() }
             LiveTVFocusLinks.guideGate = gate
             LiveTVFocusLinks.prepareGuideReturn = { [weak self] in
                 guard let self, let collection = self.view?.collectionView else { return }
@@ -481,17 +482,57 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             // On the channel the focus guide on the left takes Left; a press
             // it held back restarts the pause.
             if onChannel {
-                view?.leftTrap.holdIfClosed()
+                // A quick swipe can end here instead of in the focus engine:
+                // with the way open, move on to the groups ourselves, or the
+                // swipe is lost and Left takes two.
+                if let view, view.leftTrap.isOpen, let groups = LiveTVFocusLinks.groups,
+                   let system = UIFocusSystem.focusSystem(for: view) {
+                    system.requestFocusUpdate(to: groups)
+                    system.updateFocusIfNeeded()
+                } else {
+                    view?.leftTrap.holdIfClosed()
+                }
                 return
             }
+            stepLeft()
+        }
+
+        /// A Left the focus engine took instead of the swipe recognizer (a
+        /// short swipe from a programme ran into the closed gate and was
+        /// lost): the same step back.
+        private func focusEngineLeft() {
+            // Only during a touch, and not right after Up or Down moved the
+            // row (the gate is asked then too, without a Left).
+            guard !reordering, !onChannel, focusedRow != nil, LiveTVFocusLinks.isTouching,
+                  Date().timeIntervalSince(lastRowChange) > 0.3 else { return }
+            stepLeft()
+        }
+
+        /// When focus last moved to another row.
+        private var lastRowChange = Date.distantPast
+
+        /// Touch and time of the last step back: one swipe the recognizer
+        /// and the focus engine both saw counts once.
+        private var lastLeftStep: (session: Int, at: Date)?
+
+        /// From a programme: back through time, or onto the channel.
+        private func stepLeft() {
             guard let cell = focusedRow else { return }
             let now = Date()
+            if let last = lastLeftStep, last.session == LiveTVFocusLinks.touchSession,
+               now.timeIntervalSince(last.at) < 0.35 {
+                return
+            }
+            lastLeftStep = (LiveTVFocusLinks.touchSession, now)
             let before = timeline
             // Channels with catch-up: back through the past first.
             let earliest = LiveTVCatchup.earliest(archiveDays: cell.channel?.archiveDays ?? 0, now: now)
             let moved = timeline.moveLeft(in: cell.strip.programmes ?? [], now: now, earliest: earliest)
             if !moved {
-                setOnChannel(true)
+                // On the channel the next swipe goes on to the groups, no
+                // waiting: only this swipe's own momentum stops here.
+                onChannel = true
+                view?.leftTrap.openOnLift()
                 // From the channel the groups are the next step.
                 LiveTVFocusLinks.endReturn("left on now")
             }
@@ -532,10 +573,16 @@ struct LiveTVGuideGrid: UIViewRepresentable {
         /// The focused row, where the focus guide on the left leads back to.
         private weak var focusedCell: LiveTVGuideRowCell?
 
-        private func setOnChannel(_ value: Bool) {
+        /// `pause`: the way to the groups opens after a pause, so a fast
+        /// swipe left through the programmes stops on the channel. Coming in
+        /// from the groups or the header there's no such swipe: open at once.
+        private func setOnChannel(_ value: Bool, pause: Bool = true) {
             onChannel = value
-            // On the channel the way to the groups opens after a pause.
-            if value { view?.leftTrap.hold() } else { view?.leftTrap.close() }
+            guard value else {
+                view?.leftTrap.close()
+                return
+            }
+            if pause { view?.leftTrap.hold() } else { view?.leftTrap.openNow() }
         }
 
         private func tick() {
@@ -614,6 +661,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 returnPending = false
                 collectionView.remembersLastFocusedIndexPath = true
                 if context.previouslyFocusedItem is LiveTVGuideRowCell {
+                    if (context.previouslyFocusedItem as? LiveTVGuideRowCell) !== cell { lastRowChange = Date() }
                     LiveTVFocusLinks.endReturn("moved in guide")
                 } else if LiveTVFocusLinks.returningFromPlayer {
                     // Stays set a moment: SwiftUI may still move focus on.
@@ -626,7 +674,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     // Entering the guide (from the groups, the header or the
                     // player): on the channel, as on Android.
                     timeline.resetToNow(now)
-                    setOnChannel(true)
+                    setOnChannel(true, pause: false)
                     landOnChannel = false
                     refreshAll(now: now)
                 }
@@ -1001,6 +1049,19 @@ final class LiveTVLeftGate: UIFocusGuide {
     /// moment it lifts, without a second pause (that one swallowed the
     /// next swipe, so Left sometimes took two).
     private var waitingForLift = false
+    /// The focus engine ran into the closed gate (a Left the swipe
+    /// recognizer missed, e.g. a short swipe): the guide takes it as Left.
+    var onBlocked: (() -> Void)?
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment]! {
+        get {
+            if !isOpen, onBlocked != nil {
+                Task { @MainActor [weak self] in self?.onBlocked?() }
+            }
+            return super.preferredFocusEnvironments
+        }
+        set { super.preferredFocusEnvironments = newValue }
+    }
 
     /// Closes now and opens after the pause.
     func hold() {
@@ -1012,7 +1073,22 @@ final class LiveTVLeftGate: UIFocusGuide {
 
     /// A press or swipe that was held back: the pause starts again.
     @objc func holdIfClosed() {
-        if !isOpen { hold() }
+        if !isOpen && !waitingForLift { hold() }
+    }
+
+    /// Opens the moment the finger leaves the remote (a press: a moment
+    /// later, so the same press doesn't go on too): the swipe that got
+    /// here stops here, the next one goes on.
+    func openOnLift() {
+        close()
+        guard canOpen() else { return }
+        if LiveTVFocusLinks.isTouching {
+            waitingForLift = true
+        } else {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tryOpen() }
+            }
+        }
     }
 
     func close() {
@@ -1020,6 +1096,15 @@ final class LiveTVLeftGate: UIFocusGuide {
         timer = nil
         waitingForLift = false
         isOpen = false
+        refresh()
+    }
+
+    /// Open right away (focus came in from the groups or the header).
+    func openNow() {
+        timer?.invalidate()
+        timer = nil
+        waitingForLift = false
+        isOpen = canOpen()
         refresh()
     }
 

@@ -38,7 +38,9 @@ enum JellyfinLiveLookup {
     /// Streams for a `videoId` (`tt…`, `tmdb:…`, optionally `:season:episode`)
     /// from every configured server, queried in parallel. Never throws: an
     /// unreachable server just contributes nothing.
-    static func streams(videoId: String) async -> [NuvioStream] {
+    /// Name, year and ids of the title a video id belongs to (also used by
+    /// VOD, step 12a).
+    static func hint(forVideoId videoId: String) async -> Hint? {
         let ids = JellyfinCatalogMatch.catalogIDs(fromVideoId: videoId)
         let parts = videoId.split(separator: ":")
         let baseKey = ids.tmdbID != nil ? "tmdb:\(ids.tmdbID!)" : String(parts.first ?? "")
@@ -50,7 +52,13 @@ enum JellyfinLiveLookup {
             found = await cinemetaHint(imdbID: imdb, isSeries: episode.season != nil)
             if let found { hints[baseKey] = found }
         }
-        guard let hint = found else { return [] }
+        return found
+    }
+
+    static func streams(videoId: String) async -> [NuvioStream] {
+        let ids = JellyfinCatalogMatch.catalogIDs(fromVideoId: videoId)
+        let episode = StreamsRepository.seasonEpisode(fromVideoId: videoId)
+        guard let hint = await hint(forVideoId: videoId) else { return [] }
         let imdb = ids.imdbID ?? hint.imdbID
         let tmdb = ids.tmdbID ?? hint.tmdbID
 

@@ -15,6 +15,15 @@ struct XtreamClient: Sendable {
         return URLSession(configuration: config)
     }()
 
+    /// Movie and series lists can be tens of MB on big panels (step 12).
+    private static let longSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 40 * 60
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
+
     /// Many panels reject unknown clients; a common player User-Agent is the
     /// most compatible default.
     static let userAgent = "VLC/3.0.20 LibVLC/3.0.20"
@@ -77,6 +86,43 @@ struct XtreamClient: Sendable {
             .sorted { $0.start < $1.start }
     }
 
+    // MARK: VOD (step 12)
+
+    func vodCategories() async throws -> [XtreamCategory] {
+        let data = try await get(action: "get_vod_categories", long: true)
+        return ((try? JSONDecoder().decode([XtreamCategory].self, from: data)) ?? []).filter { !$0.id.isEmpty }
+    }
+
+    func seriesCategories() async throws -> [XtreamCategory] {
+        let data = try await get(action: "get_series_categories", long: true)
+        return ((try? JSONDecoder().decode([XtreamCategory].self, from: data)) ?? []).filter { !$0.id.isEmpty }
+    }
+
+    /// The whole list as it came (`get_vod_streams` / `get_series`).
+    func onDemandList(_ kind: OnDemandKind) async throws -> Data {
+        try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true)
+    }
+
+    /// `get_vod_info`: plot, pictures and details of one movie.
+    func vodInfo(vodID: Int) async throws -> Data {
+        try await get(action: "get_vod_info", extra: [URLQueryItem(name: "vod_id", value: String(vodID))], timeout: 15)
+    }
+
+    /// `get_series_info`: seasons and episodes of one series.
+    func seriesInfo(seriesID: Int) async throws -> Data {
+        try await get(action: "get_series_info", extra: [URLQueryItem(name: "series_id", value: String(seriesID))], timeout: 15)
+    }
+
+    /// `{server}/movie/{user}/{pass}/{id}.{ext}`
+    func movieURL(streamID: Int, ext: String?) -> URL? {
+        URL(string: "\(server)/movie/\(Self.pathEncode(username))/\(Self.pathEncode(password))/\(streamID).\(ext ?? "mp4")")
+    }
+
+    /// `{server}/series/{user}/{pass}/{id}.{ext}`
+    func episodeURL(episodeID: Int, ext: String) -> URL? {
+        URL(string: "\(server)/series/\(Self.pathEncode(username))/\(Self.pathEncode(password))/\(episodeID).\(ext)")
+    }
+
     // MARK: Links
 
     /// `{server}/live/{user}/{pass}/{id}.{ext}`
@@ -101,7 +147,9 @@ struct XtreamClient: Sendable {
 
     // MARK: Transport
 
-    private func get(action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil) async throws -> Data {
+    private func get(
+        action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil, long: Bool = false
+    ) async throws -> Data {
         guard var components = URLComponents(string: "\(server)/player_api.php"),
               components.host?.isEmpty == false else {
             throw XtreamError.invalidServer
@@ -121,7 +169,7 @@ struct XtreamClient: Sendable {
         var request = URLRequest(url: url)
         if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await Self.session.data(for: request)
+        let (data, response) = try await (long ? Self.longSession : Self.session).data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             if http.statusCode == 401 || http.statusCode == 403 { throw XtreamError.authenticationFailed }
             throw XtreamError.badStatus(http.statusCode)
