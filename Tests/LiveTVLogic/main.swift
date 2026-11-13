@@ -476,5 +476,35 @@ check(OnDemandMatch.pick(found, key: "dune", year: 2010) == nil, "year too far")
 check(OnDemandMatch.pick(found, key: "dune", year: nil) == "tt1", "no year: first of that name")
 check(OnDemandMatch.pick(found, key: "arrival", year: 2016) == nil, "other name")
 
+// MARK: VOD search and duplicates (step 12c)
+
+check(OnDemandTitle.searchWords("The Dark Knight 2008") == ["the", "dark", "knight"], "search words: year off")
+check(OnDemandTitle.searchWords("Dune 4K") == ["dune"], "search words: quality off")
+check(OnDemandTitle.searchWords("1917") == ["1917"], "search words: a year alone stays")
+check(OnDemandTitle.searchWords("  ") == [], "search words: nothing")
+func vod12c(_ id: Int, _ name: String, tmdb: Int? = nil, year: Int? = nil, kind: OnDemandKind = .movie) -> OnDemandItem {
+    OnDemandItem(kind: kind, id: id, name: name, key: OnDemandTitle.key(name), categoryID: "1", ext: "mkv", tmdb: tmdb, year: year)
+}
+var dedupe = OnDemandDedupe()
+let copies12c = [vod12c(1, "Dune 4K", tmdb: 438631, year: 2021), vod12c(2, "Dune", tmdb: 438631, year: 2021),
+                 vod12c(3, "Dune", year: 1984), vod12c(4, "Dune HD", year: 2021), vod12c(5, "Dune", kind: .series), vod12c(6, "Arrival", year: 2016)]
+check(dedupe.filter(copies12c).map(\.id) == [1, 3, 5, 6], "dedupe: same TMDB id, same name and year; other years and kinds stay")
+var noYear = OnDemandDedupe()
+check(noYear.filter([vod12c(1, "Heat"), vod12c(2, "Heat", year: 1995)]).map(\.id) == [1], "dedupe: no year matches any year")
+var keepsLater = OnDemandDedupe()
+_ = keepsLater.filter([vod12c(1, "Up", year: 2009)])
+check(keepsLater.filter([vod12c(2, "Up 4K", year: 2009), vod12c(3, "Cars", year: 2006)]).map(\.id) == [3], "dedupe: across pages")
+let known12c: [(name: String, year: Int?, tmdb: Int?)] = [("Dune", 2021, nil), ("Arrival", nil, 329865)]
+let only = OnDemandSearchMatch.providerOnly(
+    [vod12c(1, "Dune", year: 2022), vod12c(2, "Dune", year: 1984), vod12c(3, "Arrival 2016", tmdb: 329865), vod12c(4, "Local Show")],
+    known: known12c)
+check(only.map(\.id) == [2, 4], "provider only: year within one and TMDB id count as known")
+let movies12c = (1...30).map { vod12c($0, "M\($0)") }
+let series12c = (100...104).map { vod12c($0, "S\($0)", kind: .series) }
+let mixed = OnDemandSearchMatch.mix(movies: movies12c, series: series12c, limit: 20)
+check(mixed.count == 20 && mixed.filter { $0.kind == .series }.count == 5, "mix: all series fit, movies fill up")
+check(OnDemandSearchMatch.mix(movies: movies12c, series: (100...140).map { vod12c($0, "S\($0)", kind: .series) }, limit: 20)
+    .filter { $0.kind == .movie }.count == 10, "mix: half each when both are long")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -119,6 +119,9 @@ struct OnDemandPageView: View {
     @State private var loaded = false
     @State private var offsets: [String: Int] = [:]
     @State private var loadingMore: Set<String> = []
+    /// "Merge Duplicates": what each row has shown so far.
+    @State private var dedupes: [String: OnDemandDedupe] = [:]
+    @State private var managing = false
     private static let page = 30
 
     private var kind: OnDemandKind { OnDemandKind(rawValue: kindRaw) ?? .movie }
@@ -137,6 +140,9 @@ struct OnDemandPageView: View {
                         BrowsePill(title: L10n.string("livetv_ondemand_series", fallback: "Series"), selected: kind == .series) {
                             kindRaw = OnDemandKind.series.rawValue
                         }
+                        BrowsePill(title: L10n.string("livetv_vod_categories", fallback: "Categories"), selected: false) {
+                            managing = true
+                        }
                     }
                 }
                 if sections.isEmpty {
@@ -151,7 +157,13 @@ struct OnDemandPageView: View {
         .onReceive(NotificationCenter.default.publisher(for: LiveTVParentalControls.changedNotification)) { _ in
             Task { await load() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: OnDemandPreferences.changedNotification)) { _ in
+            Task { await load() }
+        }
         .onAppear { library.refreshIfNeeded() }
+        .sheet(isPresented: $managing) {
+            LiveTVSettingsRows.clearSheetBackground(OnDemandCategoriesSheet(initialKind: kind))
+        }
     }
 
     private var subtitle: String {
@@ -187,18 +199,23 @@ struct OnDemandPageView: View {
         guard kind == self.kind else { return }
         var next: [TVHomeSection] = []
         var nextOffsets: [String: Int] = [:]
+        var nextDedupes: [String: OnDemandDedupe] = [:]
+        let merge = OnDemandPreferences.shared.mergeDuplicates
         for (category, items) in rows {
             guard !OnDemandBrowse.isHidden(kind: kind, categoryID: category.id, categoryName: category.name) else { continue }
+            let id = "ondemand_\(kind.rawValue)_\(category.id)"
+            var dedupe = OnDemandDedupe()
             let metas = items
-                .filter { !OnDemandBrowse.isHidden($0, categoryName: category.name) }
+                .filter { !OnDemandBrowse.isHidden($0, categoryName: category.name) && (!merge || dedupe.isNew($0)) }
                 .map { OnDemandBrowse.meta($0, tags: tags) }
             guard !metas.isEmpty else { continue }
-            let id = "ondemand_\(kind.rawValue)_\(category.id)"
             next.append(TVHomeSection(id: id, title: category.name, items: metas))
             nextOffsets[id] = items.count < page ? -1 : page
+            nextDedupes[id] = dedupe
         }
         sections = next
         offsets = nextOffsets
+        dedupes = nextDedupes
         loadedKind = kind
         loaded = true
     }
@@ -218,9 +235,12 @@ struct OnDemandPageView: View {
             }.value
             loadingMore.remove(sectionID)
             guard kind == loadedKind, let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
+            let merge = OnDemandPreferences.shared.mergeDuplicates
+            var dedupe = dedupes[sectionID] ?? OnDemandDedupe()
             let metas = items
-                .filter { !OnDemandBrowse.isHidden($0, categoryName: name) }
+                .filter { !OnDemandBrowse.isHidden($0, categoryName: name) && (!merge || dedupe.isNew($0)) }
                 .map { OnDemandBrowse.meta($0, tags: tags) }
+            dedupes[sectionID] = dedupe
             sections[index].items += metas
             offsets[sectionID] = items.count < page ? -1 : offset + page
         }

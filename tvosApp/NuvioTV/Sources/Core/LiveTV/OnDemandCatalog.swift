@@ -367,3 +367,80 @@ extension OnDemandParse {
         return (items, tags)
     }
 }
+
+// MARK: Search, duplicates (step 12c)
+
+extension OnDemandTitle {
+    /// What's typed in search as parts of match keys ("The Dark Knight
+    /// 2008" → ["dark", "knight"]): words that never make it into a key
+    /// (noise, a year after other words) are left out.
+    static func searchWords(_ query: String) -> [String] {
+        var words = query.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !noise.contains($0) }
+        if words.count > 1 { words.removeAll { isYear($0) } }
+        return words
+    }
+}
+
+/// "Merge Duplicates", as Android: the same TMDB id, or the same name with
+/// the same year (a copy without a year matches any year), is one title.
+/// The first copy seen stays; its details still offer every copy.
+struct OnDemandDedupe: Sendable {
+    private var tmdbSeen: Set<String> = []
+    /// Kind and key → the years seen with it (0: none).
+    private var years: [String: Set<Int>] = [:]
+
+    init() {}
+
+    mutating func isNew(_ item: OnDemandItem) -> Bool {
+        let tmdbKey = item.tmdb.map { "\(item.kind.rawValue):\($0)" }
+        if let tmdbKey, tmdbSeen.contains(tmdbKey) { return false }
+        let nameKey = "\(item.kind.rawValue):\(item.key)"
+        let year = item.year ?? 0
+        if !item.key.isEmpty, let seen = years[nameKey],
+           year == 0 || seen.contains(0) || seen.contains(year) {
+            return false
+        }
+        if let tmdbKey { tmdbSeen.insert(tmdbKey) }
+        if !item.key.isEmpty { years[nameKey, default: []].insert(year) }
+        return true
+    }
+
+    mutating func filter(_ items: [OnDemandItem]) -> [OnDemandItem] {
+        items.filter { isNew($0) }
+    }
+}
+
+enum OnDemandSearchMatch {
+    /// Provider titles that none of `known` (the add-ons' search results)
+    /// already is: not the same TMDB id, not the same name with the year
+    /// within one.
+    static func providerOnly(
+        _ items: [OnDemandItem], known: [(name: String, year: Int?, tmdb: Int?)]
+    ) -> [OnDemandItem] {
+        let tmdbs = Set(known.compactMap(\.tmdb))
+        var yearsByKey: [String: [Int?]] = [:]
+        for entry in known {
+            let key = OnDemandTitle.key(entry.name)
+            if !key.isEmpty { yearsByKey[key, default: []].append(entry.year) }
+        }
+        return items.filter { item in
+            if let tmdb = item.tmdb, tmdbs.contains(tmdb) { return false }
+            guard let years = yearsByKey[item.key] else { return true }
+            return !years.contains { year in
+                guard let year, let itemYear = item.year else { return true }
+                return abs(year - itemYear) <= 1
+            }
+        }
+    }
+
+    /// Some of each, as Android: a long list of movies doesn't hide the
+    /// series.
+    static func mix(movies: [OnDemandItem], series: [OnDemandItem], limit: Int) -> [OnDemandItem] {
+        let takeMovies = min(movies.count, max(limit / 2, limit - series.count))
+        let movieHalf = Array(movies.prefix(takeMovies))
+        return movieHalf + series.prefix(max(0, limit - movieHalf.count))
+    }
+}

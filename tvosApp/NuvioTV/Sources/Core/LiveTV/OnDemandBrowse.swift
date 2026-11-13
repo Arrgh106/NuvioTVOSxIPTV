@@ -35,12 +35,13 @@ enum OnDemandBrowse {
         )
     }
 
-    /// Categories the parental controls hide now: locked with the PIN, or
-    /// adult ones with the automatic lock.
+    /// Categories out of sight now: hidden (step 12c), locked with the PIN,
+    /// or adult ones with the automatic lock.
     static func isHidden(kind: OnDemandKind, categoryID: String, categoryName: String) -> Bool {
+        let lockID = OnDemandLookup.lockID(kind: kind, category: categoryID)
+        if OnDemandPreferences.shared.isHidden(lockID) { return true }
         let parental = LiveTVParentalControls.shared
         guard parental.isEnabled else { return false }
-        let lockID = OnDemandLookup.lockID(kind: kind, category: categoryID)
         if parental.lockedGroups.contains(lockID), !parental.unlocked.contains(lockID) { return true }
         return parental.lockAdult && LiveTVParental.isAdult(categoryName)
     }
@@ -66,7 +67,7 @@ final class OnDemandHomeRowModel: ObservableObject {
     private init() {
         for name in [
             ProfileSettings.settingsChangedNotification, ProfileSettings.activeProfileChangedNotification,
-            LiveTVParentalControls.changedNotification,
+            LiveTVParentalControls.changedNotification, OnDemandPreferences.changedNotification,
         ] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reload() }
@@ -90,7 +91,12 @@ final class OnDemandHomeRowModel: ObservableObject {
             let tags = [OnDemandKind.movie: database.tags(.movie), .series: database.tags(.series)]
             await MainActor.run {
                 guard let self else { return }
-                let shown = items.filter { !OnDemandBrowse.isHidden($0, categoryName: names[$0.kind]?[$0.categoryID] ?? "") }
+                var dedupe = OnDemandDedupe()
+                let merge = OnDemandPreferences.shared.mergeDuplicates
+                let shown = items.filter {
+                    !OnDemandBrowse.isHidden($0, categoryName: names[$0.kind]?[$0.categoryID] ?? "")
+                        && (!merge || dedupe.isNew($0))
+                }
                 let next = shown.prefix(40).map { OnDemandBrowse.meta($0, tags: tags[$0.kind] ?? []) }
                 if next != self.metas { self.metas = Array(next) }
             }

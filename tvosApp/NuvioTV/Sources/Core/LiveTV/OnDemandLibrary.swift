@@ -292,6 +292,18 @@ final class OnDemandDatabase: @unchecked Sendable {
             [kind.rawValue, key, String(tmdb ?? -1)])
     }
 
+    /// Titles whose match key has every word (step 12c, Nuvio's search):
+    /// keys starting with them first, then the shortest.
+    func search(kind: OnDemandKind, words: [String], limit: Int) -> [OnDemandItem] {
+        guard !words.isEmpty else { return [] }
+        let joined = words.joined()
+        let match = words.map { _ in "instr(key, ?) > 0" }.joined(separator: " AND ")
+        return items(
+            "SELECT \(Self.itemColumns) FROM items WHERE kind = ? AND \(match) "
+                + "ORDER BY (instr(key, ?) = 1) DESC, length(key), rowid LIMIT ?",
+            [kind.rawValue] + words + [joined, String(limit)])
+    }
+
     func item(kind: OnDemandKind, id: Int) -> OnDemandItem? {
         items("SELECT \(Self.itemColumns) FROM items WHERE kind = ? AND id = ?", [kind.rawValue, String(id)]).first
     }

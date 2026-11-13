@@ -7,6 +7,8 @@ import SwiftUI
 struct OnDemandSettingsGroup: View {
     let accentColor: Color
     @ObservedObject private var library = OnDemandLibrary.shared
+    @ObservedObject private var preferences = OnDemandPreferences.shared
+    @State private var managing = false
 
     var body: some View {
         LiveTVSettingsRows.group(
@@ -26,6 +28,31 @@ struct OnDemandSettingsGroup: View {
                 accentColor: accentColor,
                 action: { library.refresh() }
             )
+            // Step 12c.
+            LiveTVSettingsRows.toggle(
+                title: L10n.string("livetv_vod_in_search", fallback: "VOD in Search"),
+                subtitle: L10n.string("livetv_vod_in_search_detail", fallback: "Your provider's titles that your add-ons don\u{2019}t find, at the end of the search results."),
+                isOn: Binding(get: { preferences.inSearch }, set: { preferences.setInSearch($0) }),
+                accentColor: accentColor
+            )
+            LiveTVSettingsRows.toggle(
+                title: L10n.string("livetv_vod_merge", fallback: "Merge Duplicates"),
+                subtitle: L10n.string("livetv_vod_merge_detail", fallback: "The same title in several qualities shows up once. Its stream list still offers every version."),
+                isOn: Binding(get: { preferences.mergeDuplicates }, set: { preferences.setMergeDuplicates($0) }),
+                accentColor: accentColor
+            )
+            LiveTVSettingsRows.action(
+                title: L10n.string("livetv_vod_categories", fallback: "Categories"),
+                subtitle: L10n.string("livetv_vod_categories_subtitle", fallback: "Hide categories or lock them with the parental PIN"),
+                value: preferences.hidden.isEmpty
+                    ? ""
+                    : L10n.format("livetv_vod_hidden_count", fallback: "%@ hidden", preferences.hidden.count.formatted()),
+                accentColor: accentColor,
+                action: { managing = true }
+            )
+        }
+        .sheet(isPresented: $managing) {
+            LiveTVSettingsRows.clearSheetBackground(OnDemandCategoriesSheet(initialKind: .movie, accentColor: accentColor))
         }
     }
 
