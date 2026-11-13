@@ -111,12 +111,11 @@ final class OnDemandLibrary: ObservableObject {
                 self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
-                    let data = try await client.onDemandList(kind) { received, expected in
-                        let size = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
-                        let fraction = expected.map { min(1, Double(received) / Double(max($0, 1))) }
+                    let data = try await client.onDemandList(kind) { titles in
                         Task { @MainActor in
-                            guard let self, self.importTask != nil else { return }
-                            self.status = .importing(loading + " \u{00B7} " + size, fraction: fraction)
+                            guard let self, self.importTask != nil, titles > 0 else { return }
+                            self.status = .importing(loading + " \u{00B7} " + L10n.format(
+                                "livetv_ondemand_titles_count", fallback: "%@ titles", titles.formatted()), fraction: nil)
                         }
                     }
                     let ok = await Task.detached(priority: .utility) { () -> Bool in

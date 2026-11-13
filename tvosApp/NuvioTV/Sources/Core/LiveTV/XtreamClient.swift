@@ -99,11 +99,13 @@ struct XtreamClient: Sendable {
     }
 
     /// The whole list as it came (`get_vod_streams` / `get_series`).
-    /// `progress`: bytes in and, when the server says it, the size.
+    /// `progress`: how many titles are in so far, as the guide counts
+    /// its programmes.
     func onDemandList(
-        _ kind: OnDemandKind, progress: (@Sendable (_ received: Int64, _ expected: Int64?) -> Void)? = nil
+        _ kind: OnDemandKind, progress: (@Sendable (_ titles: Int) -> Void)? = nil
     ) async throws -> Data {
-        try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true, progress: progress)
+        try await get(action: kind == .movie ? "get_vod_streams" : "get_series", long: true,
+                      progress: progress.map { (onCount: $0, marker: Data((kind == .movie ? "\"stream_id\"" : "\"series_id\"").utf8)) })
     }
 
     /// `get_vod_info`: plot, pictures and details of one movie.
@@ -152,7 +154,7 @@ struct XtreamClient: Sendable {
 
     private func get(
         action: String?, extra: [URLQueryItem] = [], timeout: TimeInterval? = nil, long: Bool = false,
-        progress: (@Sendable (Int64, Int64?) -> Void)? = nil
+        progress: (onCount: @Sendable (Int) -> Void, marker: Data)? = nil
     ) async throws -> Data {
         guard var components = URLComponents(string: "\(server)/player_api.php"),
               components.host?.isEmpty == false else {
@@ -175,7 +177,8 @@ struct XtreamClient: Sendable {
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response): (Data, URLResponse)
         if let progress {
-            (data, response) = try await XtreamProgressFetch.data(for: request, configuration: Self.longSession.configuration, onProgress: progress)
+            (data, response) = try await XtreamProgressFetch.data(
+                for: request, configuration: Self.longSession.configuration, marker: progress.marker, onCount: progress.onCount)
         } else {
             (data, response) = try await (long ? Self.longSession : Self.session).data(for: request)
         }
@@ -193,26 +196,29 @@ struct XtreamClient: Sendable {
     }
 }
 
-/// A request read with progress (the VOD lists, tens of MB): reported
-/// about every MB. The size counts only when the server sends it
-/// unpacked; packed, only what's in shows.
+/// A request read with progress (the VOD lists, tens of MB): counts
+/// the entries as they come in (each has the marker once, as
+/// `"stream_id"`), reported about every 500.
 private final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
-    private let onProgress: @Sendable (Int64, Int64?) -> Void
+    private let marker: Data
+    private let onCount: @Sendable (Int) -> Void
     private var data = Data()
     private var response: URLResponse?
-    private var expected: Int64?
-    private var lastReported: Int64 = 0
+    private var count = 0
+    private var scanned = 0
+    private var lastReported = 0
 
-    private init(onProgress: @escaping @Sendable (Int64, Int64?) -> Void) {
-        self.onProgress = onProgress
+    private init(marker: Data, onCount: @escaping @Sendable (Int) -> Void) {
+        self.marker = marker
+        self.onCount = onCount
     }
 
     static func data(
         for request: URLRequest, configuration: URLSessionConfiguration,
-        onProgress: @escaping @Sendable (Int64, Int64?) -> Void
+        marker: Data, onCount: @escaping @Sendable (Int) -> Void
     ) async throws -> (Data, URLResponse) {
-        let delegate = XtreamProgressFetch(onProgress: onProgress)
+        let delegate = XtreamProgressFetch(marker: marker, onCount: onCount)
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
@@ -232,29 +238,30 @@ private final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unch
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         self.response = response
-        let packed = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding").map { !$0.isEmpty } ?? false
-        if !packed, response.expectedContentLength > 0 {
-            expected = response.expectedContentLength
-            // Capped: the header is the server's word only.
-            data.reserveCapacity(Int(min(response.expectedContentLength, 64_000_000)))
-        }
-        onProgress(0, expected)
+        onCount(0)
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
         data.append(chunk)
-        let received = Int64(data.count)
-        guard received - lastReported >= 1_000_000 else { return }
-        lastReported = received
-        onProgress(received, expected)
+        // From where the last scan stopped, less a marker's length (one
+        // split across chunks still counts once).
+        var from = max(0, scanned - (marker.count - 1))
+        while let found = data.range(of: marker, in: from..<data.count) {
+            count += 1
+            from = found.upperBound
+        }
+        scanned = data.count
+        guard count - lastReported >= 500 else { return }
+        lastReported = count
+        onCount(count)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
             continuation?.resume(throwing: (error as? URLError)?.code == .cancelled ? CancellationError() : error)
         } else if let response {
-            onProgress(Int64(data.count), expected)
+            onCount(count)
             continuation?.resume(returning: (data, response))
         } else {
             continuation?.resume(throwing: URLError(.badServerResponse))
