@@ -32,8 +32,8 @@ enum OnDemandDetails {
     private static func catalogID(kind: OnDemandKind, id: Int) async -> String? {
         guard let database = OnDemandLibrary.shared.database,
               let item = database.item(kind: kind, id: id) else { return nil }
-        let parental = LiveTVParentalControls.shared
-        if parental.isEnabled, parental.lockAdult, LiveTVParental.isAdult(item.name) { return nil }
+        // Locked or adult: never matched (and its own Details show nothing).
+        if OnDemandBrowse.isHidden(item, categoryName: database.categoryNames(kind)[item.categoryID] ?? "") { return nil }
         let type = kind == .series ? "series" : "movie"
         if let tmdb = item.tmdb,
            let imdb = await withTimeout(4, { await CinemetaCatalogRepository.imdbID(forTmdbID: tmdb, type: type) }) ?? nil {
@@ -85,6 +85,7 @@ enum OnDemandDetails {
         guard let parsed = OnDemandID.parse(contentID), parsed.season == nil,
               let database = OnDemandLibrary.shared.database,
               let item = database.item(kind: parsed.kind, id: parsed.id),
+              !OnDemandBrowse.isHidden(item, categoryName: database.categoryNames(parsed.kind)[item.categoryID] ?? ""),
               let account = XtreamAccountStore.load() else { return nil }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         let info = await self.info(contentID: contentID, kind: parsed.kind, id: parsed.id, client: client)

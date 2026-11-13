@@ -70,8 +70,11 @@ enum OnDemandLookup {
         guard let database = OnDemandLibrary.shared.database,
               let item = database.item(kind: own.kind, id: own.id),
               let account = XtreamAccountStore.load() else { return [] }
-        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         let category = database.categoryNames(own.kind)[item.categoryID]
+        // Also when opened from Continue Watching or the history: a locked
+        // (or adult) category plays nothing.
+        guard !OnDemandBrowse.isHidden(item, categoryName: category ?? "") else { return [] }
+        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         let title = OnDemandTitle.searchName(item.name, tags: database.tags(own.kind))
         if let season = own.season, let number = own.episode {
             guard let data = try? await client.seriesInfo(seriesID: own.id),
