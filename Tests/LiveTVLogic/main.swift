@@ -420,7 +420,7 @@ check(LiveTVParental.lockedIDs(groups: parentalGroups, locked: ["3"], lockAdult:
 check(LiveTVParental.lockout(afterFailures: 4) == 0 && LiveTVParental.lockout(afterFailures: 5) == 30, "wait after 5 wrong PINs")
 check(LiveTVParental.lockout(afterFailures: 6) == 60 && LiveTVParental.lockout(afterFailures: 30) == 900, "wait doubles, at most 15 min")
 
-// MARK: On Demand (step 12a)
+// MARK: VOD (step 12a)
 
 check(OnDemandTitle.key("EN - Dune (2021)", tags: ["en"]) == "dune", "learned tag, year in brackets off")
 check(OnDemandTitle.key("|DE| Der Pate") == "derpate", "pipe tag off")
@@ -461,7 +461,7 @@ check(parsedItems.count == 2, "entries without id left out")
 check(parsedItems.first?.id == 5 && parsedItems.first?.tmdb == 438631 && parsedItems.first?.year == 2021 && parsedItems.first?.categoryID == "7" && parsedItems.first?.key == "dune", "numbers as strings, year from name")
 check(parsedItems.last?.name == "Arrival" && parsedItems.last?.tmdb == nil && parsedItems.last?.year == 2016 && parsedItems.last?.ext == nil, "title fallback, tmdb 0 ignored, first non-empty year field")
 
-// MARK: On Demand page and Home row (step 12b)
+// MARK: VOD page and Home row (step 12b)
 
 check(OnDemandID.make(.movie, 5) == "ondemand:movie:5" && OnDemandID.episode(seriesID: 7, season: 1, episode: 2) == "ondemand:series:7:1:2", "ids")
 let parsedID = OnDemandID.parse("ondemand:series:7:1:2")

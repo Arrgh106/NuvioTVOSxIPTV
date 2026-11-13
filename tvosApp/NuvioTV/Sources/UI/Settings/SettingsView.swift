@@ -44,7 +44,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .playback:
             return L10n.string("settings_playback", fallback: "Playback")
         case .liveTV:
-            return L10n.string("livetv_title", fallback: "Live TV")
+            return L10n.string("settings_livetv_vod", fallback: "Live TV / VOD")
         case .subtitles:
             return L10n.string("tvos_settings_subtitle_style", fallback: "Subtitle Style")
         case .advanced:
@@ -198,8 +198,8 @@ enum SettingsKey {
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
     /// Settings → Appearance → Sidebar → Calendar.
     static let showCalendarTab = "nuvio.tv.settings.layout.showCalendarTab"
-    /// Fork (Live TV step 12b): the On Demand and Jellyfin pages in the
-    /// sidebar, and the On Demand row on Home.
+    /// Fork (Live TV step 12b): the VOD and Jellyfin pages in the
+    /// sidebar, and the VOD row on Home.
     static let showOnDemandTab = "nuvio.tv.settings.layout.showOnDemandTab"
     static let showJellyfinTab = "nuvio.tv.settings.layout.showJellyfinTab"
     static let onDemandHomeRow = "nuvio.tv.settings.layout.onDemandHomeRow"
@@ -2427,7 +2427,7 @@ private struct AppearanceSettingsView: View {
                     accentColor: accentColor
                 )
                 SettingsToggleRow(
-                    title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+                    title: L10n.string("livetv_ondemand_title", fallback: "VOD"),
                     subtitle: L10n.string(
                         "settings_show_ondemand_tab_subtitle",
                         fallback: "Your Live TV provider's movies and series, a row per category. Their streams stay in the stream lists either way."
@@ -2454,7 +2454,7 @@ private struct AppearanceSettingsView: View {
                 )
             ) {
                 SettingsToggleRow(
-                    title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+                    title: L10n.string("livetv_ondemand_title", fallback: "VOD"),
                     subtitle: L10n.string(
                         "settings_ondemand_home_row_subtitle",
                         fallback: "What your Live TV provider added last, movies and series"

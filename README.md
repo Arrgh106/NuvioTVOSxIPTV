@@ -78,15 +78,15 @@ The password is stored in the Apple TV Keychain. Each Nuvio profile has its own 
 - Channel rows show what's on now, from your provider's EPG.
 - **Catch-up:** on channels with an archive, OK on a past show (marked ↺) plays it; long press OK on the show on now for *Watch from the beginning*. In full screen, Left opens the guide, Right the channel's schedule and dates. Play/Pause pauses; in a replay, pressing it again asks whether to continue or go back to live.
 - **Reminders:** OK on a show to come: *Remind me*. A minute before it starts you can switch to it from anywhere in the app. Settings → Live TV lists them.
-- **Home:** your favorite channels with what's on, below Continue Watching (Settings → Live TV → Integration).
+- **Home:** your favorite channels with what's on, below Continue Watching (Settings → Live TV / VOD → Integration).
 - **Wrong or missing programmes?** Long press a channel in the guide → *Assign EPG* and pick the right guide channel.
-- **Channel names:** long press a channel or a group → *Rename*. Settings → Live TV → Channel List → *Name Cleanup* takes words like "USA", "FHD" or "24/7" off the start or end of every name.
+- **Channel names:** long press a channel or a group → *Rename*. Settings → Live TV / VOD → Channel List → *Name Cleanup* takes words like "USA", "FHD" or "24/7" off the start or end of every name.
 - **Your order:** long press a channel → *Reorder Channels* (or a group → *Reorder Groups*). OK picks one up, move to the new place, OK puts it there; Back saves.
 - **Your own groups:** long press a channel → *Add to Group…* (pick one of yours or make a new one). The channel stays in its own group too. Your groups sit above the provider's; long press one to rename, delete or reorder it.
-- **Parental controls:** Settings → Live TV → Parental Controls → *Set a PIN* (4 to 8 digits). Then long press a group → *Lock with PIN*, or let groups named Adult, XXX or 18+ lock themselves. Locked groups ask for the PIN and stay out of All Channels, search, favorites and your groups.
-- **On Demand:** your provider's movies and series show up as *On Demand* in a title's stream list, next to your add-ons (matched by TMDB id, or by name and year). Read once a day; Settings → Live TV → On Demand. The *On Demand* page in the sidebar has a row per category (Movies / Series), and Home an *On Demand* row with what the provider added last. A title opens Nuvio's own details when it can be matched, otherwise the provider's details.
-- **Jellyfin page:** your Jellyfin libraries in the sidebar, a row each. Settings → Appearance: the On Demand and Jellyfin pages (Sidebar) and their Home rows (Home Rows) can each be turned off; their streams stay in the stream lists.
-- **More guides:** Settings → Live TV → Guide Sources → *Add XMLTV Guide* (a link to an `.xml` or `.xml.gz` file). Each guide can be turned off and moved in time; a channel takes the guide with real listings that goes furthest ahead. The provider's own guide can be turned off there too.
+- **Parental controls:** Settings → Live TV / VOD → Parental Controls → *Set a PIN* (4 to 8 digits). Then long press a group → *Lock with PIN*, or let groups named Adult, XXX or 18+ lock themselves. Locked groups ask for the PIN and stay out of All Channels, search, favorites and your groups.
+- **VOD:** your provider's movies and series show up as *VOD* in a title's stream list, next to your add-ons (matched by TMDB id, or by name and year). Read once a day; Settings → Live TV / VOD → VOD. The *VOD* page in the sidebar has a row per category (Movies / Series), and Home an *VOD* row with what the provider added last. A title opens Nuvio's own details when it can be matched, otherwise the provider's details.
+- **Jellyfin page:** your Jellyfin libraries in the sidebar, a row each. Settings → Appearance: the VOD and Jellyfin pages (Sidebar) and their Home rows (Home Rows) can each be turned off; their streams stay in the stream lists.
+- **More guides:** Settings → Live TV / VOD → Guide Sources → *Add XMLTV Guide* (a link to an `.xml` or `.xml.gz` file). Each guide can be turned off and moved in time; a channel takes the guide with real listings that goes furthest ahead. The provider's own guide can be turned off there too.
 
 ## nuvio.tv account sync
 
@@ -134,7 +134,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Parental controls (PIN lock for groups) | ✅ Done |
 | Catch-up, restart live shows | ✅ Done |
 | Time-shift (pause and rewind live without an archive) | 🗓 Planned |
-| On Demand (provider movies & series, matched to Nuvio details) | 🚧 In progress |
+| VOD (provider movies & series, matched to Nuvio details) | 🚧 In progress |
 | M3U playlists (link / Dispatcharr) | 🗓 Planned |
 | Live TV in search, "Find & stream" through your add-ons | 🗓 Planned |
 | Sports hub (scores, schedules, channels showing a game) | 🗓 Planned |

@@ -173,6 +173,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             gate.stay = { [weak self] in self?.focusedCell }
             gate.onward = { [LiveTVFocusLinks.groups].compactMap { $0 } }
             gate.canOpen = { [weak self] in (self?.onChannel ?? false) && !(self?.reordering ?? false) }
+            gate.onBlocked = { [weak self] in self?.focusEngineLeft() }
             LiveTVFocusLinks.guideGate = gate
             LiveTVFocusLinks.prepareGuideReturn = { [weak self] in
                 guard let self, let collection = self.view?.collectionView else { return }
@@ -493,8 +494,36 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 }
                 return
             }
+            stepLeft()
+        }
+
+        /// A Left the focus engine took instead of the swipe recognizer (a
+        /// short swipe from a programme ran into the closed gate and was
+        /// lost): the same step back.
+        private func focusEngineLeft() {
+            // Only during a touch, and not right after Up or Down moved the
+            // row (the gate is asked then too, without a Left).
+            guard !reordering, !onChannel, focusedRow != nil, LiveTVFocusLinks.isTouching,
+                  Date().timeIntervalSince(lastRowChange) > 0.3 else { return }
+            stepLeft()
+        }
+
+        /// When focus last moved to another row.
+        private var lastRowChange = Date.distantPast
+
+        /// Touch and time of the last step back: one swipe the recognizer
+        /// and the focus engine both saw counts once.
+        private var lastLeftStep: (session: Int, at: Date)?
+
+        /// From a programme: back through time, or onto the channel.
+        private func stepLeft() {
             guard let cell = focusedRow else { return }
             let now = Date()
+            if let last = lastLeftStep, last.session == LiveTVFocusLinks.touchSession,
+               now.timeIntervalSince(last.at) < 0.35 {
+                return
+            }
+            lastLeftStep = (LiveTVFocusLinks.touchSession, now)
             let before = timeline
             // Channels with catch-up: back through the past first.
             let earliest = LiveTVCatchup.earliest(archiveDays: cell.channel?.archiveDays ?? 0, now: now)
@@ -629,6 +658,7 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                 returnPending = false
                 collectionView.remembersLastFocusedIndexPath = true
                 if context.previouslyFocusedItem is LiveTVGuideRowCell {
+                    if (context.previouslyFocusedItem as? LiveTVGuideRowCell) !== cell { lastRowChange = Date() }
                     LiveTVFocusLinks.endReturn("moved in guide")
                 } else if LiveTVFocusLinks.returningFromPlayer {
                     // Stays set a moment: SwiftUI may still move focus on.
@@ -1016,6 +1046,19 @@ final class LiveTVLeftGate: UIFocusGuide {
     /// moment it lifts, without a second pause (that one swallowed the
     /// next swipe, so Left sometimes took two).
     private var waitingForLift = false
+    /// The focus engine ran into the closed gate (a Left the swipe
+    /// recognizer missed, e.g. a short swipe): the guide takes it as Left.
+    var onBlocked: (() -> Void)?
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment]! {
+        get {
+            if !isOpen, onBlocked != nil {
+                Task { @MainActor [weak self] in self?.onBlocked?() }
+            }
+            return super.preferredFocusEnvironments
+        }
+        set { super.preferredFocusEnvironments = newValue }
+    }
 
     /// Closes now and opens after the pause.
     func hold() {

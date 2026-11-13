@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// Cards for the provider's titles (step 12b): the On Demand page and the
+/// Cards for the provider's titles (step 12b): the VOD page and the
 /// Home row. Opening one goes through `OnDemandDetails.target`.
 @MainActor
 enum OnDemandBrowse {
@@ -52,8 +52,8 @@ enum OnDemandBrowse {
     }
 }
 
-/// Home's On Demand row: what the provider added last, movies and series
-/// together. Settings → Appearance → Home Rows → On Demand.
+/// Home's VOD row: what the provider added last, movies and series
+/// together. Settings → Appearance → Home Rows → VOD.
 @MainActor
 final class OnDemandHomeRowModel: ObservableObject {
     static let shared = OnDemandHomeRowModel()

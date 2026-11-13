@@ -203,7 +203,7 @@ struct LiveTVQuickMenu: View {
                 settings.clock = all[(index + 1) % all.count]
             }
             Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1).padding(.vertical, 6)
-            Text(L10n.string("livetv_quick_menu_more", fallback: "More options: Settings → Live TV"))
+            Text(L10n.string("livetv_quick_menu_more", fallback: "More options: Settings → Live TV / VOD"))
                 .font(.system(size: LiveTVTheme.Font.badge))
                 .foregroundColor(LiveTVTheme.secondaryText)
                 .padding(.horizontal, 10)

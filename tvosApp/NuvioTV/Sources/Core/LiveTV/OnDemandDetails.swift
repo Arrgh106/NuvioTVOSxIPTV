@@ -1,9 +1,9 @@
 import Foundation
 
-/// Opening one of the provider's titles (step 12b), as Android's On Demand:
+/// Opening one of the provider's titles (step 12b), as Android's VOD:
 /// when it can be matched (the provider's TMDB id, otherwise a Cinemeta
 /// search by name and year) Nuvio's own Details open, and the provider's
-/// copy is the "On Demand" stream there. Otherwise Details show what the
+/// copy is the "VOD" stream there. Otherwise Details show what the
 /// provider says about it (plot, picture, seasons and episodes).
 @MainActor
 enum OnDemandDetails {
@@ -12,7 +12,7 @@ enum OnDemandDetails {
     /// Provider details by content id (`get_vod_info` / `get_series_info`).
     private static var infoCache: [String: [String: Any]] = [:]
 
-    /// Where an On Demand card leads: a catalog id (`tt…`) or its own id.
+    /// Where a VOD card leads: a catalog id (`tt…`) or its own id.
     static func target(for contentID: String, type: String) async -> (id: String, type: String) {
         guard let parsed = OnDemandID.parse(contentID) else { return (contentID, type) }
         let kindType = parsed.kind == .series ? "series" : "movie"

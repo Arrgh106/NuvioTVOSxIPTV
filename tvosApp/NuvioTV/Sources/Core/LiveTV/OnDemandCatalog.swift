@@ -1,6 +1,6 @@
 import Foundation
 
-/// The provider's movies and series (step 12, Android's "On Demand"):
+/// The provider's movies and series (step 12, Android's "VOD"):
 /// what's kept of each, and how a title in Nuvio finds its copy at the
 /// provider. Pure, so the logic tests run it on Linux.
 enum OnDemandKind: String, Sendable, CaseIterable {

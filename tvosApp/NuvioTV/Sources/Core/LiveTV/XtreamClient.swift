@@ -86,7 +86,7 @@ struct XtreamClient: Sendable {
             .sorted { $0.start < $1.start }
     }
 
-    // MARK: On Demand (step 12)
+    // MARK: VOD (step 12)
 
     func vodCategories() async throws -> [XtreamCategory] {
         let data = try await get(action: "get_vod_categories", long: true)

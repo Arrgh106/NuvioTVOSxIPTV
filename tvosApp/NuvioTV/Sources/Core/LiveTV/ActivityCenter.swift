@@ -1,7 +1,7 @@
 import Foundation
 
 /// Background work the user should see (LIVE_TV_DESIGN.md, step 0): guide
-/// download and import, channel refresh, Jellyfin sync, later On Demand
+/// download and import, channel refresh, Jellyfin sync, later VOD
 /// imports. One queue, shown as a single pill in the corner of every screen,
 /// like Android's "Reading guide … 17 % · 0:54".
 @MainActor

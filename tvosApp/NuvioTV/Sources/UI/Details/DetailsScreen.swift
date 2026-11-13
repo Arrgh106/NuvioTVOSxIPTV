@@ -3477,7 +3477,7 @@ enum SmartPlaybackSelector {
         let compatible = playable.filter { isPlatformPlaybackCompatible($0.stream) }
         var candidates = compatible.filter { !isPromotionalStream($0.stream) }
         if candidates.isEmpty { candidates = compatible }
-        // Fork (Live TV step 12a): the provider's own copy (On Demand) only
+        // Fork (Live TV step 12a): the provider's own copy (VOD) only
         // when nothing else can play, as on Android.
         let withoutOnDemand = candidates.filter { $0.stream.bingeGroup != OnDemandLookup.bingeGroup }
         if !withoutOnDemand.isEmpty { candidates = withoutOnDemand }

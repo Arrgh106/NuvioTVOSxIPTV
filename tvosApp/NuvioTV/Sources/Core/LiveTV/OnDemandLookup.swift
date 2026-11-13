@@ -1,14 +1,14 @@
 import Foundation
 
 /// The provider's copies of the title being opened (step 12a), as Android's
-/// "On Demand in Streams": matched by TMDB id, otherwise by name and year,
-/// and offered as the "On Demand" group in the stream list. Categories the
+/// "VOD in Streams": matched by TMDB id, otherwise by name and year,
+/// and offered as the "VOD" group in the stream list. Categories the
 /// parental controls lock (or adult ones, with the automatic lock) never
 /// show up.
 @MainActor
 enum OnDemandLookup {
     nonisolated static let groupID = "livetv.ondemand"
-    nonisolated static let groupName = "On Demand"
+    nonisolated static let groupName = "VOD"
     nonisolated static let bingeGroup = "nuvio-iptv-on-demand"
 
     /// Whether to look at all: on, logged in, the index read once.
@@ -19,7 +19,7 @@ enum OnDemandLookup {
     }
 
     static func streams(videoId: String) async -> [NuvioStream] {
-        // One of the provider's own titles (opened from the On Demand page
+        // One of the provider's own titles (opened from the VOD page
         // or Home row without a match): its file, nothing to look up.
         if let own = OnDemandID.parse(videoId) { return await ownStreams(own) }
         guard isAvailable, let database = OnDemandLibrary.shared.database,

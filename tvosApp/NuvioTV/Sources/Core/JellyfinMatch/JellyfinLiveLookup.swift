@@ -39,7 +39,7 @@ enum JellyfinLiveLookup {
     /// from every configured server, queried in parallel. Never throws: an
     /// unreachable server just contributes nothing.
     /// Name, year and ids of the title a video id belongs to (also used by
-    /// On Demand, step 12a).
+    /// VOD, step 12a).
     static func hint(forVideoId videoId: String) async -> Hint? {
         let ids = JellyfinCatalogMatch.catalogIDs(fromVideoId: videoId)
         let parts = videoId.split(separator: ":")

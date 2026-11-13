@@ -2,9 +2,9 @@ import Foundation
 import SQLite3
 
 /// The provider's movies and series on the device (step 12), as Android's
-/// On Demand index: read once a day from the Xtream login, kept in SQLite
+/// VOD index: read once a day from the Xtream login, kept in SQLite
 /// per profile. Looked up when a title in Nuvio searches its streams
-/// (`OnDemandLookup`, 12a) and shown on the On Demand page and Home row
+/// (`OnDemandLookup`, 12a) and shown on the VOD page and Home row
 /// (12b).
 @MainActor
 final class OnDemandLibrary: ObservableObject {
@@ -20,10 +20,10 @@ final class OnDemandLibrary: ObservableObject {
     @Published private(set) var status: Status = .idle {
         didSet { reportActivity() }
     }
-    /// The provider's copies in Nuvio's stream lists (Android's "On Demand
+    /// The provider's copies in Nuvio's stream lists (Android's "VOD
     /// in Streams", on by default).
     @Published private(set) var inStreams = true
-    /// Goes up when new lists are in (the On Demand page and Home row
+    /// Goes up when new lists are in (the VOD page and Home row
     /// read again).
     @Published private(set) var revision = 0
 
@@ -81,7 +81,7 @@ final class OnDemandLibrary: ObservableObject {
         refresh()
     }
 
-    /// Read at all: for the stream lists, the On Demand page or the Home row.
+    /// Read at all: for the stream lists, the VOD page or the Home row.
     var isWanted: Bool {
         let settings = ProfileSettings.current
         return inStreams
@@ -89,7 +89,7 @@ final class OnDemandLibrary: ObservableObject {
             || (settings.object(forKey: SettingsKey.onDemandHomeRow) as? Bool ?? true)
     }
 
-    /// Settings → Live TV → On Demand → Update Now, or when due.
+    /// Settings → Live TV → VOD → Update Now, or when due.
     func refresh() {
         guard importTask == nil, let account = XtreamAccountStore.load(), let database else { return }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
@@ -145,7 +145,7 @@ final class OnDemandLibrary: ObservableObject {
         switch status {
         case .importing(let label): ActivityCenter.shared.update(id, label: label)
         case .failed(let message):
-            ActivityCenter.shared.fail(id, message: L10n.string("livetv_ondemand_title", fallback: "On Demand") + ": " + message)
+            ActivityCenter.shared.fail(id, message: L10n.string("livetv_ondemand_title", fallback: "VOD") + ": " + message)
         case .idle, .ready: ActivityCenter.shared.finish(id)
         }
     }
@@ -156,7 +156,7 @@ final class OnDemandLibrary: ObservableObject {
 final class OnDemandDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSLock()
-    /// 2: pictures, dates, ratings and category order for the On Demand
+    /// 2: pictures, dates, ratings and category order for the VOD
     /// page and Home row (step 12b).
     private static let schemaVersion: Int32 = 2
 

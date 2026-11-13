@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Shared rows
 
-/// Rows of cards like Home's (step 12b), for the On Demand and Jellyfin
+/// Rows of cards like Home's (step 12b), for the VOD and Jellyfin
 /// pages in the sidebar.
 struct BrowseRowsList: View {
     let sections: [TVHomeSection]
@@ -82,26 +82,36 @@ private struct BrowsePill: View {
     }
 }
 
+/// The note when a page has nothing, with a way to Settings: something
+/// focusable, or focus is stuck on the page (no Menu, no sidebar).
 private struct BrowseEmpty: View {
     let text: String
+    let onOpenSettings: () -> Void
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 26))
-            .foregroundColor(.white.opacity(0.6))
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 120)
+        VStack(spacing: 30) {
+            Text(text)
+                .font(.system(size: 26))
+                .foregroundColor(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 900)
+            Button(L10n.string("nav_settings", fallback: "Settings"), action: onOpenSettings)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 120)
+        .focusSection()
     }
 }
 
-// MARK: - On Demand page
+// MARK: - VOD page
 
-/// The provider's movies and series (step 12b), as Android's On Demand
+/// The provider's movies and series (step 12b), as Android's VOD
 /// page: a row per category in the provider's order. Categories the
 /// parental controls lock (or adult ones, with the automatic lock) are left
-/// out. Settings → Appearance → Sidebar → On Demand.
+/// out. Settings → Appearance → Sidebar → VOD.
 struct OnDemandPageView: View {
     let onOpen: (String, String) -> Void
+    let onOpenSettings: () -> Void
     @ObservedObject private var library = OnDemandLibrary.shared
     @AppStorage("nuvio.tv.ondemand.page.kind") private var kindRaw = OnDemandKind.movie.rawValue
     @State private var sections: [TVHomeSection] = []
@@ -117,7 +127,7 @@ struct OnDemandPageView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 36) {
                 BrowseHeader(
-                    title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+                    title: L10n.string("livetv_ondemand_title", fallback: "VOD"),
                     subtitle: subtitle
                 ) {
                     HStack(spacing: 16) {
@@ -130,7 +140,7 @@ struct OnDemandPageView: View {
                     }
                 }
                 if sections.isEmpty {
-                    BrowseEmpty(text: loaded ? emptyText : L10n.string("livetv_ondemand_busy", fallback: "Loading…"))
+                    BrowseEmpty(text: loaded ? emptyText : L10n.string("livetv_ondemand_busy", fallback: "Loading…"), onOpenSettings: onOpenSettings)
                 } else {
                     BrowseRowsList(sections: sections, onSelect: { onOpen($0.id, $0.type) }, onApproachEnd: loadMore)
                 }
@@ -223,6 +233,7 @@ struct OnDemandPageView: View {
 /// Jellyfin rows. Settings → Appearance → Sidebar → Jellyfin.
 struct JellyfinPageView: View {
     let onOpen: (String, String) -> Void
+    let onOpenSettings: () -> Void
     @State private var sections: [TVHomeSection] = []
     @State private var loaded = false
 
@@ -233,7 +244,8 @@ struct JellyfinPageView: View {
                 if sections.isEmpty {
                     BrowseEmpty(text: loaded
                         ? L10n.string("jellyfin_page_empty", fallback: "No Jellyfin titles yet. Add a server and read its libraries in Settings.")
-                        : L10n.string("livetv_ondemand_busy", fallback: "Loading…"))
+                        : L10n.string("livetv_ondemand_busy", fallback: "Loading…"),
+                        onOpenSettings: onOpenSettings)
                 } else {
                     BrowseRowsList(sections: sections, onSelect: { onOpen($0.id, $0.type) })
                 }

@@ -1449,7 +1449,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
     }
 
     /// Fork (Live TV step 12b): the IMDb id of a TMDB title, for the
-    /// provider's On Demand titles (needs a TMDB key).
+    /// provider's VOD titles (needs a TMDB key).
     static func imdbID(forTmdbID tmdbID: Int, type: String) async -> String? {
         await resolveImdbFromTmdb(tmdbId: tmdbID, type: type)
     }

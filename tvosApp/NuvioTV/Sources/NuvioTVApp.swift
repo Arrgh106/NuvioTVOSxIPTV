@@ -305,7 +305,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         ProfileSettings.current.object(forKey: SettingsKey.showCalendarTab) as? Bool ?? true
     }
 
-    /// Fork (Live TV step 12b): Settings → Appearance → Sidebar → On Demand
+    /// Fork (Live TV step 12b): Settings → Appearance → Sidebar → VOD
     /// (on unless turned off), with a provider login.
     static var isOnDemandEnabled: Bool {
         (ProfileSettings.current.object(forKey: SettingsKey.showOnDemandTab) as? Bool ?? true)
@@ -329,7 +329,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return "Profile"
         case .home: return "Home"
         case .liveTV: return "Live TV"
-        case .onDemand: return "On Demand"
+        case .onDemand: return "VOD"
         case .jellyfin: return "Jellyfin"
         case .search: return "Search"
         case .library: return "Library"
@@ -344,7 +344,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return L10n.string("settings_profiles", fallback: "Profile")
         case .home: return L10n.string("nav_home", fallback: "Home")
         case .liveTV: return L10n.string("nav_live_tv", fallback: "Live TV")
-        case .onDemand: return L10n.string("livetv_ondemand_title", fallback: "On Demand")
+        case .onDemand: return L10n.string("livetv_ondemand_title", fallback: "VOD")
         case .jellyfin: return "Jellyfin"
         case .search: return L10n.string("nav_search", fallback: "Search")
         case .library: return L10n.string("nav_library", fallback: "Library")
@@ -3043,7 +3043,7 @@ struct ContentView: View {
                 }
             },
             onNavigateToDetails: { contentId, contentType in
-                // Fork (Live TV step 12b): a provider title (On Demand page or
+                // Fork (Live TV step 12b): a provider title (VOD page or
                 // row) opens as its catalog match when there is one.
                 if OnDemandID.parse(contentId) != nil {
                     Task { @MainActor in
@@ -4517,7 +4517,7 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
     @AppStorage(SettingsKey.showCalendarTab) private var showCalendarTab = true
-    /// Fork (Live TV step 12b): the On Demand and Jellyfin pages.
+    /// Fork (Live TV step 12b): the VOD and Jellyfin pages.
     @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
     @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
     @ObservedObject private var jellyfinServers = JellyfinServerStore.shared
@@ -4714,12 +4714,18 @@ private struct TVMainTabView: View {
     }
 
     private var onDemandTabContent: some View {
-        OnDemandPageView(onOpen: { id, type in onNavigateToDetails(id, type) })
+        OnDemandPageView(
+            onOpen: { id, type in onNavigateToDetails(id, type) },
+            onOpenSettings: { selectedTab = .settings }
+        )
             .id(activeProfile?.id ?? "none")
     }
 
     private var jellyfinTabContent: some View {
-        JellyfinPageView(onOpen: { id, type in onNavigateToDetails(id, type) })
+        JellyfinPageView(
+            onOpen: { id, type in onNavigateToDetails(id, type) },
+            onOpenSettings: { selectedTab = .settings }
+        )
             .id(activeProfile?.id ?? "none")
     }
 
@@ -5143,7 +5149,7 @@ private final class TVHomeFocusWork {
         let calendarToday: [NuvioMeta]
         /// Fork: Home's Live TV row.
         var liveTV: [NuvioMeta] = []
-        /// Fork: Home's On Demand row.
+        /// Fork: Home's VOD row.
         var onDemand: [NuvioMeta] = []
     }
     struct CachedVisibleSections {
@@ -8574,7 +8580,7 @@ struct TVHomeView: View {
         )]
         let onDemandSections = onDemandRow.metas.isEmpty ? [] : [TVHomeSection(
             id: OnDemandHomeRowModel.sectionID,
-            title: L10n.string("livetv_ondemand_title", fallback: "On Demand"),
+            title: L10n.string("livetv_ondemand_title", fallback: "VOD"),
             items: onDemandRow.metas
         )]
         let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
