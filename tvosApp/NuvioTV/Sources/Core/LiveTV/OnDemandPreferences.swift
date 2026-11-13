@@ -13,10 +13,14 @@ final class OnDemandPreferences: ObservableObject {
     @Published private(set) var hidden: Set<String> = []
     @Published private(set) var mergeDuplicates = true
     @Published private(set) var inSearch = true
+    /// Which languages show (none picked: all).
+    @Published private(set) var languageFilter = OnDemandLanguageFilter()
 
     private static let hiddenKey = "nuvio.tv.livetv.vodHiddenCategories"
     private static let mergeKey = "nuvio.tv.livetv.vodMergeDuplicates"
     private static let searchKey = "nuvio.tv.livetv.vodInSearch"
+    private static let languagesKey = "nuvio.tv.livetv.vodLanguages"
+    private static let unknownLanguageKey = "nuvio.tv.livetv.vodKeepUnknownLanguage"
     private var profileObserver: NSObjectProtocol?
 
     private init() {
@@ -33,6 +37,36 @@ final class OnDemandPreferences: ObservableObject {
         hidden = Set(settings.stringArray(forKey: Self.hiddenKey) ?? [])
         mergeDuplicates = settings.object(forKey: Self.mergeKey) as? Bool ?? true
         inSearch = settings.object(forKey: Self.searchKey) as? Bool ?? true
+        languageFilter = OnDemandLanguageFilter(
+            languages: Set(settings.stringArray(forKey: Self.languagesKey) ?? []),
+            keepUnknown: settings.object(forKey: Self.unknownLanguageKey) as? Bool ?? true)
+    }
+
+    func setLanguage(_ code: String, shown: Bool) {
+        var next = languageFilter
+        if shown { next.languages.insert(code) } else { next.languages.remove(code) }
+        setLanguageFilter(next)
+    }
+
+    func setKeepUnknownLanguage(_ on: Bool) {
+        var next = languageFilter
+        next.keepUnknown = on
+        setLanguageFilter(next)
+    }
+
+    /// Every language again.
+    func showAllLanguages() {
+        var next = languageFilter
+        next.languages = []
+        setLanguageFilter(next)
+    }
+
+    private func setLanguageFilter(_ next: OnDemandLanguageFilter) {
+        guard next != languageFilter else { return }
+        languageFilter = next
+        ProfileSettings.current.set(Array(next.languages).sorted(), forKey: Self.languagesKey)
+        ProfileSettings.current.set(next.keepUnknown, forKey: Self.unknownLanguageKey)
+        changed()
     }
 
     func isHidden(_ lockID: String) -> Bool { hidden.contains(lockID) }

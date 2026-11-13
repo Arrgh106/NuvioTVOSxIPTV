@@ -34,6 +34,7 @@ enum OnDemandLookup {
         let lockedIDs = parental.lockedGroups
         let lockAdult = parental.isEnabled && parental.lockAdult
         let hiddenIDs = OnDemandPreferences.shared.hidden
+        let languages = OnDemandPreferences.shared.languageFilter
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
 
         return await Task.detached(priority: .userInitiated) { () -> [NuvioStream] in
@@ -43,6 +44,7 @@ enum OnDemandLookup {
             let categories = database.categoryNames(kind)
             let allowed = candidates.filter { item in
                 if hiddenIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
+                if !languages.allows(item.language) { return false }
                 guard lockedNames else { return true }
                 if lockedIDs.contains(lockID(kind: kind, category: item.categoryID)) { return false }
                 guard lockAdult else { return true }
@@ -84,7 +86,7 @@ enum OnDemandLookup {
         let others = OnDemandMatch.copies(
             of: database.candidates(kind: own.kind, tmdb: item.tmdb, key: item.key)
                 .filter { $0.id != item.id && !OnDemandBrowse.isHidden($0, categoryName: names[$0.categoryID] ?? "") },
-            name: title, year: item.year, tmdb: item.tmdb, limit: 5)
+            name: title, year: item.year, tmdb: item.tmdb, limit: 7)
         let versions = [item] + others
         if own.season == nil, own.kind == .series { return [] }
         return await Task.detached(priority: .userInitiated) { () -> [NuvioStream] in

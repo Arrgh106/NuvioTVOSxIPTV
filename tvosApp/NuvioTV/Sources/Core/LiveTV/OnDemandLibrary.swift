@@ -158,7 +158,7 @@ final class OnDemandDatabase: @unchecked Sendable {
     private let lock = NSLock()
     /// 2: pictures, dates, ratings and category order for the VOD
     /// page and Home row (step 12b).
-    private static let schemaVersion: Int32 = 2
+    private static let schemaVersion: Int32 = 3
 
     init?(url: URL) {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
@@ -180,7 +180,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             CREATE TABLE IF NOT EXISTS items (kind TEXT NOT NULL, id INTEGER NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL,
-                cat TEXT NOT NULL, ext TEXT, tmdb INTEGER, year INTEGER, icon TEXT, added INTEGER, rating TEXT,
+                cat TEXT NOT NULL, ext TEXT, tmdb INTEGER, year INTEGER, icon TEXT, added INTEGER, rating TEXT, lang TEXT,
                 PRIMARY KEY (kind, id));
             CREATE INDEX IF NOT EXISTS items_key ON items (kind, key);
             CREATE INDEX IF NOT EXISTS items_tmdb ON items (kind, tmdb);
@@ -231,7 +231,9 @@ final class OnDemandDatabase: @unchecked Sendable {
         run("DELETE FROM items WHERE kind = ?", kind.rawValue)
         run("DELETE FROM categories WHERE kind = ?", kind.rawValue)
         var statement: OpaquePointer?
-        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        // The language (step 12c): from the name's tag, else the category.
+        let categoryNames = Dictionary(categories.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
             for item in items {
                 sqlite3_reset(statement)
@@ -246,6 +248,7 @@ final class OnDemandDatabase: @unchecked Sendable {
                 bind(statement, 9, item.icon)
                 bind(statement, 10, item.added)
                 bind(statement, 11, item.rating)
+                bind(statement, 12, OnDemandLanguage.code(name: item.name, category: categoryNames[item.categoryID]))
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
@@ -283,7 +286,7 @@ final class OnDemandDatabase: @unchecked Sendable {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
-    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating"
+    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang"
 
     /// Copies that could be the title: same TMDB id or same match key.
     func candidates(kind: OnDemandKind, tmdb: Int?, key: String) -> [OnDemandItem] {
@@ -339,6 +342,20 @@ final class OnDemandDatabase: @unchecked Sendable {
         return out
     }
 
+    /// How many titles each language has (nil: none known), most first.
+    func languages(_ kind: OnDemandKind) -> [(code: String?, count: Int)] {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT lang, COUNT(*) FROM items WHERE kind = ? GROUP BY lang ORDER BY COUNT(*) DESC", -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, kind.rawValue, -1, onDemandTransient)
+        var out: [(code: String?, count: Int)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            out.append((sqlite3_column_text(statement, 0).map { String(cString: $0) }, Int(sqlite3_column_int64(statement, 1))))
+        }
+        return out
+    }
+
     func categoryNames(_ kind: OnDemandKind) -> [String: String] {
         lock.lock(); defer { lock.unlock() }
         var statement: OpaquePointer?
@@ -379,7 +396,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             out.append(OnDemandItem(
                 kind: kind, id: number(1) ?? 0, name: text(2) ?? "", key: text(3) ?? "",
                 categoryID: text(4) ?? "", ext: text(5), tmdb: number(6), year: number(7),
-                icon: text(8), added: number(9), rating: text(10)))
+                icon: text(8), added: number(9), rating: text(10), language: text(11)))
         }
         return out
     }

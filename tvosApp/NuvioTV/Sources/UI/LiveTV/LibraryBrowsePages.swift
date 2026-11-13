@@ -122,6 +122,7 @@ struct OnDemandPageView: View {
     /// "Merge Duplicates": what each row has shown so far.
     @State private var dedupes: [String: OnDemandDedupe] = [:]
     @State private var managing = false
+    @State private var pickingLanguages = false
     private static let page = 30
 
     private var kind: OnDemandKind { OnDemandKind(rawValue: kindRaw) ?? .movie }
@@ -143,6 +144,9 @@ struct OnDemandPageView: View {
                         BrowsePill(title: L10n.string("livetv_vod_categories", fallback: "Categories"), selected: false) {
                             managing = true
                         }
+                        BrowsePill(title: L10n.string("livetv_vod_languages", fallback: "Languages"), selected: false) {
+                            pickingLanguages = true
+                        }
                     }
                 }
                 if sections.isEmpty {
@@ -163,6 +167,9 @@ struct OnDemandPageView: View {
         .onAppear { library.refreshIfNeeded() }
         .sheet(isPresented: $managing) {
             LiveTVSettingsRows.clearSheetBackground(OnDemandCategoriesSheet(initialKind: kind))
+        }
+        .sheet(isPresented: $pickingLanguages) {
+            LiveTVSettingsRows.clearSheetBackground(OnDemandLanguagesSheet())
         }
     }
 

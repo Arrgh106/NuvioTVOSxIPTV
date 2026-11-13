@@ -48,6 +48,8 @@ enum OnDemandBrowse {
 
     static func isHidden(_ item: OnDemandItem, categoryName: String) -> Bool {
         if isHidden(kind: item.kind, categoryID: item.categoryID, categoryName: categoryName) { return true }
+        // Not in the languages picked (step 12c).
+        if !OnDemandPreferences.shared.languageFilter.allows(item.language) { return true }
         let parental = LiveTVParentalControls.shared
         return parental.isEnabled && parental.lockAdult && LiveTVParental.isAdult(item.name)
     }

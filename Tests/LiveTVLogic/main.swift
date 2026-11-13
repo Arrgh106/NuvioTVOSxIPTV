@@ -426,7 +426,7 @@ check(OnDemandTitle.key("EN - Dune (2021)", tags: ["en"]) == "dune", "learned ta
 check(OnDemandTitle.key("|DE| Der Pate") == "derpate", "pipe tag off")
 check(OnDemandTitle.key("Dune 2021 4K") == "dune", "year and quality off")
 check(OnDemandTitle.key("1917") == "1917", "a year alone is the title")
-check(OnDemandTitle.key("EN - Dune") == "endune", "a tag not learned stays")
+check(OnDemandTitle.key("Nf - Dune") == "nfdune", "a tag not learned and not like one stays")
 check(OnDemandTitle.yearInName("Dune (2021)") == 2021 && OnDemandTitle.yearInName("Dune 2021") == 2021, "year in name")
 check(OnDemandTitle.yearInName("1917") == nil && OnDemandTitle.yearInName("2001: A Space Odyssey") == nil, "titles are no years")
 check(OnDemandTitle.year(field: "2021-10-22") == 2021 && OnDemandTitle.year(field: nil) == nil && OnDemandTitle.year(field: "abc") == nil, "year field")
@@ -505,6 +505,28 @@ let mixed = OnDemandSearchMatch.mix(movies: movies12c, series: series12c, limit:
 check(mixed.count == 20 && mixed.filter { $0.kind == .series }.count == 5, "mix: all series fit, movies fill up")
 check(OnDemandSearchMatch.mix(movies: movies12c, series: (100...140).map { vod12c($0, "S\($0)", kind: .series) }, limit: 20)
     .filter { $0.kind == .movie }.count == 10, "mix: half each when both are long")
+
+// MARK: VOD tags, languages, versions (step 12c)
+
+check(OnDemandTitle.key("4K-NF - GOAT (2026)") == "goat", "tag-like: quality and service")
+check(OnDemandTitle.key("4K-AR: GOAT (2026)") == "goat" && OnDemandTitle.key("4K-FR-HDR - Goat (2025)") == "goat", "tag-like: language with colon or dash")
+check(OnDemandTitle.key("EN - Dune") == "dune" && OnDemandTitle.searchName("DE - Der Pate (1972)") == "Der Pate", "tag-like: language codes")
+check(OnDemandTitle.key("CSI: Miami") == "csimiami" && OnDemandTitle.key("FBI: Most Wanted") == "fbimostwanted", "capitals alone are no tag")
+check(OnDemandTitle.key("Mission: Impossible - Fallout") == "missionimpossiblefallout", "titles with separators stay")
+check(OnDemandLanguage.code(name: "4K-AR: GOAT (2026)", category: "NETFLIX KIDS") == "ar", "language from the name's tag")
+check(OnDemandLanguage.code(name: "Goat (2025)", category: "FR - ANIMATION") == "fr", "language from the category's tag")
+check(OnDemandLanguage.code(name: "|TR| Kurtlar Vadisi", category: nil) == "tr", "language from a pipe tag")
+check(OnDemandLanguage.code(name: "Goat", category: "\u{0623}\u{0641}\u{0644}\u{0627}\u{0645} \u{0623}\u{0637}\u{0641}\u{0627}\u{0644}") == "ar", "language from the category's script")
+check(OnDemandLanguage.code(name: "Greek Movies", category: "Greek Movies") == "el", "language from a category word")
+check(OnDemandLanguage.code(name: "4K-NF - GOAT (2026)", category: "NETFLIX KIDS") == nil, "no language given")
+check(OnDemandLanguage.code(name: "Dune: Part Two", category: "Movies") == nil, "titles are no tags")
+let languageFilter = OnDemandLanguageFilter(languages: ["de", "en"], keepUnknown: true)
+check(languageFilter.allows("de") && !languageFilter.allows("ar") && languageFilter.allows(nil), "language filter: picked and unknown")
+check(!OnDemandLanguageFilter(languages: ["de"], keepUnknown: false).allows(nil) && OnDemandLanguageFilter().allows("ar"), "language filter: unknown off, none picked")
+let tiers12c = [vod(1, "Goat 4K", year: 2026), vod(2, "Goat 4K HDR", year: 2026), vod(3, "Goat UHD", year: 2026),
+                vod(4, "Goat FHD", year: 2026), vod(5, "Goat HD", year: 2026), vod(6, "Goat 2160p", year: 2026)]
+check(OnDemandMatch.copies(of: tiers12c, name: "Goat", year: 2026, tmdb: nil, limit: 4).map { OnDemandTitle.quality($0.name) }
+    == ["4K", "1080p", "720p", "4K"], "versions: one of each quality before more 4K")
 
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

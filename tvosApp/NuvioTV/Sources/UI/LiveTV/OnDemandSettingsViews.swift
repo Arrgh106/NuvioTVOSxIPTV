@@ -9,6 +9,7 @@ struct OnDemandSettingsGroup: View {
     @ObservedObject private var library = OnDemandLibrary.shared
     @ObservedObject private var preferences = OnDemandPreferences.shared
     @State private var managing = false
+    @State private var pickingLanguages = false
 
     var body: some View {
         LiveTVSettingsRows.group(
@@ -50,6 +51,18 @@ struct OnDemandSettingsGroup: View {
                 accentColor: accentColor,
                 action: { managing = true }
             )
+            LiveTVSettingsRows.action(
+                title: L10n.string("livetv_vod_languages", fallback: "Languages"),
+                subtitle: L10n.string("livetv_vod_languages_subtitle", fallback: "Only movies and series in the languages you pick, read from the provider's tags and categories"),
+                value: preferences.languageFilter.isActive
+                    ? preferences.languageFilter.languages.sorted().map { $0.uppercased() }.joined(separator: ", ")
+                    : L10n.string("livetv_vod_languages_every", fallback: "All"),
+                accentColor: accentColor,
+                action: { pickingLanguages = true }
+            )
+        }
+        .sheet(isPresented: $pickingLanguages) {
+            LiveTVSettingsRows.clearSheetBackground(OnDemandLanguagesSheet(accentColor: accentColor))
         }
         .sheet(isPresented: $managing) {
             LiveTVSettingsRows.clearSheetBackground(OnDemandCategoriesSheet(initialKind: .movie, accentColor: accentColor))
