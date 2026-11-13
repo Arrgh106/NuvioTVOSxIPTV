@@ -17639,6 +17639,14 @@ enum LiveTVSettingsRows {
         SMBDeleteButton(action: action)
     }
 
+    /// The small buttons under a Jellyfin or SMB server row (Connect, Sync).
+    static func rowButton(
+        title: String, accentColor: Color, enabled: Bool = true, isLoading: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        SMBRowButton(title: title, accentColor: accentColor, enabled: enabled, isLoading: isLoading, action: action)
+    }
+
     /// The sheet shows its own background (as the server sheets).
     static func clearSheetBackground<Content: View>(_ content: Content) -> some View {
         content.modifier(ClearPresentationBackgroundIfAvailable())

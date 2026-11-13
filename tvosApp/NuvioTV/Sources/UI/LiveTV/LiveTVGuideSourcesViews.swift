@@ -9,6 +9,7 @@ struct LiveTVGuideSourcesGroup: View {
     let accentColor: Color
     @ObservedObject private var sources = LiveTVEPGSources.shared
     @ObservedObject private var guide = LiveTVGuide.shared
+    @ObservedObject private var channelSources = LiveTVSourceStore.shared
     @State private var editing: LiveTVGuideSourceEditor.Target?
 
     var body: some View {
@@ -16,12 +17,18 @@ struct LiveTVGuideSourcesGroup: View {
             title: L10n.string("livetv_settings_sources", fallback: "Guide Sources"),
             subtitle: L10n.string("livetv_settings_sources_subtitle", fallback: "Where the programmes come from. A channel takes the guide with real listings that goes furthest ahead")
         ) {
-            LiveTVSettingsRows.toggle(
-                title: L10n.string("livetv_epg_provider", fallback: "Provider's guide"),
-                subtitle: resultText(""),
-                isOn: Binding(get: { sources.providerGuide }, set: { sources.setProviderGuide($0) }),
-                accentColor: accentColor
-            )
+            // Each source's own guide (step 13a), as Android's "(built-in)".
+            ForEach(channelSources.sources.filter { $0.kind == .xtream }) { source in
+                LiveTVSettingsRows.toggle(
+                    title: channelSources.sources.count > 1
+                        ? source.displayName + " " + L10n.string("livetv_epg_builtin_suffix", fallback: "(built-in)")
+                        : L10n.string("livetv_epg_provider", fallback: "Provider's guide"),
+                    subtitle: resultText(LiveTVGuide.builtInID(source)),
+                    isOn: Binding(get: { source.builtInGuide }, set: { sources.setBuiltInGuide(source, $0) }),
+                    accentColor: accentColor,
+                    enabled: source.enabled
+                )
+            }
             ForEach(sources.sources) { source in
                 LiveTVSettingsRows.action(
                     title: source.name,

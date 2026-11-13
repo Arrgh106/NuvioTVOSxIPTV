@@ -35,8 +35,8 @@ final class LiveTVEPG {
         self.epgIDs = epgIDs
     }
     private var inFlight: [Int: Task<[XtreamProgram], Never>] = [:]
-    private var accountID: String?
-    private var client: XtreamClient?
+    /// One client per source, by the slot in the channel id (step 13a).
+    private var clients: [Int: (key: String, client: XtreamClient)] = [:]
 
     /// Cached answer only, no network: for configuring a cell right away.
     func cached(_ streamID: Int) -> NowNext? {
@@ -58,13 +58,14 @@ final class LiveTVEPG {
                 return Self.nowNext(programs)
             }
         }
-        guard let client = currentClient() else { return nil }
+        guard let client = client(forChannel: streamID) else { return nil }
+        let raw = LiveTVSourceIDs.raw(ofChannel: streamID)
         let task: Task<[XtreamProgram], Never>
         if let running = inFlight[streamID] {
             task = running
         } else {
             task = Task.detached(priority: .utility) {
-                (try? await client.shortEPG(streamID: streamID, limit: 3)) ?? []
+                (try? await client.shortEPG(streamID: raw, limit: 3)) ?? []
             }
             inFlight[streamID] = task
         }
@@ -94,13 +95,15 @@ final class LiveTVEPG {
         return NowNext(now: now, next: next)
     }
 
-    private func currentClient() -> XtreamClient? {
-        guard let account = XtreamAccountStore.load() else { return nil }
-        if account.id != accountID || client == nil {
-            accountID = account.id
-            entries.removeAll()
-            client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
-        }
+    private func client(forChannel streamID: Int) -> XtreamClient? {
+        let slot = LiveTVSourceIDs.slot(ofChannel: streamID)
+        guard let source = LiveTVSourceStore.shared.source(slot: slot), source.enabled,
+              let account = source.xtream else { return nil }
+        let key = "\(source.id)|\(account.server)|\(account.username)"
+        if let kept = clients[slot], kept.key == key { return kept.client }
+        entries = entries.filter { LiveTVSourceIDs.slot(ofChannel: $0.key) != slot }
+        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
+        clients[slot] = (key, client)
         return client
     }
 }

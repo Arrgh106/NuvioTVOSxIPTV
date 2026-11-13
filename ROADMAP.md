@@ -6,7 +6,7 @@ Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- Nothing right now. Step 12 (VOD) is done; next comes from *Noted for later*.
+- 🚧 **Live TV, step 13a: several sources** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -41,12 +41,18 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 12b: pages in the sidebar and rows on Home. *VOD* page (under Live TV, with a provider login): Movies / Series, a row per provider category in its order, 30 titles at a time, more while scrolling; categories locked with the parental PIN or adult ones (automatic lock) left out. *Jellyfin* page (with a server): a row per library. Home: a *VOD* row (what the provider added last, movies and series) next to the existing Jellyfin rows. Opening a provider title: Nuvio's own details when it matches (the provider's TMDB id → IMDb with a TMDB key, otherwise a Cinemeta search by name and year; at most a few seconds, "Opening…" meanwhile), the provider's copy then in its stream list; otherwise Details from the provider (`get_vod_info` / `get_series_info`: plot, pictures, seasons and episodes) playing its own file. Settings → Appearance → Sidebar: *VOD*, *Jellyfin*; Home Rows: *VOD*, *Jellyfin* (pages and rows only; streams stay). The index keeps pictures, dates and category order now (read again once after the update). Also: entering the guide from the groups, Left goes straight back. Called *VOD* everywhere now (Settings → *Live TV / VOD*). An empty VOD or Jellyfin page has a *Settings* button (focus no longer gets stuck there). Left from a programme onto the channel no longer gets lost on a short swipe. From what's on now onto the channel, the next swipe goes straight on to the groups (no pause; only the same swipe stops on the channel).
    - ✅ 12c: VOD in search, categories, versions, duplicates. *Search* (every search style): the provider's titles the add-ons don't find come at the end of the results (movies and series, at most 40, by name). *Categories* (Settings → Live TV / VOD → VOD → Categories, or *Categories* on the VOD page): show or hide each category, lock it with the parental PIN (removing a lock asks for it); hidden ones are out of the page, Home, search and the stream lists, as on Android. *Versions*: a provider title's stream list offers every copy (other qualities and categories, up to 6, this one first). *Merge Duplicates* (on by default): the same TMDB id, or the same name and year, shows up once in the page rows, the Home row and search. Settings: *VOD in Search*, *Merge Duplicates*. *Languages* (Settings → Live TV / VOD → VOD → Languages, or *Languages* on the VOD page): the language of each title is read from its tag ("DE - ", "4K-AR: ", "|TR| "), its category ("FR - ANIMATION", "Arabic Movies") or the script of the category name; pick the languages to show (none picked: all), once one is picked, titles with no language given are out too unless turned on, and a stream list with a version in a picked language drops the ones without; Scandinavian packs ("4K-SC - ", "NORDIC FILM") are one group, *Nordic*; per profile, everywhere VOD shows. Tags that look like tags (capitals, a language or quality in them: "4K-NF - ") now come off names even when not learned, so more copies match and more titles open with Nuvio's details; versions list one of each quality before more of the same (up to 8). Loading shows how far it is, as the guide does: as Jellyfin's, how many movies or series are in so far ("Loading movies · 12,500"), then how many are saved. The index is read again once after the update.
 
+13. 🚧 **Sources: several Xtream logins, M3U playlists, Stalker portals** (as Android's *Playlists & Guides*), in five parts. Every source is one entry in a list per profile (secrets in the Keychain), managed like Nuvio's Jellyfin servers. The guide mixes them into one list, as on Android: *All channels* covers every source and the group column has a heading per source that folds. The login you have now becomes the first source with the same channel ids, so favorites, names, order, groups and locks stay.
+   - 🚧 13a: several Xtream logins. Settings → Live TV / VOD → *Sources*: add, edit, turn off, move, update and delete logins; each row shows its channels, last update or error. Channels, guides (each login's own guide), playback and catch-up per source; a source that fails leaves the others.
+   - ⏭ 13b: M3U playlists (link, optional user agent): tvg-id, tvg-name, tvg-logo, group-title, tvg-chno, headers (#EXTVLCOPT, #EXTHTTP, url|User-Agent=), the guide linked in the playlist (x-tvg-url); movie and series entries left out, as on Android.
+   - ⏭ 13c: VOD from every Xtream login: one catalogue, duplicates merged, versions show the source.
+   - ⏭ 13d: catch-up for M3U (catchup, catchup-source, catchup-days: default, append, shift, flussonic, xc).
+   - ⏭ 13e: Stalker / Ministra portals (portal URL and MAC address).
+
 ## Noted for later
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.
 - 💡 Guide focus: fine-tune the pause before Left goes on to the groups / sidebar (0.45 s now), if it feels slow or fast in daily use.
-- 💡 M3U playlists.
 - 💡 Trakt: set `AppRepository.traktBuiltInAppIsRestricted = false` once Trakt grants production access (requested by email); until then only the owner and invited users can use the built-in Trakt app.
 - 💡 Simkl: built-in client ID (`AppRepository.simklClientID`) if a Simkl app gets registered.
 

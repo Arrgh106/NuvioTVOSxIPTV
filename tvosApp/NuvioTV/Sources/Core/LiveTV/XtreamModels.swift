@@ -156,6 +156,11 @@ struct XtreamCategory: Codable, Identifiable, Hashable, Sendable {
         self.name = name
     }
 
+    /// The app's id for a source's slot (step 13a).
+    func inSource(slot: Int) -> XtreamCategory {
+        slot == 0 ? self : XtreamCategory(id: LiveTVSourceIDs.group(slot: slot, category: id), name: name)
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.lossyString(.id) ?? ""
@@ -204,6 +209,31 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         case categoryID = "category_id"
         case tvArchive = "tv_archive"
         case archiveDays = "tv_archive_duration"
+    }
+
+    init(
+        streamID: Int, number: Int?, name: String, logoURL: String?, epgChannelID: String?,
+        categoryID: String?, archiveDays: Int
+    ) {
+        self.streamID = streamID
+        self.number = number
+        self.name = name
+        self.logoURL = logoURL
+        self.epgChannelID = epgChannelID
+        self.categoryID = categoryID
+        self.archiveDays = archiveDays
+    }
+
+    /// The same channel with the app's ids for a source's slot (step 13a,
+    /// `LiveTVSourceIDs`); slot 0 keeps the provider's.
+    func inSource(slot: Int) -> XtreamLiveChannel {
+        guard slot != 0 else { return self }
+        var copy = XtreamLiveChannel(
+            streamID: LiveTVSourceIDs.channel(slot: slot, raw: streamID), number: number, name: name,
+            logoURL: logoURL, epgChannelID: epgChannelID,
+            categoryID: LiveTVSourceIDs.group(slot: slot, category: categoryID ?? ""), archiveDays: archiveDays)
+        copy.providerName = providerName
+        return copy
     }
 
     init(from decoder: Decoder) throws {

@@ -134,8 +134,8 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Parental controls (PIN lock for groups) | ✅ Done |
 | Catch-up, restart live shows | ✅ Done |
 | Time-shift (pause and rewind live without an archive) | 🗓 Planned |
-| VOD (provider movies & series, matched to Nuvio details) | 🚧 In progress |
-| M3U playlists (link / Dispatcharr) | 🗓 Planned |
+| VOD (provider movies & series, matched to Nuvio details) | ✅ Done |
+| Several sources: Xtream logins, M3U playlists, Stalker portals | 🚧 In progress |
 | Live TV in search, "Find & stream" through your add-ons | 🗓 Planned |
 | Sports hub (scores, schedules, channels showing a game) | 🗓 Planned |
 | Calendar extensions | 🗓 Planned |

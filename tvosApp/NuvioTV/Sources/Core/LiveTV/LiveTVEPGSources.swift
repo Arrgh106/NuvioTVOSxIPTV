@@ -13,11 +13,8 @@ final class LiveTVEPGSources: ObservableObject {
     static let changedNotification = Notification.Name("nuvio.tv.livetv.epgSources.changed")
 
     @Published private(set) var sources: [LiveTVEPGSource] = []
-    /// The provider's own guide (`xmltv.php`); off when it's no use.
-    @Published private(set) var providerGuide = true
 
     private static let listKey = "nuvio.tv.livetv.epgSources"
-    private static let providerKey = "nuvio.tv.livetv.providerGuide"
     private static let keychainService = "com.nuvio.tv.livetv.epg"
     private var profileObserver: NSObjectProtocol?
 
@@ -34,7 +31,6 @@ final class LiveTVEPGSources: ObservableObject {
         let settings = ProfileSettings.current
         sources = settings.data(forKey: Self.listKey)
             .flatMap { try? JSONDecoder().decode([LiveTVEPGSource].self, from: $0) } ?? []
-        providerGuide = settings.object(forKey: Self.providerKey) as? Bool ?? true
     }
 
     func url(of source: LiveTVEPGSource) -> String {
@@ -64,10 +60,13 @@ final class LiveTVEPGSources: ObservableObject {
         store()
     }
 
-    /// Takes effect at the next update (Update Guides Now, or opening Live TV).
-    func setProviderGuide(_ on: Bool) {
-        providerGuide = on
-        ProfileSettings.current.set(on, forKey: Self.providerKey)
+    /// A source's own guide on or off (step 13a: per source, was "Provider's
+    /// guide"). Takes effect at the next update.
+    func setBuiltInGuide(_ source: LiveTVSource, _ on: Bool) {
+        guard source.builtInGuide != on else { return }
+        var changed = source
+        changed.builtInGuide = on
+        LiveTVSourceStore.shared.save(changed, password: nil)
     }
 
     /// Read all guides again now.

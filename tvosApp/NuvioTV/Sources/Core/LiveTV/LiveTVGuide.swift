@@ -118,10 +118,10 @@ final class LiveTVGuide: ObservableObject {
     /// `channels`: the channels to find guide channels for (by id or name,
     /// as on Android); `overrides`: the user's choices (stream → guide
     /// channel key, "" for none); `extra`: the added guides, in order;
-    /// `providerGuide`: whether the provider's own guide is read too.
+    /// `builtIn`: the sources' own guides (`builtInFeeds`).
     func refreshIfNeeded(
-        account: XtreamAccount, password: String, channels: [LiveTVEPGChannelRef],
-        overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [], providerGuide: Bool = true,
+        builtIn: [LiveTVGuideFeed], channels: [LiveTVEPGChannelRef],
+        overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [],
         force: Bool = false, reuseDownloads: Bool = false
     ) {
         let scope = ProfileSettings.activeProfileScope
@@ -133,12 +133,7 @@ final class LiveTVGuide: ObservableObject {
             return
         }
         // Added guides first: they win a tie (as on Android).
-        var feeds = extra
-        if providerGuide, let url = Self.xmltvURL(account: account, password: password) {
-            feeds.append(LiveTVGuideFeed(
-                sourceID: "", name: L10n.string("livetv_epg_provider", fallback: "Provider's guide"),
-                url: url, shiftMinutes: 0))
-        }
+        let feeds = extra + builtIn
         let fingerprint = LiveTVEPGSourceRules.fingerprint(feeds)
         let db = openDatabase()
         if !force, let db, db.meta("version") == Self.formatVersion, db.meta("sources") == fingerprint,
@@ -310,19 +305,17 @@ final class LiveTVGuide: ObservableObject {
     /// last import, the guides as set now. `reuseDownloads`: read the files
     /// kept from last time instead of downloading.
     func refreshAgain(force: Bool, reuseDownloads: Bool = false) {
-        guard let account = XtreamAccountStore.load(),
-              let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
-        let password = XtreamAccountStore.password(for: account)
+        guard let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
+        let builtIn = Self.builtInFeeds()
         Task {
             let channels = await Task.detached(priority: .utility) {
                 (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([LiveTVEPGChannelRef].self, from: $0) } ?? []
             }.value
             guard !channels.isEmpty else { return }
-            let sources = LiveTVEPGSources.shared
             refreshIfNeeded(
-                account: account, password: password, channels: channels,
-                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
-                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
+                builtIn: builtIn, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), extra: LiveTVEPGSources.shared.feeds(),
+                force: force, reuseDownloads: reuseDownloads)
         }
     }
 
@@ -339,6 +332,25 @@ final class LiveTVGuide: ObservableObject {
         links[streamID] = choice.isEmpty ? nil : choice
         NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
         return true
+    }
+
+    /// The guide id of a source's own guide in results and guide keys: the
+    /// first source keeps the provider guide's "" (step 13a).
+    nonisolated static func builtInID(_ source: LiveTVSource) -> String {
+        source.slot == 0 ? "" : "builtin:" + source.id
+    }
+
+    /// Every source's own guide that's on, in your order of the sources.
+    static func builtInFeeds() -> [LiveTVGuideFeed] {
+        let sources = LiveTVSourceStore.shared.enabled
+        return sources.compactMap { source in
+            guard source.builtInGuide, let account = source.xtream,
+                  let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return nil }
+            let name = sources.count > 1
+                ? source.displayName
+                : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
+            return LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0)
+        }
     }
 
     nonisolated static func xmltvURL(account: XtreamAccount, password: String) -> URL? {

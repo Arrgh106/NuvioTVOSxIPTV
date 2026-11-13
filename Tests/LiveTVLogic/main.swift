@@ -538,5 +538,24 @@ let tiers12c = [vod(1, "Goat 4K", year: 2026), vod(2, "Goat 4K HDR", year: 2026)
 check(OnDemandMatch.copies(of: tiers12c, name: "Goat", year: 2026, tmdb: nil, limit: 4).map { OnDemandTitle.quality($0.name) }
     == ["4K", "1080p", "720p", "4K"], "versions: one of each quality before more 4K")
 
+// MARK: Sources (step 13a)
+
+check(LiveTVSourceIDs.channel(slot: 0, raw: 12345) == 12345 && LiveTVSourceIDs.group(slot: 0, category: "17") == "17",
+      "sources: the first keeps the provider's ids")
+let otherChannel = LiveTVSourceIDs.channel(slot: 3, raw: 12345)
+check(otherChannel != 12345 && LiveTVSourceIDs.slot(ofChannel: otherChannel) == 3 && LiveTVSourceIDs.raw(ofChannel: otherChannel) == 12345,
+      "sources: another slot's channel id goes back to its stream id")
+check(LiveTVSourceIDs.slot(ofChannel: 987_654_321) == 0 && LiveTVSourceIDs.raw(ofChannel: 987_654_321) == 987_654_321,
+      "sources: big stream ids of the first source")
+let otherGroup = LiveTVSourceIDs.group(slot: 2, category: "17")
+check(otherGroup == "s2:17" && LiveTVSourceIDs.slot(ofGroup: otherGroup) == 2 && LiveTVSourceIDs.category(ofGroup: otherGroup) == "17",
+      "sources: another slot's group id")
+check(LiveTVSourceIDs.slot(ofGroup: "__favorites__") == 0 && LiveTVSourceIDs.slot(ofGroup: "sports") == 0
+      && LiveTVSourceIDs.slot(ofGroup: "s:x") == 0 && LiveTVSourceIDs.category(ofGroup: "sports") == "sports",
+      "sources: the first's and the app's groups")
+check(LiveTVSourceIDs.sourceID(ofHeading: LiveTVSourceIDs.heading(sourceID: "abc")) == "abc"
+      && LiveTVSourceIDs.sourceID(ofHeading: "17") == nil, "sources: headings")
+check(LiveTVSourceIDs.nextSlot(after: 0) == 1 && LiveTVSourceIDs.nextSlot(after: 4) == 5, "sources: next slot")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
