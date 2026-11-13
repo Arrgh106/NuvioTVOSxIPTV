@@ -123,6 +123,10 @@ struct LiveTVGroup: Identifiable, Hashable {
 
 @MainActor
 final class LiveTVStore: ObservableObject {
+    /// One store for the app: going back into Live TV shows the channels at
+    /// once instead of reading and sorting the whole list again.
+    static let shared = LiveTVStore()
+
     enum LoadState: Equatable {
         case idle
         case loading
@@ -186,6 +190,10 @@ final class LiveTVStore: ObservableObject {
     private var editsObserver: NSObjectProtocol?
     private var customGroupsObserver: NSObjectProtocol?
     private var parentalObserver: NSObjectProtocol?
+    private var profileObserver: NSObjectProtocol?
+    /// Another profile: its own account, names, favorites and groups, even
+    /// with the same provider login.
+    private var needsReload = false
     /// Groups that need the PIN now (step 11): their channels stay out of
     /// every list until unlocked.
     private var lockedGroupIDs: Set<String> = []
@@ -227,6 +235,14 @@ final class LiveTVStore: ObservableObject {
             forName: LiveTVChannelEdits.changedNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.applyNames() }
+        }
+        // Another profile: built again the next time Live TV opens.
+        profileObserver = NotificationCenter.default.addObserver(
+            forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // At once (not a task later): the views of the new profile may
+            // appear right away and call reloadAccount.
+            MainActor.assumeIsolated { self?.needsReload = true }
         }
         // Parental controls (step 11): locked groups and their channels.
         parentalObserver = NotificationCenter.default.addObserver(
@@ -531,7 +547,11 @@ final class LiveTVStore: ObservableObject {
     /// the app runs).
     func reloadAccount() {
         let stored = XtreamAccountStore.load()
-        guard stored != account else { return }
+        guard stored != account || needsReload else {
+            refreshIfStale()
+            return
+        }
+        needsReload = false
         account = stored
         userInfo = nil
         channels = []
@@ -631,6 +651,14 @@ final class LiveTVStore: ObservableObject {
     /// Loads account, categories, then channels one after another, like
     /// Android and TiviMate. Several requests at once (right after a login)
     /// made some panels answer HTTP 404; each step also gets one retry.
+    /// Live TV opened again with the list kept: a new list from the
+    /// provider in the background once the kept one is old.
+    private func refreshIfStale() {
+        guard state == .idle, !channels.isEmpty, let lastUpdated,
+              Date().timeIntervalSince(lastUpdated) > LiveTVCache.maxAge else { return }
+        refresh()
+    }
+
     func refresh(verifiedInfo: XtreamUserInfo? = nil) {
         guard let account else { return }
         let password = XtreamAccountStore.password(for: account)

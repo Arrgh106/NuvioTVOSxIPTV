@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Live TV tab: Xtream login, channel groups and channel list.
 struct LiveTVView: View {
-    @StateObject private var store = LiveTVStore()
+    /// Kept between visits (`LiveTVStore.shared`).
+    @ObservedObject private var store = LiveTVStore.shared
     @State private var isEditingAccount = false
     @State private var isManagingGroups = false
     @State private var searchText = ""
@@ -57,7 +58,11 @@ struct LiveTVView: View {
                 channelBrowser
             }
         }
-        .onAppear { store.reloadAccount() }
+        .onAppear {
+            store.reloadAccount()
+            // The kept store may still be searching.
+            searchText = store.searchQuery
+        }
     }
 
     // MARK: Browser
