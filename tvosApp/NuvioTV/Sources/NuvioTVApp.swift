@@ -4871,19 +4871,22 @@ private struct TVMainTabView: View {
             Tab(TVTab.liveTV.title, systemImage: TVTab.liveTV.symbol, value: TVTab.liveTV) {
                 liveTVTabContent
             }
-            if showsOnDemandTab {
-                Tab(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol, value: TVTab.onDemand) {
-                    onDemandTabContent
+            // One group: a tab builder takes at most 10 entries.
+            Group {
+                if showsOnDemandTab {
+                    Tab(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol, value: TVTab.onDemand) {
+                        onDemandTabContent
+                    }
                 }
-            }
-            if showsJellyfinTab {
-                Tab(TVTab.jellyfin.title, systemImage: TVTab.jellyfin.symbol, value: TVTab.jellyfin) {
-                    jellyfinTabContent
+                if showsJellyfinTab {
+                    Tab(TVTab.jellyfin.title, systemImage: TVTab.jellyfin.symbol, value: TVTab.jellyfin) {
+                        jellyfinTabContent
+                    }
                 }
-            }
-            if WatchPartyConfiguration.isEnabled && showWatchPartyTab {
-                Tab(TVTab.party.title, systemImage: TVTab.party.symbol, value: TVTab.party) {
-                    partyTabContent
+                if WatchPartyConfiguration.isEnabled && showWatchPartyTab {
+                    Tab(TVTab.party.title, systemImage: TVTab.party.symbol, value: TVTab.party) {
+                        partyTabContent
+                    }
                 }
             }
             Tab(TVTab.search.title, systemImage: TVTab.search.symbol, value: TVTab.search) {
