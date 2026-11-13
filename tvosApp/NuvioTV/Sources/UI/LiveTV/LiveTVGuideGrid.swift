@@ -481,7 +481,16 @@ struct LiveTVGuideGrid: UIViewRepresentable {
             // On the channel the focus guide on the left takes Left; a press
             // it held back restarts the pause.
             if onChannel {
-                view?.leftTrap.holdIfClosed()
+                // A quick swipe can end here instead of in the focus engine:
+                // with the way open, move on to the groups ourselves, or the
+                // swipe is lost and Left takes two.
+                if let view, view.leftTrap.isOpen, let groups = LiveTVFocusLinks.groups,
+                   let system = UIFocusSystem.focusSystem(for: view) {
+                    system.requestFocusUpdate(to: groups)
+                    system.updateFocusIfNeeded()
+                } else {
+                    view?.leftTrap.holdIfClosed()
+                }
                 return
             }
             guard let cell = focusedRow else { return }
