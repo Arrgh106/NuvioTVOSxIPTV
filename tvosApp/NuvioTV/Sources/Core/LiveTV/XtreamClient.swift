@@ -235,7 +235,8 @@ private final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unch
         let packed = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding").map { !$0.isEmpty } ?? false
         if !packed, response.expectedContentLength > 0 {
             expected = response.expectedContentLength
-            data.reserveCapacity(Int(response.expectedContentLength))
+            // Capped: the header is the server's word only.
+            data.reserveCapacity(Int(min(response.expectedContentLength, 64_000_000)))
         }
         onProgress(0, expected)
         completionHandler(.allow)
