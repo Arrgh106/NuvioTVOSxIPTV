@@ -95,6 +95,9 @@ final class LiveTVPlayer: ObservableObject {
     private var replayLog: [String] = []
     private var replayZone = ""
     private var currentURL: URL?
+    /// Every replay link of this show, for asking the server what it sends.
+    private var replayAll: [URL] = []
+    private var probeTask: Task<Void, Never>?
     /// The replay link playing (1-based) of how many, shown while it loads.
     @Published private(set) var replayAttempt: (index: Int, of: Int) = (0, 0)
     /// A replay's first picture: make sure it plays (a Play/Pause press
@@ -119,6 +122,8 @@ final class LiveTVPlayer: ObservableObject {
         guard let first = urls.first else { return }
         replayLog = []
         replayZone = zone
+        replayAll = urls
+        probeTask?.cancel()
         resumeChoice = false
         replay = programme
         replayLinks = Array(urls.dropFirst())
@@ -149,6 +154,59 @@ final class LiveTVPlayer: ObservableObject {
         ))
         PlaybackWakeLock.acquire(ownerID: session.wakeLockOwnerID)
         startWatching()
+    }
+
+    /// No link played: the report, then what the server sends for the
+    /// first HLS and TS link, asked directly.
+    private func failReplay(_ report: String) {
+        status = .failed(report)
+        let links = [replayAll.first { $0.pathExtension == "m3u8" }, replayAll.first { $0.pathExtension == "ts" }].compactMap { $0 }
+        let headers = replayHeaders
+        let shown = replay
+        probeTask?.cancel()
+        probeTask = Task { [weak self] in
+            var lines: [String] = []
+            for link in links {
+                let answer = await Self.probe(link, headers: headers)
+                lines.append(L10n.string("livetv_catchup_server_sends", fallback: "Server sends for ") + "." + link.pathExtension + ": " + answer)
+            }
+            guard !Task.isCancelled, let self, self.replay == shown, case .failed = self.status, !lines.isEmpty else { return }
+            self.status = .failed(report + "\n" + lines.joined(separator: "\n"))
+        }
+    }
+
+    /// The first bytes of a link: status, type, size, and the start of a
+    /// text answer with the login blanked out.
+    static func probe(_ url: URL, headers: [String: String]) async -> String {
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        request.setValue("bytes=0-2047", forHTTPHeaderField: "Range")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return "no HTTP answer" }
+            var parts = ["HTTP \(http.statusCode)"]
+            if let type = http.value(forHTTPHeaderField: "Content-Type"), !type.isEmpty { parts.append(type) }
+            parts.append("\(data.count) bytes")
+            if let final = http.url, final.host != url.host || final.path != url.path {
+                parts.append("redirected" + (final.host != url.host ? " to another server" : ""))
+            }
+            if data.first == 0x47 {
+                parts.append("TS data")
+            } else if !data.isEmpty, var text = String(data: data.prefix(160), encoding: .utf8) {
+                // The login out of what's shown (it's in the timeshift path).
+                let path = url.path.split(separator: "/").map(String.init)
+                if let index = path.firstIndex(of: "timeshift"), path.count > index + 2 {
+                    for secret in [path[index + 1], path[index + 2]] where secret.count > 1 {
+                        text = text.replacingOccurrences(of: secret, with: "\u{2022}\u{2022}\u{2022}")
+                    }
+                }
+                let line = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+                parts.append("\u{201C}" + String(line.prefix(90)) + "\u{201D}")
+            }
+            return parts.joined(separator: " \u{00B7} ")
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private func noteReplay(_ answer: String) {
@@ -337,6 +395,8 @@ final class LiveTVPlayer: ObservableObject {
 
     private func check() {
         guard channel != nil else { return }
+        // A replay given up on: written once, not again every tick.
+        if replay != nil, case .failed = status { return }
         let engine = session.activeEngine
         let error = session.lastLoadError ?? engine.currentErrorMessage
         if engine.hasFirstFrameReadyForDisplay {
@@ -352,7 +412,7 @@ final class LiveTVPlayer: ObservableObject {
             if replay != nil {
                 noteReplay(error)
                 if tryNextReplayLink() { return }
-                status = .failed(replayReport(error))
+                failReplay(replayReport(error))
                 return
             }
             // Live streams that don't start natively get one try with MPV.
@@ -367,7 +427,7 @@ final class LiveTVPlayer: ObservableObject {
         if replay != nil, Date().timeIntervalSince(loadStarted) > 12 {
             noteReplay(L10n.string("livetv_catchup_no_picture", fallback: "no picture after 12 s"))
             if !tryNextReplayLink() {
-                status = .failed(replayReport(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")))
+                failReplay(replayReport(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")))
             }
             return
         }
