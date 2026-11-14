@@ -132,8 +132,10 @@ final class LiveTVGuide: ObservableObject {
             }
             return
         }
-        // Added guides first: they win a tie (as on Android).
-        let feeds = extra + builtIn
+        // Added guides first: they win a tie (as on Android). The same link
+        // twice (a playlist naming its login's xmltv.php) is read once.
+        var seenLinks = Set<String>()
+        let feeds = (extra + builtIn).filter { seenLinks.insert($0.url.absoluteString).inserted }
         let fingerprint = LiveTVEPGSourceRules.fingerprint(feeds)
         let db = openDatabase()
         if !force, let db, db.meta("version") == Self.formatVersion, db.meta("sources") == fingerprint,
