@@ -2,11 +2,11 @@
 
 Where the fork stands and what comes next. Updated with every merged pull request.
 
-Legend: ✅ done · 🚧 in progress · ⏭ next · 💡 noted for later
+Legend: ✅ done · 🧪 built, not tested on a device yet · 🚧 in progress · ⏭ next · 💡 noted for later
 
 ## In progress
 
-- 🚧 **Live TV, step 13a: several sources** (see below).
+- 🚧 **Live TV, step 13b: M3U playlists** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -42,8 +42,8 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 12c: VOD in search, categories, versions, duplicates. *Search* (every search style): the provider's titles the add-ons don't find come at the end of the results (movies and series, at most 40, by name). *Categories* (Settings → Live TV / VOD → VOD → Categories, or *Categories* on the VOD page): show or hide each category, lock it with the parental PIN (removing a lock asks for it); hidden ones are out of the page, Home, search and the stream lists, as on Android. *Versions*: a provider title's stream list offers every copy (other qualities and categories, up to 6, this one first). *Merge Duplicates* (on by default): the same TMDB id, or the same name and year, shows up once in the page rows, the Home row and search. Settings: *VOD in Search*, *Merge Duplicates*. *Languages* (Settings → Live TV / VOD → VOD → Languages, or *Languages* on the VOD page): the language of each title is read from its tag ("DE - ", "4K-AR: ", "|TR| "), its category ("FR - ANIMATION", "Arabic Movies") or the script of the category name; pick the languages to show (none picked: all), once one is picked, titles with no language given are out too unless turned on, and a stream list with a version in a picked language drops the ones without; Scandinavian packs ("4K-SC - ", "NORDIC FILM") are one group, *Nordic*; per profile, everywhere VOD shows. Tags that look like tags (capitals, a language or quality in them: "4K-NF - ") now come off names even when not learned, so more copies match and more titles open with Nuvio's details; versions list one of each quality before more of the same (up to 8). Loading shows how far it is, as the guide does: as Jellyfin's, how many movies or series are in so far ("Loading movies · 12,500"), then how many are saved. The index is read again once after the update.
 
 13. 🚧 **Sources: several Xtream logins, M3U playlists, Stalker portals** (as Android's *Playlists & Guides*), in five parts. Every source is one entry in a list per profile (secrets in the Keychain), managed like Nuvio's Jellyfin servers. The guide mixes them into one list, as on Android: *All channels* covers every source and the group column has a heading per source that folds. The login you have now becomes the first source with the same channel ids, so favorites, names, order, groups and locks stay.
-   - 🚧 13a: several Xtream logins. Settings → Live TV / VOD → *Sources*: add, edit, turn off, move, update and delete logins; each row shows its channels, last update or error. Channels, guides (each login's own guide), playback and catch-up per source; a source that fails leaves the others.
-   - ⏭ 13b: M3U playlists (link, optional user agent): tvg-id, tvg-name, tvg-logo, group-title, tvg-chno, headers (#EXTVLCOPT, #EXTHTTP, url|User-Agent=), the guide linked in the playlist (x-tvg-url); movie and series entries left out, as on Android.
+   - 🧪 13a: several Xtream logins (untested: no second login at hand; the first login carries on as before). Settings → Live TV / VOD → *Sources*: add, edit, turn off, move, update and delete logins; each row shows its channels, last update or error. Channels, guides (each login's own guide), playback and catch-up per source; a source that fails leaves the others.
+   - 🚧 13b: M3U playlists (Settings → Sources → *Add M3U Playlist*, or from Live TV's first screen; link in the Keychain, optional user agent; read one after another with the logins, counted while it comes in): tvg-id, tvg-name, tvg-logo, group-title, tvg-chno, headers (#EXTVLCOPT, #EXTHTTP, url|User-Agent=), the guide linked in the playlist (x-tvg-url); movie and series entries left out, as on Android.
    - ⏭ 13c: VOD from every Xtream login: one catalogue, duplicates merged, versions show the source.
    - ⏭ 13d: catch-up for M3U (catchup, catchup-source, catchup-days: default, append, shift, flussonic, xc).
    - ⏭ 13e: Stalker / Ministra portals (portal URL and MAC address).

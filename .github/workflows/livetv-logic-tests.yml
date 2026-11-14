@@ -21,6 +21,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVParental.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandCatalog.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVSourceIDs.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVM3U.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -38,6 +39,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVParental.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandCatalog.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVSourceIDs.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVM3U.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -70,6 +72,7 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVParental.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandCatalog.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVSourceIDs.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVM3U.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

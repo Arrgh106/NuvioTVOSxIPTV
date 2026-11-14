@@ -343,13 +343,22 @@ final class LiveTVGuide: ObservableObject {
     /// Every source's own guide that's on, in your order of the sources.
     static func builtInFeeds() -> [LiveTVGuideFeed] {
         let sources = LiveTVSourceStore.shared.enabled
-        return sources.compactMap { source in
-            guard source.builtInGuide, let account = source.xtream,
-                  let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return nil }
+        return sources.flatMap { source -> [LiveTVGuideFeed] in
+            guard source.builtInGuide else { return [] }
             let name = sources.count > 1
                 ? source.displayName
                 : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
-            return LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0)
+            if let account = source.xtream {
+                guard let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return [] }
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0)]
+            }
+            // M3U (step 13b): every guide linked in the playlist.
+            return LiveTVStore.shared.guideLinks(sourceID: source.id).enumerated().compactMap { index, link in
+                guard let url = URL(string: link) else { return nil }
+                return LiveTVGuideFeed(
+                    sourceID: builtInID(source) + (index == 0 ? "" : "#\(index + 1)"),
+                    name: name, url: url, shiftMinutes: 0)
+            }
         }
     }
 

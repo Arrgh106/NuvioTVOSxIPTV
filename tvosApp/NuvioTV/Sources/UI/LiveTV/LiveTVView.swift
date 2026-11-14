@@ -545,6 +545,8 @@ private struct XtreamLoginForm: View {
     @State private var format: XtreamStreamFormat = .auto
     @State private var isSigningIn = false
     @State private var errorMessage: String?
+    /// Step 13b: a playlist instead of a login.
+    @State private var addingPlaylist: LiveTVSourceEditor.Target?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -607,12 +609,19 @@ private struct XtreamLoginForm: View {
                     }
                 }
                 .disabled(isSigningIn || server.isEmpty || username.isEmpty || password.isEmpty)
+
+                Button(L10n.string("livetv_sources_add_m3u_instead", fallback: "Add an M3U Playlist Instead")) {
+                    addingPlaylist = .init(source: LiveTVSourceStore.shared.newPlaylist(), isNew: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .focusSection()
         }
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(item: $addingPlaylist) { target in
+            LiveTVSettingsRows.clearSheetBackground(LiveTVPlaylistEditor(target: target, accentColor: LiveTVTheme.accent))
+        }
     }
 
     private func signIn() {

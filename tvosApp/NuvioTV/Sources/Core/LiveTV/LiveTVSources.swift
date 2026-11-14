@@ -21,16 +21,19 @@ struct LiveTVSource: Codable, Identifiable, Equatable, Sendable {
     var enabled = true
     /// Xtream: server, username and stream format (`id` is the source's).
     var xtream: XtreamAccount?
-    /// The source's own guide (Xtream's `xmltv.php`), as Android's "Load
-    /// built-in guide".
+    /// The source's own guide (Xtream's `xmltv.php`, the playlist's
+    /// `x-tvg-url`), as Android's "Load built-in guide".
     var builtInGuide = true
+    /// M3U: the user agent the playlist and its streams are asked with
+    /// (empty: the app's). The link itself is in the Keychain.
+    var userAgent: String?
 
     /// The name shown: yours, or the server's.
     var displayName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
         if let server = xtream?.server { return URL(string: server)?.host ?? server }
-        return "Source"
+        return kind == .m3u ? "Playlist" : "Source"
     }
 }
 
@@ -108,14 +111,22 @@ final class LiveTVSourceStore: ObservableObject {
 
     /// A new Xtream login with the next free slot (the first one gets 0).
     func newXtream() -> LiveTVSource {
-        let settings = ProfileSettings.current
-        let used = max(settings.integer(forKey: Self.highestSlotKey), sources.map(\.slot).max() ?? -1)
-        let slot = sources.isEmpty && settings.object(forKey: Self.highestSlotKey) == nil
-            ? 0 : LiveTVSourceIDs.nextSlot(after: used)
         let id = UUID().uuidString
         return LiveTVSource(
-            id: id, slot: slot, kind: .xtream, name: "",
+            id: id, slot: nextSlot(), kind: .xtream, name: "",
             xtream: XtreamAccount(id: id, name: "", server: "", username: "", streamFormat: .auto))
+    }
+
+    /// A new M3U playlist (step 13b).
+    func newPlaylist() -> LiveTVSource {
+        LiveTVSource(id: UUID().uuidString, slot: nextSlot(), kind: .m3u, name: "")
+    }
+
+    private func nextSlot() -> Int {
+        let settings = ProfileSettings.current
+        let used = max(settings.integer(forKey: Self.highestSlotKey), sources.map(\.slot).max() ?? -1)
+        return sources.isEmpty && settings.object(forKey: Self.highestSlotKey) == nil
+            ? 0 : LiveTVSourceIDs.nextSlot(after: used)
     }
 
     /// Adds or changes a source; `password` nil keeps the stored one.
@@ -126,15 +137,15 @@ final class LiveTVSourceStore: ObservableObject {
         } else {
             list.append(source)
         }
-        if let password, let account = source.xtream {
-            XtreamAccountStore.savePassword(password, accountID: account.id)
+        if let password {
+            XtreamAccountStore.savePassword(password, accountID: source.xtream?.id ?? source.id)
         }
         commit(list)
     }
 
     func remove(_ id: String) {
         guard let source = source(id: id) else { return }
-        if let account = source.xtream { XtreamAccountStore.removePassword(accountID: account.id) }
+        XtreamAccountStore.removePassword(accountID: source.xtream?.id ?? source.id)
         commit(sources.filter { $0.id != id })
     }
 
@@ -154,8 +165,9 @@ final class LiveTVSourceStore: ObservableObject {
         commit(list)
     }
 
+    /// The Xtream password, or the M3U link.
     func password(for source: LiveTVSource) -> String {
-        source.xtream.map { XtreamAccountStore.password(for: $0) } ?? ""
+        XtreamAccountStore.secret(id: source.xtream?.id ?? source.id)
     }
 
     private func commit(_ list: [LiveTVSource]) {

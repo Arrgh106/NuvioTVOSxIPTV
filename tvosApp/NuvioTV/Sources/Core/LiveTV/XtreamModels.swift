@@ -187,6 +187,9 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
 
     /// The provider's name when `name` differs (not saved in the cache).
     var providerName: String? = nil
+    /// M3U playlists (step 13b): the channel's own link and headers.
+    var streamURL: String? = nil
+    var headers: [String: String]? = nil
 
     var id: Int { streamID }
     /// What the provider calls it: guide matching and separator rows go by this.
@@ -209,6 +212,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         case categoryID = "category_id"
         case tvArchive = "tv_archive"
         case archiveDays = "tv_archive_duration"
+        case streamURL = "nuvio_url"
+        case headers = "nuvio_headers"
     }
 
     init(
@@ -233,6 +238,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
             logoURL: logoURL, epgChannelID: epgChannelID,
             categoryID: LiveTVSourceIDs.group(slot: slot, category: categoryID ?? ""), archiveDays: archiveDays)
         copy.providerName = providerName
+        copy.streamURL = streamURL
+        copy.headers = headers
         return copy
     }
 
@@ -246,6 +253,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         categoryID = c.lossyString(.categoryID)
         let hasArchive = (c.lossyInt(.tvArchive) ?? 0) == 1
         archiveDays = hasArchive ? (c.lossyInt(.archiveDays) ?? 0) : 0
+        streamURL = try? c.decodeIfPresent(String.self, forKey: .streamURL)
+        headers = try? c.decodeIfPresent([String: String].self, forKey: .headers)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -258,6 +267,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         try c.encodeIfPresent(categoryID, forKey: .categoryID)
         try c.encode(archiveDays > 0 ? 1 : 0, forKey: .tvArchive)
         try c.encode(archiveDays, forKey: .archiveDays)
+        try c.encodeIfPresent(streamURL, forKey: .streamURL)
+        try c.encodeIfPresent(headers, forKey: .headers)
     }
 }
 

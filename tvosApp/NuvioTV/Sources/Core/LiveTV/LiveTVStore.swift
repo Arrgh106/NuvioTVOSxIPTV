@@ -17,7 +17,13 @@ enum XtreamAccountStore {
     }
 
     static func password(for account: XtreamAccount) -> String {
-        var q = query(accountID: account.id)
+        secret(id: account.id)
+    }
+
+    /// A source's secret: an Xtream password, or an M3U link (step 13b:
+    /// links often carry the login).
+    static func secret(id: String) -> String {
+        var q = query(accountID: id)
         q[kSecReturnData as String] = kCFBooleanTrue
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -61,6 +67,8 @@ private struct LiveTVCache: Codable {
     var userInfoAllowedFormats: [String]
     var categories: [XtreamCategory]
     var channels: [XtreamLiveChannel]
+    /// M3U: guides linked in the playlist (step 13b).
+    var guideURLs: [String]?
 
     static let maxAge: TimeInterval = 12 * 60 * 60
 
@@ -85,7 +93,11 @@ private struct LiveTVCache: Codable {
 
     /// The login the list was read with: another server or user reads again.
     static func key(_ source: LiveTVSource) -> String {
-        guard let account = source.xtream else { return source.id }
+        guard let account = source.xtream else {
+            // M3U: the link (only its hash: it may carry the login).
+            let link = XtreamAccountStore.secret(id: source.id)
+            return "\(source.id)|m3u|\(String(LiveTVEPGSourceRules.fnv1a(link), radix: 36))"
+        }
         return "\(source.id)|\(account.server)|\(account.username)"
     }
 
@@ -164,6 +176,7 @@ final class LiveTVStore: ObservableObject {
         var channels: [XtreamLiveChannel]
         var allowedFormats: [String]
         var savedAt: Date
+        var guideURLs: [String] = []
     }
     private var lists: [String: SourceList] = [:]
     /// Sources read one after another (as Android): several requests at
@@ -605,7 +618,7 @@ final class LiveTVStore: ObservableObject {
     /// Picks up the sources of the active profile (profiles can switch while
     /// the app runs, sources change in Settings).
     func reloadAccount() {
-        let stored = LiveTVSourceStore.shared.enabled.filter { $0.kind == .xtream }
+        let stored = LiveTVSourceStore.shared.enabled.filter { $0.kind == .xtream || $0.kind == .m3u }
         guard stored != sources || needsReload else {
             refreshIfStale()
             return
@@ -657,7 +670,8 @@ final class LiveTVStore: ObservableObject {
                           cache.matches(source) else { continue }
                     kept[source.id] = SourceList(
                         categories: cache.categories, channels: cache.channels,
-                        allowedFormats: cache.userInfoAllowedFormats, savedAt: cache.savedAt)
+                        allowedFormats: cache.userInfoAllowedFormats, savedAt: cache.savedAt,
+                        guideURLs: cache.guideURLs ?? [])
                 }
                 return kept
             }.value
@@ -743,6 +757,10 @@ final class LiveTVStore: ObservableObject {
     private func runQueue() {
         guard queueTask == nil, !queue.isEmpty else { return }
         let (source, verifiedInfo) = queue[0]
+        if source.kind == .m3u {
+            runPlaylist(source)
+            return
+        }
         guard let account = source.xtream else {
             queue.removeFirst()
             runQueue()
@@ -784,7 +802,7 @@ final class LiveTVStore: ObservableObject {
                 let cache = LiveTVCache(
                     accountID: LiveTVCache.key(source), savedAt: list.savedAt,
                     userInfoAllowedFormats: list.allowedFormats,
-                    categories: list.categories, channels: list.channels)
+                    categories: list.categories, channels: list.channels, guideURLs: nil)
                 Task.detached(priority: .utility) { cache.save(to: scopeURL) }
                 self.combine()
             case .failure(let error):
@@ -797,6 +815,91 @@ final class LiveTVStore: ObservableObject {
             self.updateState()
             self.runQueue()
         }
+    }
+
+    /// An M3U playlist (step 13b): downloaded with its user agent, counted
+    /// as it comes in, read off the main thread. Groups are its
+    /// group-titles in their order.
+    private func runPlaylist(_ source: LiveTVSource) {
+        let link = XtreamAccountStore.secret(id: source.id)
+        let agent = source.userAgent.flatMap { $0.isEmpty ? nil : $0 } ?? XtreamClient.userAgent
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope, source: source)
+        let shown = sources
+        let label = L10n.string("livetv_loading_label", fallback: "Loading channels") + " \u{00B7} " + source.displayName
+        queueTask = Task { [weak self] in
+            let outcome: Result<SourceList, Error>
+            do {
+                guard let url = URL(string: link), url.scheme?.lowercased().hasPrefix("http") == true else {
+                    throw XtreamError.invalidServer
+                }
+                var request = URLRequest(url: url)
+                request.setValue(agent, forHTTPHeaderField: "User-Agent")
+                let configuration = URLSessionConfiguration.default
+                configuration.timeoutIntervalForRequest = 120
+                configuration.timeoutIntervalForResource = 30 * 60
+                let (data, response) = try await XtreamProgressFetch.data(
+                    for: request, configuration: configuration, marker: Data("#EXTINF".utf8)
+                ) { count in
+                    Task { @MainActor in
+                        guard count > 0 else { return }
+                        ActivityCenter.shared.update("livetv.channels", label: label + " \u{00B7} " + count.formatted())
+                    }
+                }
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw XtreamError.badStatus(http.statusCode)
+                }
+                let list = await Task.detached(priority: .userInitiated) { () -> SourceList? in
+                    let playlist = LiveTVM3U.parse(String(decoding: data, as: UTF8.self))
+                    guard !playlist.entries.isEmpty else { return nil }
+                    let ids = LiveTVM3U.ids(for: playlist.entries)
+                    let categories = LiveTVM3U.groups(of: playlist.entries).map { XtreamCategory(id: $0, name: $0) }
+                    var channels: [XtreamLiveChannel] = []
+                    channels.reserveCapacity(playlist.entries.count)
+                    for (entry, id) in zip(playlist.entries, ids) {
+                        var channel = XtreamLiveChannel(
+                            streamID: id, number: entry.number, name: entry.name, logoURL: entry.logo,
+                            epgChannelID: entry.tvgID ?? entry.tvgName, categoryID: entry.group, archiveDays: 0)
+                        channel.streamURL = entry.url
+                        channel.headers = entry.headers.isEmpty ? nil : entry.headers
+                        channels.append(channel)
+                    }
+                    return SourceList(
+                        categories: categories, channels: channels, allowedFormats: [], savedAt: Date(),
+                        guideURLs: playlist.guideURLs)
+                }.value
+                guard let list else { throw XtreamError.invalidResponse }
+                outcome = .success(list)
+            } catch {
+                outcome = .failure(error)
+            }
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            self.queueTask = nil
+            if !self.queue.isEmpty { self.queue.removeFirst() }
+            switch outcome {
+            case .success(let list):
+                self.lists[source.id] = list
+                self.sourceStatus[source.id] = self.status(list: list, info: nil)
+                self.lastUpdated = self.lists.values.map(\.savedAt).min()
+                let cache = LiveTVCache(
+                    accountID: LiveTVCache.key(source), savedAt: list.savedAt, userInfoAllowedFormats: [],
+                    categories: list.categories, channels: list.channels, guideURLs: list.guideURLs)
+                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
+                self.combine()
+            case .failure(let error):
+                var status = self.sourceStatus[source.id] ?? LiveTVSourceStatus()
+                status.loading = false
+                status.error = error.localizedDescription
+                self.sourceStatus[source.id] = status
+                if self.queue.isEmpty, !self.channels.isEmpty { self.refreshGuide(force: false) }
+            }
+            self.updateState()
+            self.runQueue()
+        }
+    }
+
+    /// Guides linked in a playlist (its `x-tvg-url`), from the last read.
+    func guideLinks(sourceID: String) -> [String] {
+        lists[sourceID]?.guideURLs ?? []
     }
 
     private func status(list: SourceList, info: XtreamUserInfo?) -> LiveTVSourceStatus {
@@ -1093,6 +1196,16 @@ final class LiveTVStore: ObservableObject {
     }
 
     func playbackItem(for channel: XtreamLiveChannel) -> PlaybackItem? {
+        // M3U (step 13b): the channel's own link, its headers over the
+        // playlist's user agent.
+        if let link = channel.streamURL {
+            guard let url = URL(string: link) else { return nil }
+            let slot = LiveTVSourceIDs.slot(ofChannel: channel.streamID)
+            let agent = sources.first { $0.slot == slot }?.userAgent.flatMap { $0.isEmpty ? nil : $0 } ?? XtreamClient.userAgent
+            var headers = ["User-Agent": agent]
+            headers.merge(channel.headers ?? [:]) { _, own in own }
+            return PlaybackItem(url: url, meta: .liveChannel(channel), headers: headers)
+        }
         guard let routed = route(channel) else { return nil }
         let (source, account) = routed
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))

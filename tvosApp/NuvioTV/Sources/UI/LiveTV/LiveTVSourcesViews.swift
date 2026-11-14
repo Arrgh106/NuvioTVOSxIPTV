@@ -30,6 +30,13 @@ struct LiveTVSourcesGroup: View {
                 )
             }
             LiveTVSettingsRows.action(
+                title: L10n.string("livetv_sources_add_m3u", fallback: "Add M3U Playlist"),
+                subtitle: L10n.string("livetv_sources_add_m3u_detail", fallback: "A channel list from the M3U link your provider gave you"),
+                value: "",
+                accentColor: accentColor,
+                action: { editing = .init(source: sources.newPlaylist(), isNew: true) }
+            )
+            LiveTVSettingsRows.action(
                 title: L10n.string("livetv_sources_add_xtream", fallback: "Add Xtream Codes Login"),
                 subtitle: L10n.string("livetv_sources_add_xtream_detail", fallback: "Sign in with the server, username and password from your provider. Its TV guide comes with it."),
                 value: "",
@@ -38,7 +45,11 @@ struct LiveTVSourcesGroup: View {
             )
         }
         .sheet(item: $editing) { target in
-            LiveTVSettingsRows.clearSheetBackground(LiveTVSourceEditor(target: target, accentColor: accentColor))
+            if target.source.kind == .m3u {
+                LiveTVSettingsRows.clearSheetBackground(LiveTVPlaylistEditor(target: target, accentColor: accentColor))
+            } else {
+                LiveTVSettingsRows.clearSheetBackground(LiveTVSourceEditor(target: target, accentColor: accentColor))
+            }
         }
         .alert(
             L10n.format("livetv_source_delete_title", fallback: "Delete \u{201C}%@\u{201D}?", deleting?.displayName ?? ""),
@@ -69,7 +80,9 @@ private struct LiveTVSourceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             LiveTVSettingsRows.action(
-                title: source.displayName + "  \u{00B7}  " + L10n.string("livetv_source_kind_xtream", fallback: "Xtream"),
+                title: source.displayName + "  \u{00B7}  " + (source.kind == .m3u
+                    ? L10n.string("livetv_source_kind_m3u", fallback: "M3U")
+                    : L10n.string("livetv_source_kind_xtream", fallback: "Xtream")),
                 subtitle: statusText,
                 value: source.enabled
                     ? L10n.string("livetv_source_on", fallback: "On")
@@ -321,6 +334,132 @@ struct LiveTVSourceEditor: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// Adding or changing an M3U playlist (step 13b), as Android's "Add M3U
+/// playlist": name, link, user agent, on / off and the guide linked in it.
+struct LiveTVPlaylistEditor: View {
+    let target: LiveTVSourceEditor.Target
+    let accentColor: Color
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @State private var name: String
+    @State private var link: String
+    @State private var userAgent: String
+    @State private var enabled: Bool
+    @State private var builtInGuide: Bool
+    @State private var invalid = false
+
+    init(target: LiveTVSourceEditor.Target, accentColor: Color) {
+        self.target = target
+        self.accentColor = accentColor
+        let source = target.source
+        _name = State(initialValue: source.name)
+        _link = State(initialValue: target.isNew ? "" : LiveTVSourceStore.shared.password(for: source))
+        _userAgent = State(initialValue: source.userAgent ?? "")
+        _enabled = State(initialValue: source.enabled)
+        _builtInGuide = State(initialValue: source.builtInGuide)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(target.isNew
+                         ? L10n.string("livetv_source_new_m3u", fallback: "Add M3U Playlist")
+                         : L10n.string("livetv_source_edit_m3u", fallback: "Edit M3U Playlist"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_source_playlist", fallback: "Playlist"),
+                        subtitle: L10n.string("livetv_source_playlist_detail", fallback: "The link is kept in the Keychain of this Apple TV (it often holds your login). Movies and series in the list are left out.")
+                    ) {
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_source_name", fallback: "Name"),
+                            subtitle: L10n.string("livetv_source_name_detail_m3u", fallback: "Shown in the group column and here"),
+                            placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
+                            text: $name
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_source_link", fallback: "Playlist Link"),
+                            subtitle: L10n.string("livetv_source_link_detail", fallback: "e.g. http://example.com/playlist.m3u"),
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $link,
+                            fieldWidth: 520,
+                            status: invalid
+                                ? L10n.string("livetv_epg_source_invalid", fallback: "Enter a link starting with http:// or https://")
+                                : nil,
+                            statusColor: .orange
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_source_user_agent", fallback: "User Agent"),
+                            subtitle: L10n.string("livetv_source_user_agent_detail", fallback: "Optional. Empty: the app's (VLC). Some providers need their own"),
+                            placeholder: L10n.string("livetv_source_user_agent_default", fallback: "Default"),
+                            text: $userAgent,
+                            fieldWidth: 520
+                        )
+                    }
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_epg_source_options", fallback: "Options"),
+                        subtitle: ""
+                    ) {
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_use", fallback: "Use This Source"),
+                            subtitle: L10n.string("livetv_source_use_detail", fallback: "Off: kept here, its channels leave the guide"),
+                            isOn: $enabled,
+                            accentColor: accentColor
+                        )
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_linked_guide", fallback: "Load Guide Linked in Playlist"),
+                            subtitle: L10n.string("livetv_source_linked_guide_detail", fallback: "The TV guide the playlist names (x-tvg-url), read with the others"),
+                            isOn: $builtInGuide,
+                            accentColor: accentColor
+                        )
+                    }
+
+                    HStack(spacing: 24) {
+                        LiveTVSettingsRows.dialogButton(
+                            title: L10n.string("action_cancel", fallback: "Cancel"), isPrimary: false
+                        ) {
+                            dismiss()
+                        }
+                        Spacer()
+                        LiveTVSettingsRows.dialogButton(
+                            title: L10n.string("action_save", fallback: "Save"),
+                            isPrimary: true,
+                            enabled: !link.trimmed.isEmpty,
+                            action: save
+                        )
+                    }
+                    .focusSection()
+                }
+                .padding(40)
+            }
+        }
+    }
+
+    private func save() {
+        let cleaned = link.trimmed
+        guard let url = URL(string: cleaned), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false else {
+            invalid = true
+            return
+        }
+        invalid = false
+        var source = target.source
+        source.name = name.trimmed.isEmpty ? (url.host ?? "") : name.trimmed
+        source.enabled = enabled
+        source.builtInGuide = builtInGuide
+        source.userAgent = userAgent.trimmed.isEmpty ? nil : userAgent.trimmed
+        let changed = target.isNew || LiveTVSourceStore.shared.password(for: target.source) != cleaned
+        LiveTVSourceStore.shared.save(source, password: changed ? cleaned : nil)
+        dismiss()
     }
 }
 

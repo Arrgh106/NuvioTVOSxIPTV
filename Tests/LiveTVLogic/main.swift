@@ -557,5 +557,47 @@ check(LiveTVSourceIDs.sourceID(ofHeading: LiveTVSourceIDs.heading(sourceID: "abc
       && LiveTVSourceIDs.sourceID(ofHeading: "17") == nil, "sources: headings")
 check(LiveTVSourceIDs.nextSlot(after: 0) == 1 && LiveTVSourceIDs.nextSlot(after: 4) == 5, "sources: next slot")
 
+// MARK: M3U playlists (step 13b)
+
+let m3uText = """
+#EXTM3U url-tvg="http://guide.example/a.xml.gz,http://guide.example/b.xml" x-tvg-url="http://guide.example/a.xml.gz"
+#EXTINF:-1 tvg-id="das.erste" tvg-name="Das Erste HD" tvg-logo="http://logo.example/1.png" group-title="DE | News;Extra" tvg-chno="7",Das Erste, HD
+http://stream.example/live/1.m3u8
+#EXTINF:-1 tvg-id="" group-title="",Plain
+#EXTGRP:Sports
+#EXTVLCOPT:http-user-agent=MyAgent/1.0
+#EXTVLCOPT:http-referrer=http://ref.example/
+http://stream.example/2.ts|Referer=http://other.example/&Origin=http://origin.example
+#EXTINF:-1 group-title="Movies",Dune (2021)
+http://stream.example/movie/u/p/55.mkv
+#EXTINF:-1 group-title="News" user-agent="Agent2",Third
+#EXTHTTP:{"Cookie":"a=b"}
+http://stream.example/live/3
+"""
+let m3u = LiveTVM3U.parse(m3uText)
+check(m3u.guideURLs == ["http://guide.example/a.xml.gz", "http://guide.example/b.xml"], "m3u: linked guides, once each")
+check(m3u.entries.count == 3, "m3u: channels in, movies out")
+let m3uFirst = m3u.entries[0]
+check(m3uFirst.name == "Das Erste, HD" && m3uFirst.tvgID == "das.erste" && m3uFirst.tvgName == "Das Erste HD"
+      && m3uFirst.logo == "http://logo.example/1.png" && m3uFirst.group == "DE | News" && m3uFirst.number == 7
+      && m3uFirst.url == "http://stream.example/live/1.m3u8", "m3u: attributes, name after the comma outside quotes")
+let m3uSecond = m3u.entries[1]
+check(m3uSecond.tvgID == nil && m3uSecond.group == "Sports" && m3uSecond.url == "http://stream.example/2.ts"
+      && m3uSecond.headers["User-Agent"] == "MyAgent/1.0" && m3uSecond.headers["Referer"] == "http://other.example/"
+      && m3uSecond.headers["Origin"] == "http://origin.example", "m3u: #EXTGRP, #EXTVLCOPT, link headers win")
+check(m3u.entries[2].headers["User-Agent"] == "Agent2" && m3u.entries[2].headers["Cookie"] == "a=b", "m3u: user-agent attribute, #EXTHTTP")
+check(LiveTVM3U.groups(of: m3u.entries) == ["DE | News", "Sports", "News"], "m3u: groups in their order")
+check(LiveTVM3U.isVOD(url: "http://x/series/u/p/1.mp4") && LiveTVM3U.isVOD(url: "http://x/a/film.mkv?t=1")
+      && !LiveTVM3U.isVOD(url: "http://x/live/u/p/1.ts") && !LiveTVM3U.isVOD(url: "http://x/u/p/123"), "m3u: what counts as VOD")
+let m3uIDs = LiveTVM3U.ids(for: m3u.entries)
+check(Set(m3uIDs).count == 3 && m3uIDs.allSatisfy { $0 > 0 && $0 <= 0x7FFF_FFFF }, "m3u: ids, distinct and below 2^31")
+var m3uMoved = m3u.entries
+m3uMoved[0].url = "http://stream.example/live/1.m3u8?token=new"
+check(LiveTVM3U.ids(for: m3uMoved) == m3uIDs, "m3u: a new link keeps the id")
+let m3uTwins = [LiveTVM3UEntry(name: "Same", url: "http://a"), LiveTVM3UEntry(name: "Same", url: "http://b")]
+check(Set(LiveTVM3U.ids(for: m3uTwins)).count == 2, "m3u: the same name twice gets two ids")
+check(LiveTVM3U.parse("#EXTINF:-1,No link\n").entries.isEmpty && LiveTVM3U.parse("http://lonely\n").entries.isEmpty,
+      "m3u: an entry needs both lines")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -18,7 +18,7 @@ struct LiveTVGuideSourcesGroup: View {
             subtitle: L10n.string("livetv_settings_sources_subtitle", fallback: "Where the programmes come from. A channel takes the guide with real listings that goes furthest ahead")
         ) {
             // Each source's own guide (step 13a), as Android's "(built-in)".
-            ForEach(channelSources.sources.filter { $0.kind == .xtream }) { source in
+            ForEach(channelSources.sources.filter { $0.kind == .xtream || $0.kind == .m3u }) { source in
                 LiveTVSettingsRows.toggle(
                     title: channelSources.sources.count > 1
                         ? source.displayName + " " + L10n.string("livetv_epg_builtin_suffix", fallback: "(built-in)")
