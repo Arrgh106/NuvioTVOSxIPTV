@@ -113,9 +113,14 @@ private struct LiveTVCache: Codable {
         return try? JSONDecoder().decode(LiveTVCache.self, from: data)
     }
 
+    /// Protected like the Keychain items (after the first unlock) and kept
+    /// out of backups: M3U links in it often carry the login (step 13b).
     func save(to url: URL?) {
-        guard let url, let data = try? JSONEncoder().encode(self) else { return }
-        try? data.write(to: url, options: .atomic)
+        guard var url, let data = try? JSONEncoder().encode(self) else { return }
+        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     static func clear(scope: String, source: LiveTVSource) {
@@ -1227,6 +1232,13 @@ final class LiveTVStore: ObservableObject {
 
 extension LiveTVGroup {
     static let otherID = "__other__"
+}
+
+extension LiveTVStore {
+    /// A deleted source's kept list goes with it (step 13b).
+    nonisolated static func forgetList(of source: LiveTVSource, scope: String) {
+        LiveTVCache.clear(scope: scope, source: source)
+    }
 }
 
 extension NuvioMeta {

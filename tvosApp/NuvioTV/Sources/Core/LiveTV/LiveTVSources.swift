@@ -146,6 +146,7 @@ final class LiveTVSourceStore: ObservableObject {
     func remove(_ id: String) {
         guard let source = source(id: id) else { return }
         XtreamAccountStore.removePassword(accountID: source.xtream?.id ?? source.id)
+        LiveTVStore.forgetList(of: source, scope: ProfileSettings.activeProfileScope)
         commit(sources.filter { $0.id != id })
     }
 
