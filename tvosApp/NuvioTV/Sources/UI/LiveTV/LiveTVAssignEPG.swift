@@ -151,7 +151,14 @@ struct LiveTVAssignEPG: View {
         LiveTVEPGOverrides.set(streamID: channel.streamID, guideID: guideID)
         // Kept already (another channel uses it) or No guide: done at once.
         if !LiveTVGuide.shared.apply(streamID: channel.streamID, choice: guideID) {
-            onChanged()
+            // Else only this guide channel from the kept file; every guide
+            // again only when that can't be done.
+            let streamID = channel.streamID
+            let changed = onChanged
+            Task { @MainActor in
+                let done = await LiveTVGuide.shared.addChannel(streamID: streamID, choice: guideID ?? "")
+                if !done { changed() }
+            }
         }
         dismiss()
     }

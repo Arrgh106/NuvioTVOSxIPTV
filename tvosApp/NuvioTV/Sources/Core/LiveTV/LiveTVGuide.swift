@@ -337,6 +337,51 @@ final class LiveTVGuide: ObservableObject {
         return true
     }
 
+    /// A choice from Assign EPG whose programmes weren't kept: only that
+    /// guide channel is read from its guide's kept file (not every guide
+    /// again). False when that can't be done (no file): then a full read.
+    func addChannel(streamID: Int, choice: String) async -> Bool {
+        let key = choice.lowercased()
+        guard refreshTask == nil, !key.isEmpty else { return false }
+        let id = LiveTVEPGSourceRules.guideID(fromKey: key)
+        let sourceID = key == id ? "" : String(key.dropLast(id.count + 1))
+        let scope = self.scope ?? ProfileSettings.activeProfileScope
+        var seen = Set<String>()
+        let feeds = (LiveTVEPGSources.shared.feeds() + Self.builtInFeeds()).filter { seen.insert($0.url.absoluteString).inserted }
+        guard let feed = feeds.first(where: { $0.sourceID.lowercased() == sourceID }),
+              let file = Self.feedURL(feed, scope: scope), FileManager.default.fileExists(atPath: file.path),
+              let url = Self.databaseURL(scope: scope) else { return false }
+        let before = status
+        status = .importing(programmes: 0)
+        let now = Date().timeIntervalSince1970
+        let count = await Task.detached(priority: .userInitiated) { () -> Int? in
+            guard let stream = InputStream(url: file),
+                  let writer = GuideDatabase(url: url, readOnly: false),
+                  let inserter = GuideDatabase.Inserter(database: writer) else { return nil }
+            let delegate = OneChannelParser(
+                id: id, shift: Int64(feed.shiftMinutes) * 60,
+                from: Int64(now - LiveTVGuide.pastWindow), to: Int64(now + LiveTVGuide.futureWindow))
+            let parser = XMLParser(stream: stream)
+            parser.delegate = delegate
+            parser.shouldResolveExternalEntities = false
+            parser.parse()
+            writer.execute("BEGIN")
+            writer.execute("DELETE FROM programmes WHERE ch = '\(key.replacingOccurrences(of: "'", with: "''"))'")
+            for programme in delegate.programmes {
+                inserter.insert(channel: key, start: programme.start, stop: programme.stop,
+                                title: programme.title, descr: programme.descr)
+            }
+            writer.setLink(stream: streamID, key: key)
+            writer.execute("COMMIT")
+            return delegate.programmes.count
+        }.value
+        status = before
+        guard let count else { return false }
+        links[streamID] = key
+        NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
+        return count >= 0
+    }
+
     /// The guide id of a source's own guide in results and guide keys: the
     /// first source keeps the provider guide's "" (step 13a).
     nonisolated static func builtInID(_ source: LiveTVSource) -> String {
@@ -879,6 +924,73 @@ private final class GuideImportState {
 
 /// SAX handler for `<programme start stop channel><title/><desc/></programme>`,
 /// one per guide file.
+/// One guide channel's programmes from a guide file (Assign EPG).
+private final class OneChannelParser: NSObject, XMLParserDelegate {
+    private let id: String
+    private let shift: Int64
+    private let from: Int64
+    private let to: Int64
+    private(set) var programmes: [(start: Int64, stop: Int64, title: String, descr: String?)] = []
+    private var current: (start: Int64, stop: Int64)?
+    private var element: String?
+    private var title = ""
+    private var descr = ""
+
+    init(id: String, shift: Int64, from: Int64, to: Int64) {
+        self.id = id
+        self.shift = shift
+        self.from = from
+        self.to = to
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                qualifiedName qName: String?, attributes: [String: String] = [:]) {
+        switch elementName {
+        case "programme":
+            guard attributes["channel"]?.trimmingCharacters(in: .whitespaces).lowercased() == id,
+                  let start = attributes["start"].flatMap(XMLTVParserDelegate.parseTime).map({ $0 + shift }),
+                  let stop = attributes["stop"].flatMap(XMLTVParserDelegate.parseTime).map({ $0 + shift }),
+                  stop > from, start < to, stop > start else {
+                current = nil
+                return
+            }
+            current = (start, stop)
+            title = ""
+            descr = ""
+        case "title", "desc":
+            element = current == nil ? nil : elementName
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        switch element {
+        case "title": if title.count < 300 { title += string }
+        case "desc": if descr.count < 2000 { descr += string }
+        default: break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        switch elementName {
+        case "title", "desc":
+            element = nil
+        case "programme":
+            if let current {
+                let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanDescr = descr.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanTitle.isEmpty {
+                    programmes.append((current.start, current.stop, cleanTitle, cleanDescr.isEmpty ? nil : cleanDescr))
+                }
+            }
+            current = nil
+        default:
+            break
+        }
+    }
+}
+
 private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     struct Programme {
         let channel: String
