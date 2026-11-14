@@ -184,6 +184,12 @@ final class LiveTVStore: ObservableObject {
         var guideURLs: [String] = []
     }
     private var lists: [String: SourceList] = [:]
+    /// The login or link each list was read with (`LiveTVCache.key`): a
+    /// source changed in Settings is read again, the others are kept.
+    private var listKeys: [String: String] = [:]
+    /// Sources turned on, off or moved: the next guide import reads the
+    /// files kept from last time instead of downloading them again.
+    private var guideReusesFiles = false
     /// Sources read one after another (as Android): several requests at
     /// once made some panels answer 404.
     private var queue: [(source: LiveTVSource, info: XtreamUserInfo?)] = []
@@ -628,6 +634,12 @@ final class LiveTVStore: ObservableObject {
             refreshIfStale()
             return
         }
+        // Sources turned on, off, moved or renamed in Settings: the lists
+        // of the others stay, nothing is downloaded again for them.
+        if !needsReload, !sources.isEmpty, !stored.isEmpty {
+            switchSources(to: stored)
+            return
+        }
         needsReload = false
         // The store lives on between visits and profiles: nothing of the
         // last sources or profile may stay, and their loads must not land.
@@ -662,39 +674,82 @@ final class LiveTVStore: ObservableObject {
         groups = []
         selectedGroupID = LiveTVGroup.allID
         listRevision &+= 1
+        listKeys = [:]
         guard !stored.isEmpty else { return }
-        // Decoding and sorting a large list blocks for seconds; on the main
-        // thread tvOS kills the app (seen with ~56k channels).
+        loadKept(stored)
+    }
+
+    /// The kept lists of these sources (off the main thread: decoding and
+    /// sorting a large list blocks for seconds, and on the main thread
+    /// tvOS kills the app, seen with ~56k channels); old or missing ones
+    /// are read from the provider.
+    private func loadKept(_ wanted: [LiveTVSource], requeue: Set<String> = []) {
         let scope = ProfileSettings.activeProfileScope
+        let shown = sources
         state = .loading
         loadTask = Task { [weak self] in
-            let kept = await Task.detached(priority: .userInitiated) { () -> [String: SourceList] in
-                var kept: [String: SourceList] = [:]
-                for source in stored {
+            let kept = await Task.detached(priority: .userInitiated) { () -> [String: (SourceList, String)] in
+                var kept: [String: (SourceList, String)] = [:]
+                for source in wanted {
                     guard let cache = LiveTVCache.load(from: LiveTVCache.fileURL(scope: scope, source: source)),
                           cache.matches(source) else { continue }
-                    kept[source.id] = SourceList(
+                    kept[source.id] = (SourceList(
                         categories: cache.categories, channels: cache.channels,
                         allowedFormats: cache.userInfoAllowedFormats, savedAt: cache.savedAt,
-                        guideURLs: cache.guideURLs ?? [])
+                        guideURLs: cache.guideURLs ?? []), LiveTVCache.key(source))
                 }
                 return kept
             }.value
-            guard !Task.isCancelled, let self, self.sources == stored, !self.needsReload else { return }
-            self.lists = kept
-            for (id, list) in kept {
-                self.sourceStatus[id] = LiveTVSourceStatus(channels: list.channels.count, updated: list.savedAt)
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            for (id, entry) in kept {
+                self.lists[id] = entry.0
+                self.listKeys[id] = entry.1
+                self.sourceStatus[id] = LiveTVSourceStatus(channels: entry.0.channels.count, updated: entry.0.savedAt)
             }
-            self.lastUpdated = kept.values.map(\.savedAt).min()
-            if !kept.isEmpty { self.combine() }
-            for source in stored {
-                if let list = kept[source.id], Date().timeIntervalSince(list.savedAt) <= LiveTVCache.maxAge {
+            self.lastUpdated = self.lists.values.map(\.savedAt).min()
+            if !kept.isEmpty || !self.lists.isEmpty { self.combine() }
+            for source in wanted {
+                if let entry = kept[source.id], Date().timeIntervalSince(entry.0.savedAt) <= LiveTVCache.maxAge,
+                   !requeue.contains(source.id) {
                     self.refreshAccountInfo(source)
                 } else {
                     self.enqueue(source)
                 }
             }
             self.updateState()
+        }
+    }
+
+    /// The source list changed while lists are in: the unchanged sources
+    /// keep theirs (only the order or the headings change), new or changed
+    /// ones are read, ones turned off or deleted leave.
+    private func switchSources(to stored: [LiveTVSource]) {
+        let pending = Set(queue.map(\.source.id))
+        loadTask?.cancel()
+        queueTask?.cancel()
+        queueTask = nil
+        queue = []
+        sources = stored
+        let wanted = Set(stored.map(\.id))
+        var unchanged = Set<String>()
+        for source in stored where listKeys[source.id] == LiveTVCache.key(source) && lists[source.id] != nil {
+            unchanged.insert(source.id)
+        }
+        lists = lists.filter { unchanged.contains($0.key) }
+        listKeys = listKeys.filter { unchanged.contains($0.key) }
+        sourceStatus = sourceStatus.filter { wanted.contains($0.key) }
+        userInfos = userInfos.filter { wanted.contains($0.key) }
+        guideReusesFiles = true
+        combine()
+        let missing = stored.filter { !unchanged.contains($0.id) }
+        // Loads that were waiting carry on.
+        let requeue = pending.intersection(wanted)
+        if missing.isEmpty {
+            for source in stored where requeue.contains(source.id) { enqueue(source) }
+            updateState()
+        } else {
+            loadKept(missing)
+            for source in stored where requeue.contains(source.id) && unchanged.contains(source.id) { enqueue(source) }
         }
     }
 
@@ -802,6 +857,7 @@ final class LiveTVStore: ObservableObject {
             case .success(let (info, list)):
                 self.keep(info, for: source)
                 self.lists[source.id] = list
+                self.listKeys[source.id] = LiveTVCache.key(source)
                 self.sourceStatus[source.id] = self.status(list: list, info: info)
                 self.lastUpdated = self.lists.values.map(\.savedAt).min()
                 let cache = LiveTVCache(
@@ -883,6 +939,7 @@ final class LiveTVStore: ObservableObject {
             switch outcome {
             case .success(let list):
                 self.lists[source.id] = list
+                self.listKeys[source.id] = LiveTVCache.key(source)
                 self.sourceStatus[source.id] = self.status(list: list, info: nil)
                 self.lastUpdated = self.lists.values.map(\.savedAt).min()
                 let cache = LiveTVCache(
@@ -1149,7 +1206,10 @@ final class LiveTVStore: ObservableObject {
         LiveTVEPG.shared.register(epgIDs: prepared.epgIDs)
         rebuildGroups()
         // Once every source is in: the guide matches all channels at once.
-        if queue.isEmpty { refreshGuide(force: false) }
+        if queue.isEmpty {
+            refreshGuide(force: false, reuseDownloads: guideReusesFiles)
+            guideReusesFiles = false
+        }
         if restoring, LiveTVSettings.shared.rememberLastGroup,
            let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
            groups.contains(where: { $0.id == last }), !lockedGroupIDs.contains(last) {

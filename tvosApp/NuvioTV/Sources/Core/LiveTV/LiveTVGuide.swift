@@ -342,7 +342,8 @@ final class LiveTVGuide: ObservableObject {
 
     /// Every source's own guide that's on, in your order of the sources.
     static func builtInFeeds() -> [LiveTVGuideFeed] {
-        let sources = LiveTVSourceStore.shared.enabled
+        // By slot, not your order: moving a source doesn't read the guides again.
+        let sources = LiveTVSourceStore.shared.enabled.sorted { $0.slot < $1.slot }
         return sources.flatMap { source -> [LiveTVGuideFeed] in
             guard source.builtInGuide else { return [] }
             let name = sources.count > 1
