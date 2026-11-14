@@ -599,5 +599,20 @@ check(Set(LiveTVM3U.ids(for: m3uTwins)).count == 2, "m3u: the same name twice ge
 check(LiveTVM3U.parse("#EXTINF:-1,No link\n").entries.isEmpty && LiveTVM3U.parse("http://lonely\n").entries.isEmpty,
       "m3u: an entry needs both lines")
 
+// MARK: A source's own guide (step 13a)
+
+let firstSourceChannel = 7
+let secondSourceChannel = LiveTVSourceIDs.channel(slot: 2, raw: 7)
+var own = LiveTVEPGMatch.Picker(channels: [
+    ref(firstSourceChannel, "zdf.de", "ZDF"),
+    ref(secondSourceChannel, "zdf.de", "ZDF"),
+    ref(LiveTVSourceIDs.channel(slot: 2, raw: 8), nil, "Phoenix"),
+], overrides: [LiveTVSourceIDs.channel(slot: 2, raw: 8): "phoenix.tv"])
+check(own.saw(key: "b2|zdf.de", id: "zdf.de", names: ["ZDF"], guide: 1, slot: 2), "own guide: kept for its source")
+check(own.saw(key: "c|zdf.de", id: "zdf.de", names: ["ZDF"], guide: 2, slot: 5) == false, "own guide: not for another source")
+check(own.saw(key: "phoenix.tv", id: "phoenix.tv", names: ["Phoenix"], guide: 0, slot: 0), "own guide: a choice by hand counts anyway")
+let ownLinks = own.links(listed: ["b2|zdf.de", "phoenix.tv"])
+check(ownLinks[secondSourceChannel] == "b2|zdf.de" && ownLinks[firstSourceChannel] == nil, "own guide: only its channel linked")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

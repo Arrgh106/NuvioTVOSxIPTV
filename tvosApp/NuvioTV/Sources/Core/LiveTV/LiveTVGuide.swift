@@ -68,7 +68,8 @@ final class LiveTVGuide: ObservableObject {
     /// id counts.
     private var links: [Int: String] = [:]
     /// Bumped when the stored guide changes how it reads (re-import once).
-    private static let formatVersion = "3"
+    /// 4: a source's own guide for its own channels (step 13a).
+    private static let formatVersion = "4"
     /// A forced refresh asked for while one runs: done right after it.
     private var queued: (force: Bool, reuseDownloads: Bool)?
     private var sourcesObserver: NSObjectProtocol?
@@ -353,14 +354,14 @@ final class LiveTVGuide: ObservableObject {
                 : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
             if let account = source.xtream {
                 guard let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return [] }
-                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0)]
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
             }
             // M3U (step 13b): every guide linked in the playlist.
             return LiveTVStore.shared.guideLinks(sourceID: source.id).enumerated().compactMap { index, link in
                 guard let url = URL(string: link) else { return nil }
                 return LiveTVGuideFeed(
                     sourceID: builtInID(source) + (index == 0 ? "" : "#\(index + 1)"),
-                    name: name, url: url, shiftMinutes: 0)
+                    name: name, url: url, shiftMinutes: 0, slot: source.slot)
             }
         }
     }
@@ -966,7 +967,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
             // A guide without a <channel> list: only the id to go by.
             addChannel(id, name: id)
         }
-        let keep = state.picker.saw(key: key(id), id: id, names: names, guide: guide)
+        let keep = state.picker.saw(key: key(id), id: id, names: names, guide: guide, slot: feed.slot)
         decided[id] = keep
         return keep
     }

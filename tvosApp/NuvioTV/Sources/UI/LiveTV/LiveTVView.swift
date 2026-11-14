@@ -543,6 +543,8 @@ private struct XtreamLoginForm: View {
     @State private var username = ""
     @State private var password = ""
     @State private var format: XtreamStreamFormat = .auto
+    /// Asked right away: the provider's movies and series too.
+    @State private var importVOD = true
     @State private var isSigningIn = false
     @State private var errorMessage: String?
     /// Step 13b: a playlist instead of a login.
@@ -588,6 +590,17 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+
+            Button {
+                importVOD.toggle()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: importVOD ? "checkmark.square.fill" : "square")
+                    Text(L10n.string("livetv_source_import_vod", fallback: "Include Movies & Series (VOD)"))
+                }
+            }
             // Full-width focus sections: otherwise moving down from a format
             // button finds nothing below it (Sign in sits further left).
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -630,7 +643,7 @@ private struct XtreamLoginForm: View {
         Task {
             defer { isSigningIn = false }
             do {
-                try await store.signIn(server: server, username: username, password: password, format: format)
+                try await store.signIn(server: server, username: username, password: password, format: format, importVOD: importVOD)
             } catch {
                 errorMessage = error.localizedDescription
             }

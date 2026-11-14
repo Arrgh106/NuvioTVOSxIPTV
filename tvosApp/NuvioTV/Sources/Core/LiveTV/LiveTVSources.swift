@@ -24,6 +24,10 @@ struct LiveTVSource: Codable, Identifiable, Equatable, Sendable {
     /// The source's own guide (Xtream's `xmltv.php`, the playlist's
     /// `x-tvg-url`), as Android's "Load built-in guide".
     var builtInGuide = true
+    /// Xtream: its movies and series read for VOD (asked when the login is
+    /// added; nil before: on).
+    var importVOD: Bool?
+    var readsVOD: Bool { importVOD ?? true }
     /// M3U: the user agent the playlist and its streams are asked with
     /// (empty: the app's). The link itself is in the Keychain.
     var userAgent: String?

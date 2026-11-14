@@ -10,10 +10,10 @@ import SwiftUI
 enum XtreamAccountStore {
     private static let keychainService = "com.nuvio.tv.livetv.xtream"
 
-    /// The first Xtream source that's on (step 13a: there can be several,
-    /// see `LiveTVSourceStore`): what VOD reads until step 13c.
+    /// The first Xtream source that's on and reads VOD (step 13a: there
+    /// can be several, see `LiveTVSourceStore`): what VOD reads until 13c.
     static func load(settings: UserDefaults = ProfileSettings.current) -> XtreamAccount? {
-        LiveTVSourceStore.read(settings: settings).first { $0.enabled && $0.kind == .xtream }?.xtream
+        LiveTVSourceStore.read(settings: settings).first { $0.enabled && $0.kind == .xtream && $0.readsVOD }?.xtream
     }
 
     static func password(for account: XtreamAccount) -> String {
@@ -757,7 +757,9 @@ final class LiveTVStore: ObservableObject {
 
     /// The first login, from Live TV with no source yet: checked, then
     /// saved as a source (more in Settings → Live TV / VOD → Sources).
-    func signIn(server: String, username: String, password: String, format: XtreamStreamFormat) async throws {
+    func signIn(
+        server: String, username: String, password: String, format: XtreamStreamFormat, importVOD: Bool = true
+    ) async throws {
         let client = XtreamClient(server: server, username: username, password: password)
         let info = try await client.login()
         let normalised = XtreamAccount.normaliseServer(server)
@@ -768,6 +770,7 @@ final class LiveTVStore: ObservableObject {
             server: normalised,
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
             streamFormat: format)
+        source.importVOD = importVOD
         // The login was just checked; the load doesn't ask the panel again.
         verified[source.id] = info
         LiveTVSourceStore.shared.save(source, password: password)

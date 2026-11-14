@@ -185,6 +185,7 @@ struct LiveTVSourceEditor: View {
     @State private var format: String
     @State private var enabled: Bool
     @State private var builtInGuide: Bool
+    @State private var importVOD: Bool
     @State private var isSaving = false
     @State private var errorMessage: String?
 
@@ -199,6 +200,7 @@ struct LiveTVSourceEditor: View {
         _format = State(initialValue: (source.xtream?.streamFormat ?? .auto).rawValue)
         _enabled = State(initialValue: source.enabled)
         _builtInGuide = State(initialValue: source.builtInGuide)
+        _importVOD = State(initialValue: source.readsVOD)
     }
 
     var body: some View {
@@ -267,8 +269,14 @@ struct LiveTVSourceEditor: View {
                         )
                         LiveTVSettingsRows.toggle(
                             title: L10n.string("livetv_source_builtin_guide", fallback: "Load Built-in Guide"),
-                            subtitle: L10n.string("livetv_source_builtin_guide_detail", fallback: "The provider's own TV guide for these channels"),
+                            subtitle: L10n.string("livetv_source_builtin_guide_detail", fallback: "The provider's own TV guide, for these channels only (guides you add go for all)"),
                             isOn: $builtInGuide,
+                            accentColor: accentColor
+                        )
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_import_vod", fallback: "Include Movies & Series (VOD)"),
+                            subtitle: L10n.string("livetv_source_import_vod_detail", fallback: "Read the provider's movies and series at start, for the VOD page, Home and stream lists. Off: live channels only"),
+                            isOn: $importVOD,
                             accentColor: accentColor
                         )
                     }
@@ -308,6 +316,7 @@ struct LiveTVSourceEditor: View {
         source.name = name.trimmed
         source.enabled = enabled
         source.builtInGuide = builtInGuide
+        source.importVOD = importVOD
         source.xtream = XtreamAccount(
             id: source.id,
             name: URL(string: normalised)?.host ?? normalised,
