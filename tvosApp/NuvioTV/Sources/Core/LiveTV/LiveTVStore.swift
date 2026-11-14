@@ -1240,7 +1240,7 @@ final class LiveTVStore: ObservableObject {
 
     /// Replay links for a show on a channel with catch-up, the likeliest
     /// first (`LiveTVCatchup.xtreamURLs`).
-    func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String])? {
+    func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String], zone: String)? {
         guard channel.archiveDays > 0, let routed = route(channel) else { return nil }
         let (source, account) = routed
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
@@ -1257,7 +1257,10 @@ final class LiveTVStore: ObservableObject {
                 for: account.streamFormat, allowedFormats: lists[source.id]?.allowedFormats ?? []),
             serverTimeZone: zoneID.flatMap(TimeZone.init(identifier:)))
         guard !urls.isEmpty else { return nil }
-        return (urls, client.httpHeaders)
+        // For the message when nothing plays: which clock the start went by.
+        let zone = zoneID.flatMap { $0.isEmpty ? nil : $0 }.map { $0 + " (" + L10n.string("livetv_catchup_zone_server", fallback: "server") + ")" }
+            ?? TimeZone.current.identifier + " (" + L10n.string("livetv_catchup_zone_device", fallback: "this Apple TV, the server gave none") + ")"
+        return (urls, client.httpHeaders, zone)
     }
 
     func playbackItem(for channel: XtreamLiveChannel) -> PlaybackItem? {

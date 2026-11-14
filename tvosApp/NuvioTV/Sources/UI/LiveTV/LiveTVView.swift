@@ -387,7 +387,7 @@ struct LiveTVView: View {
             liveStore?.playbackItem(for: $0)
         }
         store.recordWatched(channel)
-        player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+        player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers, zone: links.zone)
         LiveTVFocusLinks.beginReturn()
         player.isFullscreen = true
         player.showBar(.compact)
@@ -497,7 +497,7 @@ struct LiveTVView: View {
             guard let liveStore, let player,
                   let links = liveStore.catchupLinks(for: channel, programme: programme) else { return }
             liveStore.recordWatched(channel)
-            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers, zone: links.zone)
             player.showBar(.compact)
         }
         player.overlay.onCatchup = { [weak liveStore, weak player] channel, programme, list, groupID in
