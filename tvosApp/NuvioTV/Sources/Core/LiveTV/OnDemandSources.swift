@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The Xtream logins and Stalker portals (step 13f) VOD reads (step 13c), as Android's catalogue from
@@ -63,8 +64,12 @@ enum OnDemandSources {
     /// One login as read: another server or user reads it again.
     static func key(_ source: LiveTVSource) -> String {
         if source.kind == .stalker {
+            // The MAC is the portal's login: only a hash of it goes into
+            // the index's meta.
             let config = LiveTVStalker.config(for: source.id)
-            return "\(source.slot)|stalker|\(config?.portal ?? "")|\(config?.mac ?? "")|\(config?.username ?? "")"
+            let identity = "\(config?.portal ?? "")|\(config?.mac ?? "")|\(config?.username ?? "")"
+            let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+            return "\(source.slot)|stalker|\(digest)"
         }
         return "\(source.slot)|\(source.xtream?.server ?? "")|\(source.xtream?.username ?? "")"
     }
