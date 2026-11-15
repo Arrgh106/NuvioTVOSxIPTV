@@ -199,7 +199,7 @@ struct XtreamClient: Sendable {
 /// A request read with progress (the VOD lists, tens of MB): counts
 /// the entries as they come in (each has the marker once, as
 /// `"stream_id"`), reported about every 500.
-private final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class XtreamProgressFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
     private let marker: Data
     private let onCount: @Sendable (Int) -> Void

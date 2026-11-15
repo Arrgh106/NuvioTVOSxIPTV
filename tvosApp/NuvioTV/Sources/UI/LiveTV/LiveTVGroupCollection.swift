@@ -365,6 +365,8 @@ final class LiveTVGroupCell: UICollectionViewCell {
     private var isGroupSelected = false
     private var showsCount = true
     private var isLocked = false
+    /// A source's heading (step 13a): smaller, in capitals, no fill.
+    private var isHeading = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -411,6 +413,8 @@ final class LiveTVGroupCell: UICollectionViewCell {
         countLabel.text = group.count.formatted()
         isGroupSelected = selected
         isLocked = group.locked
+        isHeading = group.isHeading
+        nameLabel.text = isHeading ? group.name.uppercased() : group.name
         lockView.isHidden = !isLocked
         countLabel.isHidden = !showsCount || isLocked
         applyStyle()
@@ -443,9 +447,11 @@ final class LiveTVGroupCell: UICollectionViewCell {
         // The selected group carries the app's accent (Match Theme).
         let selectedFill = LiveTVTheme.accentUIColor.withAlphaComponent(
             LiveTVTheme.isWhiteAccent ? 0.14 : 0.28)
-        background.backgroundColor = focused ? .white : (isGroupSelected ? selectedFill : .clear)
-        nameLabel.font = .systemFont(ofSize: 24, weight: isGroupSelected ? .bold : .regular)
-        nameLabel.textColor = focused ? .black : .white
+        background.backgroundColor = focused ? .white : (isGroupSelected && !isHeading ? selectedFill : .clear)
+        nameLabel.font = isHeading
+            ? .systemFont(ofSize: 20, weight: .heavy)
+            : .systemFont(ofSize: 24, weight: isGroupSelected ? .bold : .regular)
+        nameLabel.textColor = focused ? .black : (isHeading ? UIColor.white.withAlphaComponent(0.6) : .white)
         countLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
         lockView.tintColor = countLabel.textColor
         transform = focused ? CGAffineTransform(scaleX: 1.02, y: 1.02) : .identity

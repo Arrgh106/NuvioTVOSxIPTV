@@ -90,6 +90,16 @@ final class LiveTVPlayer: ObservableObject {
     /// The replay links not tried yet (panels differ, see LiveTVCatchup).
     private var replayLinks: [URL] = []
     private var replayHeaders: [String: String] = [:]
+    /// What each replay link got, for the message when none plays: the
+    /// form of the link (no login or server) and the answer.
+    private var replayLog: [String] = []
+    private var replayZone = ""
+    private var currentURL: URL?
+    /// Every replay link of this show, for asking the server what it sends.
+    private var replayAll: [URL] = []
+    private var probeTask: Task<Void, Never>?
+    /// A replay link being followed to where the panel sends it.
+    private var resolving: Task<Void, Never>?
     /// The replay link playing (1-based) of how many, shown while it loads.
     @Published private(set) var replayAttempt: (index: Int, of: Int) = (0, 0)
     /// A replay's first picture: make sure it plays (a Play/Pause press
@@ -108,8 +118,14 @@ final class LiveTVPlayer: ObservableObject {
     }
 
     /// Plays a past show of `channel` from its start, trying the links in turn.
-    func playCatchup(_ channel: XtreamLiveChannel, programme: XtreamProgram, urls: [URL], headers: [String: String]) {
+    func playCatchup(
+        _ channel: XtreamLiveChannel, programme: XtreamProgram, urls: [URL], headers: [String: String], zone: String = ""
+    ) {
         guard let first = urls.first else { return }
+        replayLog = []
+        replayZone = zone
+        replayAll = urls
+        probeTask?.cancel()
         resumeChoice = false
         replay = programme
         replayLinks = Array(urls.dropFirst())
@@ -121,10 +137,43 @@ final class LiveTVPlayer: ObservableObject {
 
     private func start(_ channel: XtreamLiveChannel, url: URL, headers: [String: String], live: Bool) {
         self.channel = channel
+        currentURL = url
         status = .loading
         loadStarted = Date()
         loadProgrammes(for: channel)
         triedFallback = !live
+        resolving?.cancel()
+        resolving = nil
+        guard live else {
+            // Replays: many panels send them on to another server; the
+            // player got lost there (no picture, "unrecognized file
+            // format"), so the link it plays is the one at the end.
+            resolving = Task { [weak self] in
+                let target = await Self.finalURL(url, headers: headers)
+                guard !Task.isCancelled, let self, self.currentURL == url else { return }
+                self.resolving = nil
+                self.loadStarted = Date()
+                self.load(channel, url: target, headers: headers, live: false)
+            }
+            startWatching()
+            return
+        }
+        load(channel, url: url, headers: headers, live: true)
+    }
+
+    /// Where a link ends up after the panel's redirects (a byte asked for,
+    /// at most 8 s); the link itself when that doesn't answer.
+    static func finalURL(_ url: URL, headers: [String: String]) async -> URL {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        guard let answer = try? await URLSession.shared.data(for: request),
+              let http = answer.1 as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let final = http.url else { return url }
+        return final
+    }
+
+    private func load(_ channel: XtreamLiveChannel, url: URL, headers: [String: String], live: Bool) {
         session.load(PlaybackLoadRequest(
             videoURL: url,
             httpHeaders: headers,
@@ -139,6 +188,94 @@ final class LiveTVPlayer: ObservableObject {
         ))
         PlaybackWakeLock.acquire(ownerID: session.wakeLockOwnerID)
         startWatching()
+    }
+
+    /// No link played: the report, then what the server sends for the
+    /// first HLS and TS link, asked directly.
+    private func failReplay(_ report: String) {
+        status = .failed(report)
+        let links = [replayAll.first { $0.pathExtension == "m3u8" }, replayAll.first { $0.pathExtension == "ts" }].compactMap { $0 }
+        let headers = replayHeaders
+        let shown = replay
+        probeTask?.cancel()
+        probeTask = Task { [weak self] in
+            var lines: [String] = []
+            for link in links {
+                let answer = await Self.probe(link, headers: headers)
+                lines.append(L10n.string("livetv_catchup_server_sends", fallback: "Server sends for ") + "." + link.pathExtension + ": " + answer)
+            }
+            guard !Task.isCancelled, let self, self.replay == shown, case .failed = self.status, !lines.isEmpty else { return }
+            self.status = .failed(report + "\n" + lines.joined(separator: "\n"))
+        }
+    }
+
+    /// The first bytes of a link: status, type, size, and the start of a
+    /// text answer with the login blanked out.
+    static func probe(_ url: URL, headers: [String: String]) async -> String {
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        request.setValue("bytes=0-2047", forHTTPHeaderField: "Range")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return "no HTTP answer" }
+            var parts = ["HTTP \(http.statusCode)"]
+            if let type = http.value(forHTTPHeaderField: "Content-Type"), !type.isEmpty { parts.append(type) }
+            parts.append("\(data.count) bytes")
+            if let final = http.url, final.host != url.host || final.path != url.path {
+                parts.append("redirected" + (final.host != url.host ? " to another server" : ""))
+            }
+            if data.first == 0x47 {
+                parts.append("TS data")
+            } else if !data.isEmpty, var text = String(data: data.prefix(160), encoding: .utf8) {
+                // The login out of what's shown (it's in the timeshift path).
+                let path = url.path.split(separator: "/").map(String.init)
+                if let index = path.firstIndex(of: "timeshift"), path.count > index + 2 {
+                    for secret in [path[index + 1], path[index + 2]] where secret.count > 1 {
+                        text = text.replacingOccurrences(of: secret, with: "\u{2022}\u{2022}\u{2022}")
+                    }
+                }
+                let line = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+                parts.append("\u{201C}" + String(line.prefix(90)) + "\u{201D}")
+            }
+            return parts.joined(separator: " \u{00B7} ")
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func noteReplay(_ answer: String) {
+        guard let currentURL else { return }
+        replayLog.append("\(replayAttempt.index). \(Self.form(of: currentURL)): \(answer)")
+    }
+
+    /// Every link tried and what it got, with the time zone the start was
+    /// written in: what's needed to find out why a provider refuses.
+    private func replayReport(_ last: String) -> String {
+        var lines = [L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")]
+        if !replayZone.isEmpty {
+            lines.append(L10n.string("livetv_catchup_zone", fallback: "Start written in: ") + replayZone)
+        }
+        lines += replayLog.isEmpty ? [last] : replayLog
+        return lines.joined(separator: "\n")
+    }
+
+    /// A replay link without login or server: "120 min from
+    /// 2026-11-14:21-05 .m3u8", or "timeshift.php 2026-11-14:21-05".
+    static func form(of url: URL) -> String {
+        let parts = url.path.split(separator: "/").map(String.init)
+        if let index = parts.firstIndex(of: "timeshift"), parts.count >= index + 6 {
+            let minutes = parts[index + 3]
+            let stamp = parts[index + 4]
+            let ext = (parts[index + 5] as NSString).pathExtension
+            return "\(minutes) min from \(stamp) .\(ext)"
+        }
+        if url.path.hasSuffix("timeshift.php") {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let start = items.first { $0.name == "start" }?.value ?? ""
+            let duration = items.first { $0.name == "duration" }?.value ?? ""
+            return "timeshift.php \(duration) min from \(start)"
+        }
+        return url.pathExtension.isEmpty ? "link" : "." + url.pathExtension
     }
 
     /// The next replay link, when the one playing failed.
@@ -292,6 +429,10 @@ final class LiveTVPlayer: ObservableObject {
 
     private func check() {
         guard channel != nil else { return }
+        // Still following a replay link: the last answer isn't this one's.
+        if resolving != nil { return }
+        // A replay given up on: written once, not again every tick.
+        if replay != nil, case .failed = status { return }
         let engine = session.activeEngine
         let error = session.lastLoadError ?? engine.currentErrorMessage
         if engine.hasFirstFrameReadyForDisplay {
@@ -304,7 +445,12 @@ final class LiveTVPlayer: ObservableObject {
         }
         if !error.isEmpty {
             // A replay link the panel refused: the next form.
-            if replay != nil, tryNextReplayLink() { return }
+            if replay != nil {
+                noteReplay(error)
+                if tryNextReplayLink() { return }
+                failReplay(replayReport(error))
+                return
+            }
             // Live streams that don't start natively get one try with MPV.
             if !triedFallback, session.requestLiveStartupFallback(generation: session.loadGeneration) {
                 triedFallback = true
@@ -314,8 +460,12 @@ final class LiveTVPlayer: ObservableObject {
             return
         }
         // A replay without a picture after 12 s: the next link.
-        if replay != nil, Date().timeIntervalSince(loadStarted) > 12 {
-            if !tryNextReplayLink() { status = .failed(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")) }
+        // Archives start slower than live, on the server they're sent to.
+        if replay != nil, Date().timeIntervalSince(loadStarted) > 20 {
+            noteReplay(L10n.string("livetv_catchup_no_picture_20", fallback: "no picture after 20 s"))
+            if !tryNextReplayLink() {
+                failReplay(replayReport(L10n.string("livetv_catchup_failed", fallback: "This show can't be played again.")))
+            }
             return
         }
         // No picture after 10 s: the same fallback, once.
@@ -470,7 +620,8 @@ struct LiveTVPlayerStatus: View {
                 .font(.system(size: player.isFullscreen ? LiveTVTheme.Font.secondary : LiveTVTheme.Font.badge))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
-                .lineLimit(4)
+                // A replay that didn't play lists every link it tried.
+                .lineLimit(12)
                 .padding(12)
         }
     }

@@ -4,7 +4,8 @@ import SwiftUI
 struct LiveTVView: View {
     /// Kept between visits (`LiveTVStore.shared`).
     @ObservedObject private var store = LiveTVStore.shared
-    @State private var isEditingAccount = false
+    /// Sources (step 13a): the list from Settings over the guide.
+    @State private var showsSources = false
     @State private var isManagingGroups = false
     @State private var searchText = ""
     @Namespace private var focusNamespace
@@ -46,12 +47,8 @@ struct LiveTVView: View {
 
     var body: some View {
         Group {
-            if !store.hasAccount || isEditingAccount {
-                XtreamLoginForm(
-                    store: store,
-                    isEditing: store.hasAccount,
-                    onDone: { isEditingAccount = false }
-                )
+            if !store.hasAccount {
+                XtreamLoginForm(store: store)
             } else if isManagingGroups {
                 LiveTVGroupManager(store: store, onDone: { isManagingGroups = false })
             } else {
@@ -216,9 +213,12 @@ struct LiveTVView: View {
             }
             .disabled(store.state == .loading)
             Button {
-                isEditingAccount = true
+                showsSources = true
             } label: {
-                Label(L10n.string("livetv_account", fallback: "Account"), systemImage: "person.badge.key")
+                Label(L10n.string("livetv_sources", fallback: "Sources"), systemImage: "person.badge.key")
+            }
+            .sheet(isPresented: $showsSources) {
+                LiveTVSettingsRows.clearSheetBackground(LiveTVSourcesSheet())
             }
             Button {
                 showsQuickMenu = true
@@ -231,7 +231,8 @@ struct LiveTVView: View {
 
     private var accountSummary: Text {
         var parts: [String] = []
-        if let name = store.account?.name { parts.append(name) }
+        // One source: its name and login; several: their names.
+        parts.append(store.sources.map(\.displayName).joined(separator: ", "))
         if let info = store.userInfo {
             if let expires = info.expiresAt {
                 parts.append(L10n.string("livetv_expires", fallback: "Expires") + " "
@@ -255,8 +256,11 @@ struct LiveTVView: View {
             selectedID: store.selectedGroupID,
             showCounts: settings.showGroupCounts,
             onSelect: { id in
+                // A source's heading folds its groups (step 13a).
+                if LiveTVSourceIDs.sourceID(ofHeading: id) != nil {
+                    store.toggleFold(headingID: id)
                 // A locked group asks for the PIN first.
-                if let group = store.groups.first(where: { $0.id == id }), group.locked {
+                } else if let group = store.groups.first(where: { $0.id == id }), group.locked {
                     pinPurpose = .unlock(group)
                 } else {
                     store.selectedGroupID = id
@@ -383,7 +387,7 @@ struct LiveTVView: View {
             liveStore?.playbackItem(for: $0)
         }
         store.recordWatched(channel)
-        player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+        player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers, zone: links.zone)
         LiveTVFocusLinks.beginReturn()
         player.isFullscreen = true
         player.showBar(.compact)
@@ -493,7 +497,7 @@ struct LiveTVView: View {
             guard let liveStore, let player,
                   let links = liveStore.catchupLinks(for: channel, programme: programme) else { return }
             liveStore.recordWatched(channel)
-            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers)
+            player.playCatchup(channel, programme: programme, urls: links.urls, headers: links.headers, zone: links.zone)
             player.showBar(.compact)
         }
         player.overlay.onCatchup = { [weak liveStore, weak player] channel, programme, list, groupID in
@@ -530,18 +534,21 @@ struct LiveTVLogo: View {
 
 // MARK: - Login
 
+/// The first login, while there's no source (more in Settings → Live TV /
+/// VOD → Sources, step 13a).
 private struct XtreamLoginForm: View {
     @ObservedObject var store: LiveTVStore
-    let isEditing: Bool
-    let onDone: () -> Void
 
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
     @State private var format: XtreamStreamFormat = .auto
+    /// Asked right away: the provider's movies and series too.
+    @State private var importVOD = true
     @State private var isSigningIn = false
     @State private var errorMessage: String?
-    @State private var showSignOutConfirm = false
+    /// Step 13b: a playlist instead of a login.
+    @State private var addingPlaylist: LiveTVSourceEditor.Target?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -583,6 +590,17 @@ private struct XtreamLoginForm: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+
+            Button {
+                importVOD.toggle()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: importVOD ? "checkmark.square.fill" : "square")
+                    Text(L10n.string("livetv_source_import_vod", fallback: "Include Movies & Series (VOD)"))
+                }
+            }
             // Full-width focus sections: otherwise moving down from a format
             // button finds nothing below it (Sign in sits further left).
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -605,13 +623,8 @@ private struct XtreamLoginForm: View {
                 }
                 .disabled(isSigningIn || server.isEmpty || username.isEmpty || password.isEmpty)
 
-                if isEditing {
-                    Button(L10n.string("livetv_cancel", fallback: "Cancel"), action: onDone)
-                    Button(role: .destructive) {
-                        showSignOutConfirm = true
-                    } label: {
-                        Text(L10n.string("livetv_remove_account", fallback: "Remove account"))
-                    }
+                Button(L10n.string("livetv_sources_add_m3u_instead", fallback: "Add an M3U Playlist Instead")) {
+                    addingPlaylist = .init(source: LiveTVSourceStore.shared.newPlaylist(), isNew: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -619,24 +632,9 @@ private struct XtreamLoginForm: View {
         }
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear(perform: fillFromAccount)
-        .confirmationDialog(
-            L10n.string("livetv_remove_account_confirm", fallback: "Remove this Xtream account from this profile?"),
-            isPresented: $showSignOutConfirm
-        ) {
-            Button(L10n.string("livetv_remove_account", fallback: "Remove account"), role: .destructive) {
-                store.signOut()
-                onDone()
-            }
+        .sheet(item: $addingPlaylist) { target in
+            LiveTVSettingsRows.clearSheetBackground(LiveTVPlaylistEditor(target: target, accentColor: LiveTVTheme.accent))
         }
-    }
-
-    private func fillFromAccount() {
-        guard let account = store.account else { return }
-        server = account.server
-        username = account.username
-        password = store.password()
-        format = account.streamFormat
     }
 
     private func signIn() {
@@ -645,8 +643,7 @@ private struct XtreamLoginForm: View {
         Task {
             defer { isSigningIn = false }
             do {
-                try await store.signIn(server: server, username: username, password: password, format: format)
-                onDone()
+                try await store.signIn(server: server, username: username, password: password, format: format, importVOD: importVOD)
             } catch {
                 errorMessage = error.localizedDescription
             }

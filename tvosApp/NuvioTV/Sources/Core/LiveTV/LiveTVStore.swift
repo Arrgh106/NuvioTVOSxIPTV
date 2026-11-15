@@ -8,30 +8,22 @@ import SwiftUI
 /// The Xtream account lives in per-profile settings; its password stays in the
 /// Keychain (same pattern as `SMBCredentialStore`).
 enum XtreamAccountStore {
-    private static let accountKey = "nuvio.tv.livetv.xtreamAccount"
     private static let keychainService = "com.nuvio.tv.livetv.xtream"
 
+    /// The first Xtream source that's on and reads VOD (step 13a: there
+    /// can be several, see `LiveTVSourceStore`): what VOD reads until 13c.
     static func load(settings: UserDefaults = ProfileSettings.current) -> XtreamAccount? {
-        guard let data = settings.data(forKey: accountKey) else { return nil }
-        return try? JSONDecoder().decode(XtreamAccount.self, from: data)
-    }
-
-    static func save(_ account: XtreamAccount, password: String, settings: UserDefaults = ProfileSettings.current) {
-        if let data = try? JSONEncoder().encode(account) {
-            settings.set(data, forKey: accountKey)
-        }
-        savePassword(password, accountID: account.id)
-    }
-
-    static func remove(settings: UserDefaults = ProfileSettings.current) {
-        if let account = load(settings: settings) {
-            SecItemDelete(query(accountID: account.id) as CFDictionary)
-        }
-        settings.removeObject(forKey: accountKey)
+        LiveTVSourceStore.read(settings: settings).first { $0.enabled && $0.kind == .xtream && $0.readsVOD }?.xtream
     }
 
     static func password(for account: XtreamAccount) -> String {
-        var q = query(accountID: account.id)
+        secret(id: account.id)
+    }
+
+    /// A source's secret: an Xtream password, or an M3U link (step 13b:
+    /// links often carry the login).
+    static func secret(id: String) -> String {
+        var q = query(accountID: id)
         q[kSecReturnData as String] = kCFBooleanTrue
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -40,7 +32,11 @@ enum XtreamAccountStore {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private static func savePassword(_ password: String, accountID: String) {
+    static func removePassword(accountID: String) {
+        SecItemDelete(query(accountID: accountID) as CFDictionary)
+    }
+
+    static func savePassword(_ password: String, accountID: String) {
         let data = Data(password.utf8)
         var add = query(accountID: accountID)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -71,17 +67,43 @@ private struct LiveTVCache: Codable {
     var userInfoAllowedFormats: [String]
     var categories: [XtreamCategory]
     var channels: [XtreamLiveChannel]
+    /// M3U: guides linked in the playlist (step 13b).
+    var guideURLs: [String]?
 
     static let maxAge: TimeInterval = 12 * 60 * 60
 
     /// One file per profile. `scope` is resolved on the main actor and handed
     /// in, so loading and saving can run off the main thread.
     static func fileURL(scope: String) -> URL? {
+        directory()?.appendingPathComponent("xtream-\(scope).json")
+    }
+
+    /// One file per source (step 13a); the first keeps the file from before.
+    static func fileURL(scope: String, source: LiveTVSource) -> URL? {
+        source.slot == 0 ? fileURL(scope: scope) : directory()?.appendingPathComponent("xtream-\(scope)-\(source.id).json")
+    }
+
+    private static func directory() -> URL? {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("LiveTV", isDirectory: true)
         guard let dir else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("xtream-\(scope).json")
+        return dir
+    }
+
+    /// The login the list was read with: another server or user reads again.
+    static func key(_ source: LiveTVSource) -> String {
+        guard let account = source.xtream else {
+            // M3U: the link (only its hash: it may carry the login).
+            let link = XtreamAccountStore.secret(id: source.id)
+            return "\(source.id)|m3u|\(String(LiveTVEPGSourceRules.fnv1a(link), radix: 36))"
+        }
+        return "\(source.id)|\(account.server)|\(account.username)"
+    }
+
+    func matches(_ source: LiveTVSource) -> Bool {
+        // Lists kept before step 13 have the login's id only.
+        accountID == Self.key(source) || (source.slot == 0 && accountID == source.id)
     }
 
     /// Tens of thousands of channels take seconds to decode: never call this
@@ -91,13 +113,18 @@ private struct LiveTVCache: Codable {
         return try? JSONDecoder().decode(LiveTVCache.self, from: data)
     }
 
+    /// Protected like the Keychain items (after the first unlock) and kept
+    /// out of backups: M3U links in it often carry the login (step 13b).
     func save(to url: URL?) {
-        guard let url, let data = try? JSONEncoder().encode(self) else { return }
-        try? data.write(to: url, options: .atomic)
+        guard var url, let data = try? JSONEncoder().encode(self) else { return }
+        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
-    static func clear(scope: String) {
-        guard let url = fileURL(scope: scope) else { return }
+    static func clear(scope: String, source: LiveTVSource) {
+        guard let url = fileURL(scope: scope, source: source) else { return }
         try? FileManager.default.removeItem(at: url)
     }
 }
@@ -119,6 +146,8 @@ struct LiveTVGroup: Identifiable, Hashable {
     /// Favorites, Recently watched, Search and All: built by the app, not
     /// provider categories (can't be hidden).
     var isSpecial: Bool { id.hasPrefix("__") && id != LiveTVGroup.otherID }
+    /// A source's heading (more than one source, step 13a): not a group.
+    var isHeading: Bool { id.hasPrefix(LiveTVSourceIDs.headingPrefix) }
 }
 
 @MainActor
@@ -133,16 +162,40 @@ final class LiveTVStore: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var account: XtreamAccount?
-    @Published private(set) var userInfo: XtreamUserInfo? {
-        didSet {
-            // Kept for replays before the next login.
-            if let zone = userInfo?.serverTimeZone, !zone.isEmpty {
-                ProfileSettings.current.set(zone, forKey: Self.serverTimeZoneKey)
-            }
-        }
-    }
+    /// The sources that are on, in your order (step 13a).
+    @Published private(set) var sources: [LiveTVSource] = []
+    /// How each source did at its last load, by source id.
+    @Published private(set) var sourceStatus: [String: LiveTVSourceStatus] = [:]
+    /// Group-column headings folded (more than one source), by source id.
+    @Published private(set) var foldedSources: Set<String> = []
+    /// The login's details while there's one source (the header shows them).
+    var userInfo: XtreamUserInfo? { sources.count == 1 ? userInfos[sources[0].id] : nil }
+    private var userInfos: [String: XtreamUserInfo] = [:]
     private static let serverTimeZoneKey = "nuvio.tv.livetv.serverTimeZone"
+    private static let foldedKey = "nuvio.tv.livetv.foldedSources"
+
+    /// One source's list as read: its own ids (the store's lists carry the
+    /// app's, `LiveTVSourceIDs`).
+    private struct SourceList: Sendable {
+        var categories: [XtreamCategory]
+        var channels: [XtreamLiveChannel]
+        var allowedFormats: [String]
+        var savedAt: Date
+        var guideURLs: [String] = []
+    }
+    private var lists: [String: SourceList] = [:]
+    /// The login or link each list was read with (`LiveTVCache.key`): a
+    /// source changed in Settings is read again, the others are kept.
+    private var listKeys: [String: String] = [:]
+    /// Sources turned on, off or moved: the next guide import reads the
+    /// files kept from last time instead of downloading them again.
+    private var guideReusesFiles = false
+    /// Sources read one after another (as Android): several requests at
+    /// once made some panels answer 404.
+    private var queue: [(source: LiveTVSource, info: XtreamUserInfo?)] = []
+    private var queueTask: Task<Void, Never>?
+    private var combineTask: Task<Void, Never>?
+    private var sourcesObserver: NSObjectProtocol?
     @Published private(set) var groups: [LiveTVGroup] = []
     @Published private(set) var state: LoadState = .idle {
         didSet {
@@ -183,7 +236,6 @@ final class LiveTVStore: ObservableObject {
     @Published private(set) var recentIDs: [Int] = []
     @Published private(set) var searchQuery = ""
 
-    private var allowedFormats: [String] = []
     /// The provider's lists as loaded: built again when names change (step 10a).
     private var rawCategories: [XtreamCategory] = []
     private var rawChannels: [XtreamLiveChannel] = []
@@ -218,6 +270,12 @@ final class LiveTVStore: ObservableObject {
 
     init() {
         reloadAccount()
+        // Sources added, changed or removed in Settings (step 13a).
+        sourcesObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVSourceStore.changedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadAccount() }
+        }
         // The option changes the lists at once (the guide reloads).
         settingsObserver = LiveTVSettings.shared.$hideSeparators
             .dropFirst()
@@ -265,7 +323,7 @@ final class LiveTVStore: ObservableObject {
         }
     }
 
-    var hasAccount: Bool { account != nil }
+    var hasAccount: Bool { !sources.isEmpty }
 
     var visibleChannels: [XtreamLiveChannel] {
         channels(inGroup: selectedGroupID)
@@ -336,6 +394,14 @@ final class LiveTVStore: ObservableObject {
         return parental.lockedIDs(candidates, ignoringUnlocked: ignoringUnlocked)
     }
 
+    /// A source's heading in the group column: folds or unfolds its groups.
+    func toggleFold(headingID: String) {
+        guard let id = LiveTVSourceIDs.sourceID(ofHeading: headingID) else { return }
+        if foldedSources.contains(id) { foldedSources.remove(id) } else { foldedSources.insert(id) }
+        ProfileSettings.current.set(Array(foldedSources).sorted(), forKey: Self.foldedKey)
+        rebuildGroups()
+    }
+
     /// The group open now is one of yours.
     var selectedCustomGroupID: String? {
         LiveTVCustomGroup.isCustom(selectedGroupID) ? selectedGroupID : nil
@@ -348,8 +414,8 @@ final class LiveTVStore: ObservableObject {
     /// `reuseDownloads`: read the guide files kept from last time (after
     /// Assign EPG) instead of downloading them again.
     func refreshGuide(force: Bool, reuseDownloads: Bool = false) {
-        guard let account else { return }
-        let password = XtreamAccountStore.password(for: account)
+        guard !sources.isEmpty else { return }
+        let shown = sources
         // Channels in your groups from hidden groups get their guide too.
         var visible = allVisible
         var shownIDs = Set(visible.map(\.streamID))
@@ -367,12 +433,11 @@ final class LiveTVStore: ObservableObject {
             let channels = await Task.detached(priority: .utility) {
                 visible.map { LiveTVEPGChannelRef(streamID: $0.streamID, epgID: $0.epgChannelID, name: $0.originalName) }
             }.value
-            guard let self, self.account == account else { return }
-            let sources = LiveTVEPGSources.shared
+            guard let self, self.sources == shown else { return }
             LiveTVGuide.shared.refreshIfNeeded(
-                account: account, password: password, channels: channels,
-                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
-                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
+                builtIn: LiveTVGuide.builtInFeeds(), channels: channels,
+                overrides: LiveTVEPGOverrides.load(), extra: LiveTVEPGSources.shared.feeds(),
+                force: force, reuseDownloads: reuseDownloads)
         }
     }
 
@@ -536,28 +601,59 @@ final class LiveTVStore: ObservableObject {
                 id: group.id, name: group.name, count: customChannels(group.id).count,
                 locked: locked.contains(group.id))
         }
-        result += custom.isEmpty ? provider : LiveTVListOrder.ordered(custom + provider, saved: edits.edits.groupOrder, id: \.id)
+        let ordered = custom.isEmpty ? provider : LiveTVListOrder.ordered(custom + provider, saved: edits.edits.groupOrder, id: \.id)
+        if sources.count > 1 {
+            // A heading per source that folds (as Android's "Group by
+            // Playlist"); your own groups stay on top, across sources.
+            let customIDs = Set(custom.map(\.id))
+            result += ordered.filter { customIDs.contains($0.id) }
+            let bySlot = Dictionary(grouping: ordered.filter { !customIDs.contains($0.id) }) { LiveTVSourceIDs.slot(ofGroup: $0.id) }
+            for source in sources {
+                let list = bySlot[source.slot] ?? []
+                let folded = foldedSources.contains(source.id)
+                result.append(LiveTVGroup(
+                    id: LiveTVSourceIDs.heading(sourceID: source.id),
+                    name: (folded ? "\u{25B8}  " : "\u{25BE}  ") + source.displayName,
+                    count: list.reduce(0) { $0 + $1.count }))
+                if !folded { result += list }
+            }
+        } else {
+            result += ordered
+        }
         groups = result
         if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) || locked.contains(selectedGroupID) {
             selectedGroupID = LiveTVGroup.allID
         }
     }
 
-    /// Picks up the account of the active profile (profiles can switch while
-    /// the app runs).
+    /// Picks up the sources of the active profile (profiles can switch while
+    /// the app runs, sources change in Settings).
     func reloadAccount() {
-        let stored = XtreamAccountStore.load()
-        guard stored != account || needsReload else {
+        let stored = LiveTVSourceStore.shared.enabled.filter { $0.kind == .xtream || $0.kind == .m3u }
+        guard stored != sources || needsReload else {
             refreshIfStale()
+            return
+        }
+        // Sources turned on, off, moved or renamed in Settings: the lists
+        // of the others stay, nothing is downloaded again for them.
+        if !needsReload, !sources.isEmpty, !stored.isEmpty {
+            switchSources(to: stored)
             return
         }
         needsReload = false
         // The store lives on between visits and profiles: nothing of the
-        // last account or profile may stay, and its loads must not land.
+        // last sources or profile may stay, and their loads must not land.
         loadTask?.cancel()
         renameTask?.cancel()
-        account = stored
-        userInfo = nil
+        combineTask?.cancel()
+        queueTask?.cancel()
+        queueTask = nil
+        queue = []
+        sources = stored
+        sourceStatus = [:]
+        userInfos = [:]
+        lists = [:]
+        foldedSources = Set(ProfileSettings.current.stringArray(forKey: Self.foldedKey) ?? [])
         channels = []
         rawCategories = []
         rawChannels = []
@@ -569,7 +665,6 @@ final class LiveTVStore: ObservableObject {
         channelsByGroupWithoutSeparators = [:]
         lockedGroupIDs = []
         savedLockedGroupIDs = []
-        allowedFormats = []
         lastUpdated = nil
         categoryGroups = []
         searchQuery = ""
@@ -579,109 +674,169 @@ final class LiveTVStore: ObservableObject {
         groups = []
         selectedGroupID = LiveTVGroup.allID
         listRevision &+= 1
-        guard let stored else { return }
-        // Decoding and sorting a large list blocks for seconds; on the main
-        // thread tvOS kills the app (seen with ~56k channels).
-        let url = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope)
-        let names = groupNames
+        listKeys = [:]
+        guard !stored.isEmpty else { return }
+        loadKept(stored)
+    }
+
+    /// The kept lists of these sources (off the main thread: decoding and
+    /// sorting a large list blocks for seconds, and on the main thread
+    /// tvOS kills the app, seen with ~56k channels); old or missing ones
+    /// are read from the provider.
+    private func loadKept(_ wanted: [LiveTVSource], requeue: Set<String> = []) {
+        let scope = ProfileSettings.activeProfileScope
+        let shown = sources
         state = .loading
-        loadTask?.cancel()
         loadTask = Task { [weak self] in
-            let prepared = await Task.detached(priority: .userInitiated) { () -> (LiveTVCache, Prepared)? in
-                guard let cache = LiveTVCache.load(from: url), cache.accountID == stored.id else { return nil }
-                return (cache, LiveTVStore.prepare(
-                    categories: cache.categories, channels: cache.channels, names: names,
-                    edits: LiveTVChannelEdits.read()))
+            let kept = await Task.detached(priority: .userInitiated) { () -> [String: (SourceList, String)] in
+                var kept: [String: (SourceList, String)] = [:]
+                for source in wanted {
+                    guard let cache = LiveTVCache.load(from: LiveTVCache.fileURL(scope: scope, source: source)),
+                          cache.matches(source) else { continue }
+                    kept[source.id] = (SourceList(
+                        categories: cache.categories, channels: cache.channels,
+                        allowedFormats: cache.userInfoAllowedFormats, savedAt: cache.savedAt,
+                        guideURLs: cache.guideURLs ?? []), LiveTVCache.key(source))
+                }
+                return kept
             }.value
-            guard !Task.isCancelled, let self, self.account == stored, !self.needsReload else { return }
-            self.state = .idle
-            guard let prepared else {
-                self.refresh()
-                return
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            for (id, entry) in kept {
+                self.lists[id] = entry.0
+                self.listKeys[id] = entry.1
+                self.sourceStatus[id] = LiveTVSourceStatus(channels: entry.0.channels.count, updated: entry.0.savedAt)
             }
-            let (cache, result) = prepared
-            self.rawCategories = cache.categories
-            self.rawChannels = cache.channels
-            self.apply(result)
-            self.allowedFormats = cache.userInfoAllowedFormats
-            self.lastUpdated = cache.savedAt
-            if Date().timeIntervalSince(cache.savedAt) > LiveTVCache.maxAge {
-                self.refresh()
-            } else {
-                self.refreshAccountInfo()
+            self.lastUpdated = self.lists.values.map(\.savedAt).min()
+            if !kept.isEmpty || !self.lists.isEmpty { self.combine() }
+            for source in wanted {
+                if let entry = kept[source.id], Date().timeIntervalSince(entry.0.savedAt) <= LiveTVCache.maxAge,
+                   !requeue.contains(source.id) {
+                    self.refreshAccountInfo(source)
+                } else {
+                    self.enqueue(source)
+                }
             }
+            self.updateState()
+        }
+    }
+
+    /// The source list changed while lists are in: the unchanged sources
+    /// keep theirs (only the order or the headings change), new or changed
+    /// ones are read, ones turned off or deleted leave.
+    private func switchSources(to stored: [LiveTVSource]) {
+        let pending = Set(queue.map(\.source.id))
+        loadTask?.cancel()
+        queueTask?.cancel()
+        queueTask = nil
+        queue = []
+        sources = stored
+        let wanted = Set(stored.map(\.id))
+        var unchanged = Set<String>()
+        for source in stored where listKeys[source.id] == LiveTVCache.key(source) && lists[source.id] != nil {
+            unchanged.insert(source.id)
+        }
+        lists = lists.filter { unchanged.contains($0.key) }
+        listKeys = listKeys.filter { unchanged.contains($0.key) }
+        sourceStatus = sourceStatus.filter { wanted.contains($0.key) }
+        userInfos = userInfos.filter { wanted.contains($0.key) }
+        guideReusesFiles = true
+        combine()
+        let missing = stored.filter { !unchanged.contains($0.id) }
+        // Loads that were waiting carry on.
+        let requeue = pending.intersection(wanted)
+        if missing.isEmpty {
+            for source in stored where requeue.contains(source.id) { enqueue(source) }
+            updateState()
+        } else {
+            loadKept(missing)
+            for source in stored where requeue.contains(source.id) && unchanged.contains(source.id) { enqueue(source) }
         }
     }
 
     // MARK: Account
 
-    /// Verifies the login, then saves it and loads the channels.
-    func signIn(server: String, username: String, password: String, format: XtreamStreamFormat) async throws {
+    /// The first login, from Live TV with no source yet: checked, then
+    /// saved as a source (more in Settings → Live TV / VOD → Sources).
+    func signIn(
+        server: String, username: String, password: String, format: XtreamStreamFormat, importVOD: Bool = true
+    ) async throws {
         let client = XtreamClient(server: server, username: username, password: password)
         let info = try await client.login()
         let normalised = XtreamAccount.normaliseServer(server)
-        let account = XtreamAccount(
-            id: self.account?.id ?? UUID().uuidString,
+        var source = LiveTVSourceStore.shared.newXtream()
+        source.xtream = XtreamAccount(
+            id: source.id,
             name: URL(string: normalised)?.host ?? normalised,
             server: normalised,
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
-            streamFormat: format
-        )
-        XtreamAccountStore.save(account, password: password)
-        LiveTVCache.clear(scope: ProfileSettings.activeProfileScope)
-        self.account = account
-        self.userInfo = info
-        self.allowedFormats = info.allowedOutputFormats
-        // The login was just checked; don't ask the panel for it again.
-        refresh(verifiedInfo: info)
+            streamFormat: format)
+        source.importVOD = importVOD
+        // The login was just checked; the load doesn't ask the panel again.
+        verified[source.id] = info
+        LiveTVSourceStore.shared.save(source, password: password)
     }
 
-    func signOut() {
-        loadTask?.cancel()
-        XtreamAccountStore.remove()
-        LiveTVCache.clear(scope: ProfileSettings.activeProfileScope)
-        account = nil
-        userInfo = nil
-        channels = []
-        channelsByGroup = [:]
-        channelsByID = [:]
-        categoryGroups = []
-        allVisible = []
-        searchResults = []
-        searchQuery = ""
-        groups = []
-        state = .idle
-        lastUpdated = nil
-    }
+    /// Logins checked by Settings or the first login, for their first load.
+    private var verified: [String: XtreamUserInfo] = [:]
 
-    func password() -> String {
-        guard let account else { return "" }
-        return XtreamAccountStore.password(for: account)
+    func rememberVerified(_ info: XtreamUserInfo, for sourceID: String) {
+        verified[sourceID] = info
     }
 
     // MARK: Loading
 
-    /// Loads account, categories, then channels one after another, like
-    /// Android and TiviMate. Several requests at once (right after a login)
-    /// made some panels answer HTTP 404; each step also gets one retry.
-    /// Live TV opened again with the list kept: a new list from the
-    /// provider in the background once the kept one is old.
+    /// Live TV opened again with the lists kept: new lists from the
+    /// providers in the background once the kept ones are old.
     private func refreshIfStale() {
-        guard state == .idle, !channels.isEmpty, let lastUpdated,
-              Date().timeIntervalSince(lastUpdated) > LiveTVCache.maxAge else { return }
-        refresh()
+        guard state == .idle else { return }
+        for source in sources {
+            guard let list = lists[source.id] else { continue }
+            if Date().timeIntervalSince(list.savedAt) > LiveTVCache.maxAge { enqueue(source) }
+        }
     }
 
-    func refresh(verifiedInfo: XtreamUserInfo? = nil) {
-        guard let account else { return }
+    /// Every source read again (Refresh, Update Now).
+    func refresh() {
+        for source in sources { enqueue(source) }
+    }
+
+    /// One source read again (Settings → Sources → Update).
+    func refresh(sourceID: String) {
+        guard let source = sources.first(where: { $0.id == sourceID }) else { return }
+        enqueue(source)
+    }
+
+    private func enqueue(_ source: LiveTVSource) {
+        guard !queue.contains(where: { $0.source.id == source.id }) else { return }
+        queue.append((source, verified.removeValue(forKey: source.id)))
+        sourceStatus[source.id, default: LiveTVSourceStatus()].loading = true
+        updateState()
+        runQueue()
+    }
+
+    /// Loads account, categories, then channels of one source after
+    /// another, like Android and TiviMate; each step gets one retry. A
+    /// source that fails keeps its last list and leaves the others.
+    private func runQueue() {
+        guard queueTask == nil, !queue.isEmpty else { return }
+        let (source, verifiedInfo) = queue[0]
+        if source.kind == .m3u {
+            runPlaylist(source)
+            return
+        }
+        guard let account = source.xtream else {
+            queue.removeFirst()
+            runQueue()
+            return
+        }
         let password = XtreamAccountStore.password(for: account)
-        // Where this account's list is kept, fixed now (the profile may
+        // Where this source's list is kept, fixed now (the profile may
         // change while it loads).
-        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope)
-        loadTask?.cancel()
-        state = .loading
-        loadTask = Task { [weak self] in
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope, source: source)
+        let shown = sources
+        queueTask = Task { [weak self] in
             let client = XtreamClient(account: account, password: password)
+            let outcome: Result<(XtreamUserInfo, SourceList), Error>
             do {
                 let info: XtreamUserInfo
                 if let verifiedInfo {
@@ -692,44 +847,197 @@ final class LiveTVStore: ObservableObject {
                 // Optional, as on Android: without categories everything lands in "Other".
                 let categories = (try? await Self.withRetry { try await client.liveCategories() }) ?? []
                 let channels = try await Self.withRetry { try await client.liveChannels() }
-                let names = await MainActor.run { LiveTVStore.groupNamesValue() }
-                let edits = LiveTVChannelEdits.read()
-                let prepared = await Task.detached(priority: .userInitiated) {
-                    LiveTVStore.prepare(categories: categories, channels: channels, names: names, edits: edits)
-                }.value
-                guard !Task.isCancelled, let self, self.account == account, !self.needsReload else { return }
-                self.renameTask?.cancel()
-                self.rawCategories = categories
-                self.rawChannels = channels
-                self.userInfo = info
-                self.allowedFormats = info.allowedOutputFormats
-                self.apply(prepared)
-                let now = Date()
-                self.lastUpdated = now
-                self.state = .idle
-                let cache = LiveTVCache(
-                    accountID: account.id,
-                    savedAt: now,
-                    userInfoAllowedFormats: info.allowedOutputFormats,
-                    categories: categories,
-                    channels: channels
-                )
-                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
+                outcome = .success((info, SourceList(
+                    categories: categories, channels: channels,
+                    allowedFormats: info.allowedOutputFormats, savedAt: Date())))
             } catch {
-                guard !Task.isCancelled, let self, self.account == account else { return }
-                self.state = .failed(error.localizedDescription)
+                outcome = .failure(error)
             }
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            self.queueTask = nil
+            if !self.queue.isEmpty { self.queue.removeFirst() }
+            switch outcome {
+            case .success(let (info, list)):
+                self.keep(info, for: source)
+                self.lists[source.id] = list
+                self.listKeys[source.id] = LiveTVCache.key(source)
+                self.sourceStatus[source.id] = self.status(list: list, info: info)
+                self.lastUpdated = self.lists.values.map(\.savedAt).min()
+                let cache = LiveTVCache(
+                    accountID: LiveTVCache.key(source), savedAt: list.savedAt,
+                    userInfoAllowedFormats: list.allowedFormats,
+                    categories: list.categories, channels: list.channels, guideURLs: nil)
+                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
+                self.combine()
+            case .failure(let error):
+                var status = self.sourceStatus[source.id] ?? LiveTVSourceStatus()
+                status.loading = false
+                status.error = error.localizedDescription
+                self.sourceStatus[source.id] = status
+                if self.queue.isEmpty, !self.channels.isEmpty { self.refreshGuide(force: false) }
+            }
+            self.updateState()
+            self.runQueue()
         }
     }
 
-    private func refreshAccountInfo() {
-        guard let account else { return }
+    /// An M3U playlist (step 13b): downloaded with its user agent, counted
+    /// as it comes in, read off the main thread. Groups are its
+    /// group-titles in their order.
+    private func runPlaylist(_ source: LiveTVSource) {
+        let link = XtreamAccountStore.secret(id: source.id)
+        let agent = source.userAgent.flatMap { $0.isEmpty ? nil : $0 } ?? XtreamClient.userAgent
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope, source: source)
+        let shown = sources
+        let label = L10n.string("livetv_loading_label", fallback: "Loading channels") + " \u{00B7} " + source.displayName
+        queueTask = Task { [weak self] in
+            let outcome: Result<SourceList, Error>
+            do {
+                guard let url = URL(string: link), url.scheme?.lowercased().hasPrefix("http") == true else {
+                    throw XtreamError.invalidServer
+                }
+                var request = URLRequest(url: url)
+                request.setValue(agent, forHTTPHeaderField: "User-Agent")
+                let configuration = URLSessionConfiguration.default
+                configuration.timeoutIntervalForRequest = 120
+                configuration.timeoutIntervalForResource = 30 * 60
+                let (data, response) = try await XtreamProgressFetch.data(
+                    for: request, configuration: configuration, marker: Data("#EXTINF".utf8)
+                ) { count in
+                    Task { @MainActor in
+                        guard count > 0 else { return }
+                        ActivityCenter.shared.update("livetv.channels", label: label + " \u{00B7} " + count.formatted())
+                    }
+                }
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw XtreamError.badStatus(http.statusCode)
+                }
+                let list = await Task.detached(priority: .userInitiated) { () -> SourceList? in
+                    let playlist = LiveTVM3U.parse(String(decoding: data, as: UTF8.self))
+                    guard !playlist.entries.isEmpty else { return nil }
+                    let ids = LiveTVM3U.ids(for: playlist.entries)
+                    let categories = LiveTVM3U.groups(of: playlist.entries).map { XtreamCategory(id: $0, name: $0) }
+                    var channels: [XtreamLiveChannel] = []
+                    channels.reserveCapacity(playlist.entries.count)
+                    for (entry, id) in zip(playlist.entries, ids) {
+                        var channel = XtreamLiveChannel(
+                            streamID: id, number: entry.number, name: entry.name, logoURL: entry.logo,
+                            epgChannelID: entry.tvgID ?? entry.tvgName, categoryID: entry.group, archiveDays: 0)
+                        channel.streamURL = entry.url
+                        channel.headers = entry.headers.isEmpty ? nil : entry.headers
+                        channels.append(channel)
+                    }
+                    return SourceList(
+                        categories: categories, channels: channels, allowedFormats: [], savedAt: Date(),
+                        guideURLs: playlist.guideURLs)
+                }.value
+                guard let list else { throw XtreamError.invalidResponse }
+                outcome = .success(list)
+            } catch {
+                outcome = .failure(error)
+            }
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            self.queueTask = nil
+            if !self.queue.isEmpty { self.queue.removeFirst() }
+            switch outcome {
+            case .success(let list):
+                self.lists[source.id] = list
+                self.listKeys[source.id] = LiveTVCache.key(source)
+                self.sourceStatus[source.id] = self.status(list: list, info: nil)
+                self.lastUpdated = self.lists.values.map(\.savedAt).min()
+                let cache = LiveTVCache(
+                    accountID: LiveTVCache.key(source), savedAt: list.savedAt, userInfoAllowedFormats: [],
+                    categories: list.categories, channels: list.channels, guideURLs: list.guideURLs)
+                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
+                self.combine()
+            case .failure(let error):
+                var status = self.sourceStatus[source.id] ?? LiveTVSourceStatus()
+                status.loading = false
+                status.error = error.localizedDescription
+                self.sourceStatus[source.id] = status
+                if self.queue.isEmpty, !self.channels.isEmpty { self.refreshGuide(force: false) }
+            }
+            self.updateState()
+            self.runQueue()
+        }
+    }
+
+    /// Guides linked in a playlist (its `x-tvg-url`), from the last read.
+    func guideLinks(sourceID: String) -> [String] {
+        lists[sourceID]?.guideURLs ?? []
+    }
+
+    private func status(list: SourceList, info: XtreamUserInfo?) -> LiveTVSourceStatus {
+        LiveTVSourceStatus(
+            channels: list.channels.count, updated: list.savedAt, error: nil, loading: false,
+            expires: info?.expiresAt, activeConnections: info?.activeConnections, maxConnections: info?.maxConnections)
+    }
+
+    /// The panel's time zone, kept for replays before the next login.
+    private func keep(_ info: XtreamUserInfo, for source: LiveTVSource) {
+        userInfos[source.id] = info
+        if let zone = info.serverTimeZone, !zone.isEmpty {
+            ProfileSettings.current.set(zone, forKey: Self.zoneKey(source))
+        }
+    }
+
+    private static func zoneKey(_ source: LiveTVSource) -> String {
+        source.slot == 0 ? serverTimeZoneKey : serverTimeZoneKey + "." + source.id
+    }
+
+    /// Loading while a source loads; failed when no source has a list.
+    private func updateState() {
+        if !queue.isEmpty {
+            state = .loading
+        } else if channels.isEmpty && lists.isEmpty,
+                  let message = sources.compactMap({ sourceStatus[$0.id]?.error }).first {
+            state = .failed(message)
+        } else {
+            state = .idle
+        }
+    }
+
+    /// The lists of every source as one (source order, the app's ids),
+    /// sorted off the main thread.
+    private func combine() {
+        let order = sources
+        let lists = self.lists
+        let names = groupNames
+        let edits = LiveTVChannelEdits.read()
+        renameTask?.cancel()
+        combineTask?.cancel()
+        combineTask = Task { [weak self] in
+            let (categories, channels, prepared) = await Task.detached(priority: .userInitiated) {
+                () -> ([XtreamCategory], [XtreamLiveChannel], Prepared) in
+                var categories: [XtreamCategory] = []
+                var channels: [XtreamLiveChannel] = []
+                for source in order {
+                    guard let list = lists[source.id] else { continue }
+                    categories += source.slot == 0 ? list.categories : list.categories.map { $0.inSource(slot: source.slot) }
+                    channels += source.slot == 0 ? list.channels : list.channels.map { $0.inSource(slot: source.slot) }
+                }
+                let prepared = LiveTVStore.prepare(
+                    categories: categories, channels: channels, names: names, edits: edits,
+                    sourceOrder: order.map(\.slot))
+                return (categories, channels, prepared)
+            }.value
+            guard !Task.isCancelled, let self, self.sources == order else { return }
+            self.rawCategories = categories
+            self.rawChannels = channels
+            self.apply(prepared)
+            self.updateState()
+        }
+    }
+
+    private func refreshAccountInfo(_ source: LiveTVSource) {
+        guard let account = source.xtream else { return }
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
+        let shown = sources
         Task { [weak self] in
             guard let info = try? await client.login(),
-                  let self, self.account == account, !self.needsReload else { return }
-            self.userInfo = info
-            self.allowedFormats = info.allowedOutputFormats
+                  let self, self.sources == shown, !self.needsReload else { return }
+            self.keep(info, for: source)
+            if let list = self.lists[source.id] { self.sourceStatus[source.id] = self.status(list: list, info: info) }
         }
     }
 
@@ -797,7 +1105,8 @@ final class LiveTVStore: ObservableObject {
         categories: [XtreamCategory],
         channels: [XtreamLiveChannel],
         names: GroupNames,
-        edits: LiveTVNameEdits = .none
+        edits: LiveTVNameEdits = .none,
+        sourceOrder: [Int] = []
     ) -> Prepared {
         // Renamed and cleaned names (step 10a).
         var channels = channels
@@ -808,7 +1117,15 @@ final class LiveTVStore: ObservableObject {
         }
         let terms = LiveTVNameCleaner.terms(edits.removals)
         let groupCleaner = edits.cleanGroups && !terms.isEmpty ? LiveTVNameCleaner.Cleaner(terms: terms) : nil
+        // Each source's channels together, in your order of the sources
+        // (step 13a); within one, by the provider's numbers.
+        let position = Dictionary(sourceOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let sortedByNumber = channels.enumerated().sorted { lhs, rhs in
+            if position.count > 1 {
+                let l = position[LiveTVSourceIDs.slot(ofChannel: lhs.element.streamID)] ?? 0
+                let r = position[LiveTVSourceIDs.slot(ofChannel: rhs.element.streamID)] ?? 0
+                if l != r { return l < r }
+            }
             switch (lhs.element.number, rhs.element.number) {
             case let (l?, r?) where l != r: return l < r
             case (_?, nil): return true
@@ -864,10 +1181,11 @@ final class LiveTVStore: ObservableObject {
         let raw = rawChannels
         let names = groupNames
         let edits = LiveTVChannelEdits.read()
+        let order = sources.map(\.slot)
         renameTask?.cancel()
         renameTask = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) {
-                LiveTVStore.prepare(categories: categories, channels: raw, names: names, edits: edits)
+                LiveTVStore.prepare(categories: categories, channels: raw, names: names, edits: edits, sourceOrder: order)
             }.value
             guard !Task.isCancelled, let self, self.rawChannels.count == raw.count else { return }
             self.apply(prepared, namesOnly: true)
@@ -890,7 +1208,11 @@ final class LiveTVStore: ObservableObject {
         listRevision &+= 1
         LiveTVEPG.shared.register(epgIDs: prepared.epgIDs)
         rebuildGroups()
-        refreshGuide(force: false)
+        // Once every source is in: the guide matches all channels at once.
+        if queue.isEmpty {
+            refreshGuide(force: false, reuseDownloads: guideReusesFiles)
+            guideReusesFiles = false
+        }
         if restoring, LiveTVSettings.shared.rememberLastGroup,
            let last = ProfileSettings.current.string(forKey: Self.lastGroupKey),
            groups.contains(where: { $0.id == last }), !lockedGroupIDs.contains(last) {
@@ -921,38 +1243,68 @@ final class LiveTVStore: ObservableObject {
 
     /// Replay links for a show on a channel with catch-up, the likeliest
     /// first (`LiveTVCatchup.xtreamURLs`).
-    func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String])? {
-        guard let account, channel.archiveDays > 0 else { return nil }
+    func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String], zone: String)? {
+        guard channel.archiveDays > 0, let routed = route(channel) else { return nil }
+        let (source, account) = routed
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
-        let zoneID = userInfo?.serverTimeZone ?? ProfileSettings.current.string(forKey: Self.serverTimeZoneKey)
+        let zoneID = userInfos[source.id]?.serverTimeZone ?? ProfileSettings.current.string(forKey: Self.zoneKey(source))
         let urls = LiveTVCatchup.xtreamURLs(
             server: client.server,
             username: client.username,
             password: client.password,
-            streamID: channel.streamID,
+            streamID: LiveTVSourceIDs.raw(ofChannel: channel.streamID),
             start: programme.start,
             end: programme.end,
             now: Date(),
-            fileExtension: XtreamClient.fileExtension(for: account.streamFormat, allowedFormats: allowedFormats),
+            fileExtension: XtreamClient.fileExtension(
+                for: account.streamFormat, allowedFormats: lists[source.id]?.allowedFormats ?? []),
             serverTimeZone: zoneID.flatMap(TimeZone.init(identifier:)))
         guard !urls.isEmpty else { return nil }
-        return (urls, client.httpHeaders)
+        // For the message when nothing plays: which clock the start went by.
+        let zone = zoneID.flatMap { $0.isEmpty ? nil : $0 }.map { $0 + " (" + L10n.string("livetv_catchup_zone_server", fallback: "server") + ")" }
+            ?? TimeZone.current.identifier + " (" + L10n.string("livetv_catchup_zone_device", fallback: "this Apple TV, the server gave none") + ")"
+        return (urls, client.httpHeaders, zone)
     }
 
     func playbackItem(for channel: XtreamLiveChannel) -> PlaybackItem? {
-        guard let account else { return nil }
+        // M3U (step 13b): the channel's own link, its headers over the
+        // playlist's user agent.
+        if let link = channel.streamURL {
+            guard let url = URL(string: link) else { return nil }
+            let slot = LiveTVSourceIDs.slot(ofChannel: channel.streamID)
+            let agent = sources.first { $0.slot == slot }?.userAgent.flatMap { $0.isEmpty ? nil : $0 } ?? XtreamClient.userAgent
+            var headers = ["User-Agent": agent]
+            headers.merge(channel.headers ?? [:]) { _, own in own }
+            return PlaybackItem(url: url, meta: .liveChannel(channel), headers: headers)
+        }
+        guard let routed = route(channel) else { return nil }
+        let (source, account) = routed
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
         guard let url = client.liveURL(
-            streamID: channel.streamID,
+            streamID: LiveTVSourceIDs.raw(ofChannel: channel.streamID),
             format: account.streamFormat,
-            allowedFormats: allowedFormats
+            allowedFormats: lists[source.id]?.allowedFormats ?? []
         ) else { return nil }
         return PlaybackItem(url: url, meta: .liveChannel(channel), headers: client.httpHeaders)
+    }
+
+    /// The source a channel comes from, by the slot in its id.
+    private func route(_ channel: XtreamLiveChannel) -> (LiveTVSource, XtreamAccount)? {
+        let slot = LiveTVSourceIDs.slot(ofChannel: channel.streamID)
+        guard let source = sources.first(where: { $0.slot == slot }), let account = source.xtream else { return nil }
+        return (source, account)
     }
 }
 
 extension LiveTVGroup {
     static let otherID = "__other__"
+}
+
+extension LiveTVStore {
+    /// A deleted source's kept list goes with it (step 13b).
+    nonisolated static func forgetList(of source: LiveTVSource, scope: String) {
+        LiveTVCache.clear(scope: scope, source: source)
+    }
 }
 
 extension NuvioMeta {

@@ -12,6 +12,10 @@ struct LiveTVSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            // Step 13a: the sources first, as Android's "Playlists & Guides".
+            LiveTVSourcesGroup(accentColor: accentColor)
+                .settingsEntryAnchor()
+
             LiveTVSettingsRows.group(
                 title: L10n.string("livetv_settings_guide", fallback: "Guide"),
                 subtitle: L10n.string("livetv_settings_guide_subtitle", fallback: "What the guide shows")
@@ -22,7 +26,6 @@ struct LiveTVSettingsView: View {
                     isOn: $settings.showInfoPanel,
                     accentColor: accentColor
                 )
-                .settingsEntryAnchor()
                 LiveTVSettingsRows.toggle(
                     title: L10n.string("livetv_settings_description", fallback: "Description"),
                     subtitle: L10n.string("livetv_settings_description_detail", fallback: "Two lines about the show in the info panel"),

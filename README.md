@@ -67,7 +67,9 @@ No release has been published yet. Grab the IPA from the latest [IPA build](http
    - **TS** / **HLS**: force one format if channels don't start.
 4. **Sign in.** The login is checked against the provider before anything is saved.
 
-The password is stored in the Apple TV Keychain. Each Nuvio profile has its own Live TV login. The channel list is cached on the device and refreshes every 12 hours, or when you press **Refresh**.
+The password is stored in the Apple TV Keychain. Each Nuvio profile has its own Live TV sources. The channel list is cached on the device and refreshes every 12 hours, or when you press **Refresh**.
+
+**More sources** (Settings → Live TV / VOD → *Sources*, or *Sources* in Live TV's header): add more Xtream logins and M3U playlists (*Add M3U Playlist*: a link, optionally your provider's user agent; the guide linked in the playlist is read too). All sources show in one guide; the group column has a heading per source that folds with OK. Each source can be updated, turned off, moved or deleted on its own; one that fails leaves the others. On Live TV's first screen, *Add an M3U Playlist Instead* starts with a playlist.
 
 ### Using Live TV
 
@@ -134,8 +136,8 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Parental controls (PIN lock for groups) | ✅ Done |
 | Catch-up, restart live shows | ✅ Done |
 | Time-shift (pause and rewind live without an archive) | 🗓 Planned |
-| VOD (provider movies & series, matched to Nuvio details) | 🚧 In progress |
-| M3U playlists (link / Dispatcharr) | 🗓 Planned |
+| VOD (provider movies & series, matched to Nuvio details) | ✅ Done |
+| Several sources: Xtream logins, M3U playlists, Stalker portals | 🚧 In progress |
 | Live TV in search, "Find & stream" through your add-ons | 🗓 Planned |
 | Sports hub (scores, schedules, channels showing a game) | 🗓 Planned |
 | Calendar extensions | 🗓 Planned |

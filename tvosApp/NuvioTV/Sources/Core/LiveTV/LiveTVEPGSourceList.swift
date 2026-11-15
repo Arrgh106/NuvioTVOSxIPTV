@@ -23,6 +23,9 @@ struct LiveTVGuideFeed: Sendable {
     let name: String
     let url: URL
     let shiftMinutes: Int
+    /// A source's own guide (step 13a): matched to that source's channels
+    /// only. nil: an added guide, matched to every channel.
+    var slot: Int? = nil
 }
 
 /// Rules around guide sources with no UIKit, SQLite or Keychain, so they

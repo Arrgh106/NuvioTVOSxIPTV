@@ -134,18 +134,21 @@ enum LiveTVEPGMatch {
         /// `id` its id in the file (lowercased), `guide` the guide's place.
         /// True when one of the provider's channels may use it, so its
         /// programmes are worth keeping.
-        mutating func saw(key: String, id: String, names: [String], guide: Int = 0) -> Bool {
+        /// `slot`: a source's own guide, for that source's channels only
+        /// (a choice by hand still counts for any channel).
+        mutating func saw(key: String, id: String, names: [String], guide: Int = 0, slot: Int? = nil) -> Bool {
             order += 1
             var found = false
             let order = self.order
-            func add(_ streams: [Int]?, _ kind: Kind) {
+            func add(_ streams: [Int]?, _ kind: Kind, anySource: Bool = false) {
                 guard let streams else { return }
-                found = true
                 for stream in streams {
+                    if !anySource, let slot, LiveTVSourceIDs.slot(ofChannel: stream) != slot { continue }
+                    found = true
                     candidates[stream, default: []].append(Candidate(key: key, kind: kind, guide: guide, order: order))
                 }
             }
-            add(manual[key], .manual)
+            add(manual[key], .manual, anySource: true)
             add(byID[id], .id)
             for name in LiveTVEPGMatch.guideKeys(id: id, names: names) { add(byName[name], .name) }
             return found

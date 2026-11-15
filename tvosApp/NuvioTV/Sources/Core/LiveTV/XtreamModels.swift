@@ -156,6 +156,11 @@ struct XtreamCategory: Codable, Identifiable, Hashable, Sendable {
         self.name = name
     }
 
+    /// The app's id for a source's slot (step 13a).
+    func inSource(slot: Int) -> XtreamCategory {
+        slot == 0 ? self : XtreamCategory(id: LiveTVSourceIDs.group(slot: slot, category: id), name: name)
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.lossyString(.id) ?? ""
@@ -182,6 +187,9 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
 
     /// The provider's name when `name` differs (not saved in the cache).
     var providerName: String? = nil
+    /// M3U playlists (step 13b): the channel's own link and headers.
+    var streamURL: String? = nil
+    var headers: [String: String]? = nil
 
     var id: Int { streamID }
     /// What the provider calls it: guide matching and separator rows go by this.
@@ -204,6 +212,35 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         case categoryID = "category_id"
         case tvArchive = "tv_archive"
         case archiveDays = "tv_archive_duration"
+        case streamURL = "nuvio_url"
+        case headers = "nuvio_headers"
+    }
+
+    init(
+        streamID: Int, number: Int?, name: String, logoURL: String?, epgChannelID: String?,
+        categoryID: String?, archiveDays: Int
+    ) {
+        self.streamID = streamID
+        self.number = number
+        self.name = name
+        self.logoURL = logoURL
+        self.epgChannelID = epgChannelID
+        self.categoryID = categoryID
+        self.archiveDays = archiveDays
+    }
+
+    /// The same channel with the app's ids for a source's slot (step 13a,
+    /// `LiveTVSourceIDs`); slot 0 keeps the provider's.
+    func inSource(slot: Int) -> XtreamLiveChannel {
+        guard slot != 0 else { return self }
+        var copy = XtreamLiveChannel(
+            streamID: LiveTVSourceIDs.channel(slot: slot, raw: streamID), number: number, name: name,
+            logoURL: logoURL, epgChannelID: epgChannelID,
+            categoryID: LiveTVSourceIDs.group(slot: slot, category: categoryID ?? ""), archiveDays: archiveDays)
+        copy.providerName = providerName
+        copy.streamURL = streamURL
+        copy.headers = headers
+        return copy
     }
 
     init(from decoder: Decoder) throws {
@@ -216,6 +253,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         categoryID = c.lossyString(.categoryID)
         let hasArchive = (c.lossyInt(.tvArchive) ?? 0) == 1
         archiveDays = hasArchive ? (c.lossyInt(.archiveDays) ?? 0) : 0
+        streamURL = try? c.decodeIfPresent(String.self, forKey: .streamURL)
+        headers = try? c.decodeIfPresent([String: String].self, forKey: .headers)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -228,6 +267,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         try c.encodeIfPresent(categoryID, forKey: .categoryID)
         try c.encode(archiveDays > 0 ? 1 : 0, forKey: .tvArchive)
         try c.encode(archiveDays, forKey: .archiveDays)
+        try c.encodeIfPresent(streamURL, forKey: .streamURL)
+        try c.encodeIfPresent(headers, forKey: .headers)
     }
 }
 

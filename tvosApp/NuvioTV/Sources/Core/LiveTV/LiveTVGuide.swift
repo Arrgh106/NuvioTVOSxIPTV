@@ -68,7 +68,8 @@ final class LiveTVGuide: ObservableObject {
     /// id counts.
     private var links: [Int: String] = [:]
     /// Bumped when the stored guide changes how it reads (re-import once).
-    private static let formatVersion = "3"
+    /// 4: a source's own guide for its own channels (step 13a).
+    private static let formatVersion = "4"
     /// A forced refresh asked for while one runs: done right after it.
     private var queued: (force: Bool, reuseDownloads: Bool)?
     private var sourcesObserver: NSObjectProtocol?
@@ -118,10 +119,10 @@ final class LiveTVGuide: ObservableObject {
     /// `channels`: the channels to find guide channels for (by id or name,
     /// as on Android); `overrides`: the user's choices (stream → guide
     /// channel key, "" for none); `extra`: the added guides, in order;
-    /// `providerGuide`: whether the provider's own guide is read too.
+    /// `builtIn`: the sources' own guides (`builtInFeeds`).
     func refreshIfNeeded(
-        account: XtreamAccount, password: String, channels: [LiveTVEPGChannelRef],
-        overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [], providerGuide: Bool = true,
+        builtIn: [LiveTVGuideFeed], channels: [LiveTVEPGChannelRef],
+        overrides: [Int: String] = [:], extra: [LiveTVGuideFeed] = [],
         force: Bool = false, reuseDownloads: Bool = false
     ) {
         let scope = ProfileSettings.activeProfileScope
@@ -132,13 +133,10 @@ final class LiveTVGuide: ObservableObject {
             }
             return
         }
-        // Added guides first: they win a tie (as on Android).
-        var feeds = extra
-        if providerGuide, let url = Self.xmltvURL(account: account, password: password) {
-            feeds.append(LiveTVGuideFeed(
-                sourceID: "", name: L10n.string("livetv_epg_provider", fallback: "Provider's guide"),
-                url: url, shiftMinutes: 0))
-        }
+        // Added guides first: they win a tie (as on Android). The same link
+        // twice (a playlist naming its login's xmltv.php) is read once.
+        var seenLinks = Set<String>()
+        let feeds = (extra + builtIn).filter { seenLinks.insert($0.url.absoluteString).inserted }
         let fingerprint = LiveTVEPGSourceRules.fingerprint(feeds)
         let db = openDatabase()
         if !force, let db, db.meta("version") == Self.formatVersion, db.meta("sources") == fingerprint,
@@ -310,19 +308,17 @@ final class LiveTVGuide: ObservableObject {
     /// last import, the guides as set now. `reuseDownloads`: read the files
     /// kept from last time instead of downloading.
     func refreshAgain(force: Bool, reuseDownloads: Bool = false) {
-        guard let account = XtreamAccountStore.load(),
-              let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
-        let password = XtreamAccountStore.password(for: account)
+        guard let url = Self.channelsURL(scope: ProfileSettings.activeProfileScope) else { return }
+        let builtIn = Self.builtInFeeds()
         Task {
             let channels = await Task.detached(priority: .utility) {
                 (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([LiveTVEPGChannelRef].self, from: $0) } ?? []
             }.value
             guard !channels.isEmpty else { return }
-            let sources = LiveTVEPGSources.shared
             refreshIfNeeded(
-                account: account, password: password, channels: channels,
-                overrides: LiveTVEPGOverrides.load(), extra: sources.feeds(),
-                providerGuide: sources.providerGuide, force: force, reuseDownloads: reuseDownloads)
+                builtIn: builtIn, channels: channels,
+                overrides: LiveTVEPGOverrides.load(), extra: LiveTVEPGSources.shared.feeds(),
+                force: force, reuseDownloads: reuseDownloads)
         }
     }
 
@@ -339,6 +335,80 @@ final class LiveTVGuide: ObservableObject {
         links[streamID] = choice.isEmpty ? nil : choice
         NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
         return true
+    }
+
+    /// A choice from Assign EPG whose programmes weren't kept: only that
+    /// guide channel is read from its guide's kept file (not every guide
+    /// again). False when that can't be done (no file): then a full read.
+    func addChannel(streamID: Int, choice: String) async -> Bool {
+        let key = choice.lowercased()
+        guard refreshTask == nil, !key.isEmpty else { return false }
+        let id = LiveTVEPGSourceRules.guideID(fromKey: key)
+        let sourceID = key == id ? "" : String(key.dropLast(id.count + 1))
+        let scope = self.scope ?? ProfileSettings.activeProfileScope
+        var seen = Set<String>()
+        let feeds = (LiveTVEPGSources.shared.feeds() + Self.builtInFeeds()).filter { seen.insert($0.url.absoluteString).inserted }
+        guard let feed = feeds.first(where: { $0.sourceID.lowercased() == sourceID }),
+              let file = Self.feedURL(feed, scope: scope), FileManager.default.fileExists(atPath: file.path),
+              let url = Self.databaseURL(scope: scope) else { return false }
+        let before = status
+        status = .importing(programmes: 0)
+        let now = Date().timeIntervalSince1970
+        let count = await Task.detached(priority: .userInitiated) { () -> Int? in
+            guard let stream = InputStream(url: file),
+                  let writer = GuideDatabase(url: url, readOnly: false),
+                  let inserter = GuideDatabase.Inserter(database: writer) else { return nil }
+            let delegate = OneChannelParser(
+                id: id, shift: Int64(feed.shiftMinutes) * 60,
+                from: Int64(now - LiveTVGuide.pastWindow), to: Int64(now + LiveTVGuide.futureWindow))
+            let parser = XMLParser(stream: stream)
+            parser.delegate = delegate
+            parser.shouldResolveExternalEntities = false
+            parser.parse()
+            writer.execute("BEGIN")
+            writer.execute("DELETE FROM programmes WHERE ch = '\(key.replacingOccurrences(of: "'", with: "''"))'")
+            for programme in delegate.programmes {
+                inserter.insert(channel: key, start: programme.start, stop: programme.stop,
+                                title: programme.title, descr: programme.descr)
+            }
+            writer.setLink(stream: streamID, key: key)
+            writer.execute("COMMIT")
+            return delegate.programmes.count
+        }.value
+        status = before
+        guard let count else { return false }
+        links[streamID] = key
+        NotificationCenter.default.post(name: Self.updatedNotification, object: nil)
+        return count >= 0
+    }
+
+    /// The guide id of a source's own guide in results and guide keys: the
+    /// first source keeps the provider guide's "" (step 13a).
+    nonisolated static func builtInID(_ source: LiveTVSource) -> String {
+        source.slot == 0 ? "" : "builtin:" + source.id
+    }
+
+    /// Every source's own guide that's on, in your order of the sources.
+    static func builtInFeeds() -> [LiveTVGuideFeed] {
+        // By slot, not your order: moving a source doesn't read the guides again.
+        let sources = LiveTVSourceStore.shared.enabled.sorted { $0.slot < $1.slot }
+        return sources.flatMap { source -> [LiveTVGuideFeed] in
+            guard source.builtInGuide else { return [] }
+            let name = sources.count > 1
+                ? source.displayName
+                : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
+            if let account = source.xtream {
+                guard let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return [] }
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
+            }
+            // M3U (step 13b): every guide linked in the playlist.
+            return LiveTVStore.shared.guideLinks(sourceID: source.id).enumerated().compactMap { index, link in
+                guard let url = URL(string: link) else { return nil }
+                return LiveTVGuideFeed(
+                    sourceID: builtInID(source) + (index == 0 ? "" : "#\(index + 1)"),
+                    name: name, url: url, shiftMinutes: 0, slot: source.slot)
+            }
+        }
     }
 
     nonisolated static func xmltvURL(account: XtreamAccount, password: String) -> URL? {
@@ -854,6 +924,73 @@ private final class GuideImportState {
 
 /// SAX handler for `<programme start stop channel><title/><desc/></programme>`,
 /// one per guide file.
+/// One guide channel's programmes from a guide file (Assign EPG).
+private final class OneChannelParser: NSObject, XMLParserDelegate {
+    private let id: String
+    private let shift: Int64
+    private let from: Int64
+    private let to: Int64
+    private(set) var programmes: [(start: Int64, stop: Int64, title: String, descr: String?)] = []
+    private var current: (start: Int64, stop: Int64)?
+    private var element: String?
+    private var title = ""
+    private var descr = ""
+
+    init(id: String, shift: Int64, from: Int64, to: Int64) {
+        self.id = id
+        self.shift = shift
+        self.from = from
+        self.to = to
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                qualifiedName qName: String?, attributes: [String: String] = [:]) {
+        switch elementName {
+        case "programme":
+            guard attributes["channel"]?.trimmingCharacters(in: .whitespaces).lowercased() == id,
+                  let start = attributes["start"].flatMap(XMLTVParserDelegate.parseTime).map({ $0 + shift }),
+                  let stop = attributes["stop"].flatMap(XMLTVParserDelegate.parseTime).map({ $0 + shift }),
+                  stop > from, start < to, stop > start else {
+                current = nil
+                return
+            }
+            current = (start, stop)
+            title = ""
+            descr = ""
+        case "title", "desc":
+            element = current == nil ? nil : elementName
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        switch element {
+        case "title": if title.count < 300 { title += string }
+        case "desc": if descr.count < 2000 { descr += string }
+        default: break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        switch elementName {
+        case "title", "desc":
+            element = nil
+        case "programme":
+            if let current {
+                let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanDescr = descr.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanTitle.isEmpty {
+                    programmes.append((current.start, current.stop, cleanTitle, cleanDescr.isEmpty ? nil : cleanDescr))
+                }
+            }
+            current = nil
+        default:
+            break
+        }
+    }
+}
+
 private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
     struct Programme {
         let channel: String
@@ -942,7 +1079,7 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
             // A guide without a <channel> list: only the id to go by.
             addChannel(id, name: id)
         }
-        let keep = state.picker.saw(key: key(id), id: id, names: names, guide: guide)
+        let keep = state.picker.saw(key: key(id), id: id, names: names, guide: guide, slot: feed.slot)
         decided[id] = keep
         return keep
     }
