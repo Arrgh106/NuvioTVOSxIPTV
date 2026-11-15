@@ -6,7 +6,7 @@ Legend: ✅ done · 🧪 built, not tested on a device yet · 🚧 in progress �
 
 ## In progress
 
-- ⏭ **Live TV, step 13e: Stalker / Ministra portals** (see below).
+- 🚧 **Live TV, step 13e: Stalker / Ministra portals** (see below).
 
 ## Next: Live TV guide, step by step
 
@@ -46,7 +46,8 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - ✅ 13b: M3U playlists (Settings → Sources → *Add M3U Playlist*; Live TV with no source has a *Set Up Sources* button that goes there, as Jellyfin is set up in Settings; link in the Keychain, optional user agent; read one after another with the logins, counted while it comes in): tvg-id, tvg-name, tvg-logo, group-title, tvg-chno, headers (#EXTVLCOPT, #EXTHTTP, url|User-Agent=), the guide linked in the playlist (x-tvg-url); movie and series entries left out, as on Android.
    - ✅ 13c: VOD from every Xtream login with *Include Movies & Series* on: one catalogue (each login read in turn, the others kept when one fails; a login removed or with VOD off leaves at once), duplicates merged across logins, versions show the login's name, playing and details ask the login the title is from. The index of the first login is kept. A list that comes back the same as last time (Update Now, the daily read) isn't saved again.
    - 🧪 13d: catch-up for M3U (no playlist with catch-up to test with yet), as Android's: catchup / catchup-type, catchup-source, catchup-days (tvg-rec, timeshift), catchup-correction, from the entry or the #EXTM3U line; default and append (templates with {utc}, {utcend}, {lutc}, {duration}, {offset}, {utc:Y-m-d H:M:S}, {Y}{m}{d}{H}{M}{S}), shift (utc / lutc), flussonic, xc; links that look like an Xtream server's get its forms tried in turn.
-   - ⏭ 13e: Stalker / Ministra portals (portal URL and MAC address).
+   - 🧪 13e: Stalker / Ministra portals, live channels and guide, as Android's: Settings → Sources → *Add Stalker Portal* (portal address, MAC address; a login and device ids only where the provider gives them; all in the Keychain). Sign-in checked on Save (handshake, profile, `do_auth` where the portal asks; a dropped token is renewed once; the MAC goes only to the portal's own server). Genres and channels (`get_all_channels`, else page by page); the link to play is asked from the portal when a channel starts (`create_link`). The portal's guide (`get_epg_info`, 3 days) is written as an XMLTV file and read like the others, for its own channels.
+   - ⏭ 13f: Stalker movies, series and catch-up (archive).
 
 ## Noted for later
 
