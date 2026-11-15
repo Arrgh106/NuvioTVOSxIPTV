@@ -27,6 +27,9 @@ struct OnDemandItem: Sendable, Equatable {
     var rating: String? = nil
     /// ISO 639-1 code from the name's or the category's tag (step 12c).
     var language: String? = nil
+    /// Stalker (step 13f): what plays it on the portal
+    /// (`LiveTVStalkerWire.VODRef`, as JSON); nil for Xtream.
+    var play: String? = nil
 
     /// The same title with the app's ids for a login's slot (step 13c,
     /// `LiveTVSourceIDs`); slot 0 keeps the provider's.
@@ -39,6 +42,7 @@ struct OnDemandItem: Sendable, Equatable {
         copy.added = added
         copy.rating = rating
         copy.language = language
+        copy.play = play
         return copy
     }
 }

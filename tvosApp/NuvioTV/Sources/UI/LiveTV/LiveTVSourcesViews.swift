@@ -512,6 +512,7 @@ struct LiveTVStalkerEditor: View {
     @State private var config: LiveTVStalkerConfig
     @State private var enabled: Bool
     @State private var builtInGuide: Bool
+    @State private var importVOD: Bool
     @State private var isSaving = false
     @State private var errorMessage: String?
 
@@ -524,6 +525,7 @@ struct LiveTVStalkerEditor: View {
             ?? LiveTVStalkerConfig(portal: "", mac: "", timezone: TimeZone.current.identifier))
         _enabled = State(initialValue: source.enabled)
         _builtInGuide = State(initialValue: source.builtInGuide)
+        _importVOD = State(initialValue: source.readsVOD)
     }
 
     var body: some View {
@@ -642,6 +644,12 @@ struct LiveTVStalkerEditor: View {
                             isOn: $builtInGuide,
                             accentColor: accentColor
                         )
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_import_vod", fallback: "Include Movies & Series (VOD)"),
+                            subtitle: L10n.string("livetv_source_import_vod_detail", fallback: "Read the provider's movies and series at start, for the VOD page, Home and stream lists. Off: live channels only"),
+                            isOn: $importVOD,
+                            accentColor: accentColor
+                        )
                     }
 
                     HStack(spacing: 24) {
@@ -693,6 +701,7 @@ struct LiveTVStalkerEditor: View {
         source.name = name.trimmed
         source.enabled = enabled
         source.builtInGuide = builtInGuide
+        source.importVOD = importVOD
         source.portal = cleaned.portal
         let changed = target.isNew || LiveTVStalker.config(for: source.id) != cleaned
         let secret = LiveTVStalker.encoded(cleaned)

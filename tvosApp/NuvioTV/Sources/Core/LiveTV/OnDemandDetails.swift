@@ -87,9 +87,14 @@ enum OnDemandDetails {
               let item = database.item(kind: parsed.kind, id: parsed.id),
               !OnDemandBrowse.isHidden(item, categoryName: database.categoryNames(parsed.kind)[item.categoryID] ?? ""),
               let route = OnDemandSources.route(parsed.id, in: OnDemandSources.routes()) else { return nil }
+        if let stalker = route.stalker {
+            return await stalkerMeta(contentID: contentID, item: item, kind: parsed.kind, client: stalker,
+                                     name: OnDemandTitle.searchName(item.name, tags: database.tags(parsed.kind)))
+        }
+        guard let client = route.xtream else { return nil }
         // The login the title is from, with its own id (step 13c).
         let info = await self.info(
-            contentID: contentID, kind: parsed.kind, id: OnDemandSources.raw(parsed.id), client: route.client)
+            contentID: contentID, kind: parsed.kind, id: OnDemandSources.raw(parsed.id), client: client)
         let details = info?["info"] as? [String: Any] ?? [:]
         func text(_ keys: String...) -> String? {
             for key in keys {
@@ -140,6 +145,58 @@ enum OnDemandDetails {
             certification: nil,
             country: nil,
             released: text("releasedate", "releaseDate"),
+            status: nil,
+            videos: videos,
+            trailerYtIds: nil,
+            externalRatings: nil
+        )
+    }
+
+    /// A Stalker title (step 13f): the list's plot and picture; a series'
+    /// seasons and episodes from the portal.
+    private static func stalkerMeta(
+        contentID: String, item: OnDemandItem, kind: OnDemandKind, client: LiveTVStalkerClient, name: String
+    ) async -> NuvioMeta? {
+        let ref = LiveTVStalkerWire.VODRef.decode(item.play)
+        var videos: [NuvioVideo]?
+        if kind == .series, let ref {
+            let list = (try? await client.episodes(of: ref, title: item.name)) ?? []
+            videos = list.map { entry in
+                NuvioVideo(
+                    id: OnDemandID.episode(seriesID: item.id, season: entry.season, episode: entry.episode),
+                    title: entry.item.title.isEmpty
+                        ? L10n.format("livetv_ondemand_episode_format", fallback: "Episode %d", entry.episode)
+                        : entry.item.title,
+                    season: entry.season,
+                    episode: entry.episode,
+                    thumbnail: entry.item.poster,
+                    overview: entry.item.plot,
+                    released: nil,
+                    rating: nil
+                )
+            }
+        }
+        return NuvioMeta(
+            id: contentID,
+            name: name.isEmpty ? item.name : name,
+            description: ref?.plot,
+            posterUrl: item.icon,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: nil,
+            tmdbId: item.tmdb,
+            type: kind == .series ? "series" : "movie",
+            year: item.year,
+            genres: nil,
+            rating: item.rating.flatMap(Double.init),
+            releaseInfo: item.year.map(String.init),
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
             status: nil,
             videos: videos,
             trailerYtIds: nil,

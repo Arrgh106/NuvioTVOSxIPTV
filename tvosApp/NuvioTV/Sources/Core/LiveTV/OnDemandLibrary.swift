@@ -134,8 +134,10 @@ final class OnDemandLibrary: ObservableObject {
             var errors: [String] = []
             var attempts = 0
             for (position, login) in logins.enumerated() where dueIDs.contains(login.id) {
-              guard let client = routes[login.slot]?.client else { continue }
+              guard let route = routes[login.slot] else { continue }
               var loginFailed = false
+              // Stalker (step 13f): movies and series come in one read.
+              var stalkerCatalog: OnDemandStalker.Catalog?
               // The login's name with several (step 13c).
               let named = logins.count > 1 ? " \u{00B7} " + login.displayName : ""
               for kind in OnDemandKind.allCases {
@@ -150,6 +152,38 @@ final class OnDemandLibrary: ObservableObject {
                     : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")) + named
                 self?.status = .importing(loading, fraction: nil)
                 do {
+                    let slot = login.slot
+                    let hashKey = "hash.s\(slot).\(kind.rawValue)"
+                    if let stalker = route.stalker {
+                        if stalkerCatalog == nil {
+                            let raw = try await stalker.vodCatalog { titles in
+                                Task { @MainActor in
+                                    guard let self, self.importTask != nil, titles > 0 else { return }
+                                    self.status = .importing(Self.progressText(loading, titles), fraction: nil)
+                                }
+                            }
+                            stalkerCatalog = OnDemandStalker.Catalog(
+                                movies: raw.movies, movieCategories: raw.movieCategories,
+                                series: raw.series, seriesCategories: raw.seriesCategories)
+                        }
+                        guard let catalog = stalkerCatalog else { continue }
+                        let part = kind == .movie ? catalog.movies : catalog.series
+                        let categories = kind == .movie ? catalog.movieCategories : catalog.seriesCategories
+                        let hash = Self.digest(OnDemandStalker.digestData(part), categories: categories, position: position)
+                        if database.meta(hashKey) == hash { continue }
+                        self?.status = .importing(saving, fraction: nil)
+                        await Task.detached(priority: .utility) {
+                            let list = OnDemandStalker.items(part, kind: kind)
+                            let items = slot == 0 ? list.items : list.items.map { $0.inSource(slot: slot) }
+                            let shownCategories = slot == 0 ? categories : categories.map { $0.inSource(slot: slot) }
+                            database.replace(
+                                kind: kind, slot: slot, position: position, items: items, categories: shownCategories,
+                                tags: list.tags)
+                        }.value
+                        database.setMeta(hashKey, hash)
+                        continue
+                    }
+                    guard let client = route.xtream else { continue }
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
                     let data = try await client.onDemandList(kind) { titles in
                         Task { @MainActor in
@@ -157,9 +191,7 @@ final class OnDemandLibrary: ObservableObject {
                             self.status = .importing(Self.progressText(loading, titles), fraction: nil)
                         }
                     }
-                    let slot = login.slot
                     // The same list as last time: nothing to save again.
-                    let hashKey = "hash.s\(slot).\(kind.rawValue)"
                     let hash = Self.digest(data, categories: categories, position: position)
                     if database.meta(hashKey) == hash { continue }
                     let saved = await Task.detached(priority: .utility) { () -> Int? in
@@ -253,8 +285,9 @@ final class OnDemandDatabase: @unchecked Sendable {
     private let lock = NSLock()
     /// 2: pictures, dates, ratings and category order for the VOD
     /// page and Home row (step 12b).
-    /// 3: languages (12c). 4: the Nordic group.
-    private static let schemaVersion: Int32 = 4
+    /// 3: languages (12c). 4: the Nordic group. 5: Stalker's play column
+    /// (13f; added to a version 4 table, the lists stay).
+    private static let schemaVersion: Int32 = 5
 
     init?(url: URL) {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
@@ -268,7 +301,9 @@ final class OnDemandDatabase: @unchecked Sendable {
             version = sqlite3_column_int(statement, 0)
         }
         sqlite3_finalize(statement)
-        if version < Self.schemaVersion {
+        if version == 4 {
+            sqlite3_exec(db, "ALTER TABLE items ADD COLUMN play TEXT", nil, nil, nil)
+        } else if version < Self.schemaVersion {
             // An older layout: read the lists again.
             sqlite3_exec(db, "DROP TABLE IF EXISTS items; DROP TABLE IF EXISTS categories; DROP TABLE IF EXISTS meta;", nil, nil, nil)
         }
@@ -277,7 +312,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             PRAGMA synchronous = NORMAL;
             CREATE TABLE IF NOT EXISTS items (kind TEXT NOT NULL, id INTEGER NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL,
                 cat TEXT NOT NULL, ext TEXT, tmdb INTEGER, year INTEGER, icon TEXT, added INTEGER, rating TEXT, lang TEXT,
-                PRIMARY KEY (kind, id));
+                play TEXT, PRIMARY KEY (kind, id));
             CREATE INDEX IF NOT EXISTS items_key ON items (kind, key);
             CREATE INDEX IF NOT EXISTS items_tmdb ON items (kind, tmdb);
             CREATE INDEX IF NOT EXISTS items_cat ON items (kind, cat);
@@ -331,7 +366,7 @@ final class OnDemandDatabase: @unchecked Sendable {
         sqlite3_exec(db, "DELETE FROM items WHERE kind = '\(kind.rawValue)' AND (id >> 32) = \(slot)", nil, nil, nil)
         sqlite3_exec(db, "DELETE FROM categories WHERE kind = '\(kind.rawValue)' AND \(Self.categorySlot(slot))", nil, nil, nil)
         var statement: OpaquePointer?
-        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang, play) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         // The language (step 12c): from the name's tag, else the category.
         let categoryNames = Dictionary(categories.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -350,6 +385,7 @@ final class OnDemandDatabase: @unchecked Sendable {
                 bind(statement, 10, item.added)
                 bind(statement, 11, item.rating)
                 bind(statement, 12, OnDemandLanguage.code(name: item.name, category: categoryNames[item.categoryID]))
+                bind(statement, 13, item.play)
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
@@ -425,7 +461,7 @@ final class OnDemandDatabase: @unchecked Sendable {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
-    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang"
+    private static let itemColumns = "kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang, play"
 
     /// Copies that could be the title: same TMDB id or same match key.
     func candidates(kind: OnDemandKind, tmdb: Int?, key: String) -> [OnDemandItem] {
@@ -535,7 +571,7 @@ final class OnDemandDatabase: @unchecked Sendable {
             out.append(OnDemandItem(
                 kind: kind, id: number(1) ?? 0, name: text(2) ?? "", key: text(3) ?? "",
                 categoryID: text(4) ?? "", ext: text(5), tmdb: number(6), year: number(7),
-                icon: text(8), added: number(9), rating: text(10), language: text(11)))
+                icon: text(8), added: number(9), rating: text(10), language: text(11), play: text(12)))
         }
         return out
     }

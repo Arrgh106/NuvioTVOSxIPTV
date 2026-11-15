@@ -317,7 +317,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
     /// (on unless turned off), with a provider login.
     static var isOnDemandEnabled: Bool {
         (ProfileSettings.current.object(forKey: SettingsKey.showOnDemandTab) as? Bool ?? true)
-            && XtreamAccountStore.load() != nil
+            && OnDemandSources.hasAny
     }
 
     /// Fork: Settings → Appearance → Sidebar → Jellyfin (shown once a
@@ -4788,7 +4788,7 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
     @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
     @ObservedObject private var jellyfinServers = JellyfinServerStore.shared
-    private var showsOnDemandTab: Bool { showOnDemandTab && XtreamAccountStore.load() != nil }
+    private var showsOnDemandTab: Bool { showOnDemandTab && OnDemandSources.hasAny }
     private var showsJellyfinTab: Bool { showJellyfinTab && !jellyfinServers.servers.isEmpty }
     @AppStorage(SettingsKey.showSurpriseMeTab) private var showSurpriseMeTab = false
     @AppStorage(SettingsKey.useTopNavigation) private var useTopNavigation = false
