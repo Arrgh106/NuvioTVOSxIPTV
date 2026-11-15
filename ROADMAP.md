@@ -6,7 +6,8 @@ Legend: ✅ done · 🧪 built, not tested on a device yet · 🚧 in progress �
 
 ## In progress
 
-- 🧪 **Live TV, step 13: sources** done in the code; Stalker (13e, 13f) and M3U catch-up (13d) wait for a portal / playlist to test with. Next step to plan: 14.
+- 🧪 **Live TV, step 14: time-shift** (see below), waiting for a test on the Apple TV.
+- 🧪 Step 13 (sources) is done in the code; Stalker (13e, 13f) and M3U catch-up (13d) wait for a portal / playlist to test with.
 
 ## Next: Live TV guide, step by step
 
@@ -49,7 +50,23 @@ Design concept and plan: [LIVE_TV_DESIGN.md](./LIVE_TV_DESIGN.md) (based on Nuvi
    - 🧪 13e: Stalker / Ministra portals, live channels and guide, as Android's: Settings → Sources → *Add Stalker Portal* (portal address, MAC address; a login and device ids only where the provider gives them; all in the Keychain). Sign-in checked on Save (handshake, profile, `do_auth` where the portal asks; a dropped token is renewed once; the MAC goes only to the portal's own server). Genres and channels (`get_all_channels`, else page by page); the link to play is asked from the portal when a channel starts (`create_link`). The portal's guide (`get_epg_info`, 3 days) is written as an XMLTV file and read like the others, for its own channels.
    - 🧪 13f: Stalker movies, series and catch-up, as Android's. *Include Movies & Series* on the portal's form too. Movies from the portal's movie list, series from its own series list (where there is one) and the series inside the movie list; categories with "Other" for titles in none. They join the VOD index (page, Home, search, stream lists, versions) as the Xtream logins' do; what plays a title is kept with it (the portal's id and command, never a link). Playing asks the portal for the link (`create_link`; a movie kept as one file is looked up first; several files: not played, as Android). Series: seasons and episodes from the portal (an older portal's episode numbers in the list, or seasons and episodes in the movie list). Catch-up: channels with the portal's archive (`tv_archive`, days) get ↺ and Watch from the beginning; a past show is found in that day's archive guide (`get_simple_data_table`, the show starting within five minutes of the guide's time) and played from the archive (`tv_archive` link). The VOD index gets a column for that (no reread). Also: the Live TV Home row, the VOD page and search show with any source, not only with an Xtream login that reads VOD.
 
+## After that: from Nuvio + IPTV 1.2.0 for Android
+
+The order agreed on (one pull request per step, as before):
+
+14. 🧪 **Time-shift**: pause and rewind live TV on every channel, as Android's *Pause and Rewind Live TV* (with its *Rewind Anytime*). Built on the player engine's own DVR window (AetherEngine keeps the channel playing from the same connection, no second one; at most a quarter of the free space): Play/Pause pauses, Play/Pause again asks *Continue watching* or *Back to live*; behind live, ◀ / ▶ skip 10 s back and 30 s on (on past live is live) and the info bar shows *TIME-SHIFT* and how far behind. Back to live jumps to the live edge without loading the channel again. Settings → Live TV / VOD → Playback: *Pause and Rewind Live TV* (on), *Keep Up To* 10 min, 30 min, 1 h or 2 h. Gone when the channel changes or Live TV closes. Not on the MPV fallback.
+15. ⏭ **Multiview**: up to four channels at once, layouts to pick from (1, 2 side by side or stacked, three ways for 3, 2 × 2 or one big and three), sound on the pane in focus, a pane that drops reconnects or moves to a backup copy of the channel. Starts with two panes; how many the Apple TV 4K (1st gen) plays without stutter decides the rest (and many providers allow only one or two connections).
+16. ⏭ **Calendar**: month, week and list views, *Airing today*, *Following*, filters (shows, movies, sports, *On my TV*), on Nuvio's calendar.
+17. ⏭ **Sports hub**, in steps: live scores and game info, standings, league channels, teams you follow, score and full-time alerts, games on the channels that show them, sports in the calendar.
+18. ⏭ **Seek thumbnails**: Nuvio's film player has them already (Settings → Playback); to add for catch-up and rewound live TV in Live TV's bar (the engine decodes them from what it holds, `liveScrubThumbnail`), only if they don't make playback stutter on the 1st gen Apple TV 4K.
+
+Small things from 1.2.0 to take along on the way: Back from the guide returns to the channel playing full screen (TiviMate), two-line channel names, *Select all* / *Clear* in the group managers, guide time shifts up to ±24 hours.
+
 ## Noted for later
+
+- 💡 **Recordings** (Android 1.2.0: until stopped, until the show ends, until a set time, series): tvOS doesn't record in the background or in standby, so at most while the app is open. The player engine can record the channel playing over its own connection (`startRecording`), which makes that part simpler.
+- 💡 **Sync across devices** (Android's setup sync): only useful with several Apple TVs.
+- Not needed on Apple TV: adding sources from the phone by QR code (the iPhone / iPad keyboard already types into every field).
 
 - 💡 **German translations** for all texts (Live TV, account sync, calendar, Usenet, player, ...). Prepared, not applied: English first so the app works for everyone.
 - 💡 Groups column that narrows while the guide has focus (planned for step 2, left out so the focus flow stays as tested); more rows by a slimmer Live TV header.

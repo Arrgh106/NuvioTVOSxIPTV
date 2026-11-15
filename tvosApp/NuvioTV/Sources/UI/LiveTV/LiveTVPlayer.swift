@@ -194,7 +194,7 @@ final class LiveTVPlayer: ObservableObject {
     }
 
     private func load(_ channel: XtreamLiveChannel, url: URL, headers: [String: String], live: Bool) {
-        session.load(PlaybackLoadRequest(
+        var request = PlaybackLoadRequest(
             videoURL: url,
             httpHeaders: headers,
             // A preview must not switch the TV's display mode.
@@ -205,7 +205,13 @@ final class LiveTVPlayer: ObservableObject {
             filename: channel.name,
             nowPlayingTitle: replay?.title ?? channel.name,
             nowPlayingSubtitle: replay == nil ? nil : channel.name
-        ))
+        )
+        // Time-shift (step 14): the engine keeps the channel for a while,
+        // from the same connection.
+        let settings = LiveTVSettings.shared
+        if live, settings.timeshift { request.liveDVRWindowSeconds = Double(settings.timeshiftMinutes * 60) }
+        behindLive = 0
+        session.load(request)
         PlaybackWakeLock.acquire(ownerID: session.wakeLockOwnerID)
         startWatching()
     }
@@ -311,6 +317,30 @@ final class LiveTVPlayer: ObservableObject {
 
     var isPaused: Bool { !session.activeEngine.isPlayerPlaying }
 
+    // MARK: Time-shift (step 14)
+
+    /// Seconds behind live on a live channel (paused or rewound); 0 at live.
+    @Published private(set) var behindLive: Double = 0
+
+    /// Live, and kept far enough back to rewind (or already behind).
+    var isTimeShifted: Bool { replay == nil && behindLive >= 3 }
+
+    /// What the engine keeps of the channel playing: how far back it can
+    /// go and where it is. nil without time-shift (or on the MPV fallback).
+    private var liveWindow: (range: ClosedRange<Double>, now: Double)? {
+        guard replay == nil, LiveTVSettings.shared.timeshift,
+              session.activeBackend == .aether, let controller = session.aetherController,
+              let range = controller.liveRewindRange else { return nil }
+        return (range, controller.liveTime)
+    }
+
+    /// Twice a second while something plays: cheap reads.
+    private func updateBehindLive() {
+        let behind = liveWindow.map { max(0, $0.range.upperBound - $0.now) } ?? 0
+        // Whole seconds only: every publish redraws the bar.
+        if abs(behind - behindLive) >= 1 || (behind == 0) != (behindLive == 0) { behindLive = behind.rounded() }
+    }
+
     /// Play/Pause pauses and plays on. Live that's all; a replay paused
     /// asks: continue it, or back to the live feed?
     func togglePause() {
@@ -322,7 +352,9 @@ final class LiveTVPlayer: ObservableObject {
         let engine = session.activeEngine
         if engine.isPlayerPlaying {
             engine.pausePlayback()
-        } else if replay != nil {
+        } else if replay != nil || isTimeShifted {
+            // Behind live (a replay, or a channel paused or rewound):
+            // continue, or back to live?
             resumeChoice = true
             return
         } else {
@@ -338,11 +370,17 @@ final class LiveTVPlayer: ObservableObject {
         showBar(.compact)
     }
 
-    /// The choice: the channel's live feed.
+    /// The choice: the channel's live feed (time-shifted: the same
+    /// stream at its live edge, nothing loaded again).
     func backToLive() {
         resumeChoice = false
         guard let channel else { return }
-        startChannel(channel)
+        if replay == nil, let controller = session.aetherController, session.activeBackend == .aether {
+            controller.goLive()
+            behindLive = 0
+        } else {
+            startChannel(channel)
+        }
         showBar(.compact)
     }
 
@@ -351,9 +389,22 @@ final class LiveTVPlayer: ObservableObject {
         resumeChoice = false
     }
 
-    /// Left / Right in a replay: back 10 s, on 30 s.
+    /// Left / Right in a replay (or behind live): back 10 s, on 30 s.
     func skip(by seconds: Double) {
-        guard replay != nil else { return }
+        if replay == nil {
+            // Time-shift: within what's kept; on past live is live.
+            guard let window = liveWindow, let controller = session.aetherController else { return }
+            let target = window.now + seconds
+            if target >= window.range.upperBound - 3 {
+                controller.goLive()
+                behindLive = 0
+            } else {
+                controller.seekLive(to: max(window.range.lowerBound, target))
+                behindLive = max(0, window.range.upperBound - target).rounded()
+            }
+            showBar(.compact)
+            return
+        }
         let engine = session.activeEngine
         let duration = engine.durationMs
         var target = engine.positionMs + Int64(seconds * 1000)
@@ -449,6 +500,7 @@ final class LiveTVPlayer: ObservableObject {
 
     private func check() {
         guard channel != nil else { return }
+        if replay == nil, status == .playing { updateBehindLive() }
         // Still following a replay link: the last answer isn't this one's.
         if resolving != nil { return }
         // A replay given up on: written once, not again every tick.
@@ -727,8 +779,9 @@ struct LiveTVFullscreenControls: View {
             overlay.move(direction)
             return
         }
-        // A replay: Left / Right skip back and on (Up / Down: live channels).
-        if player.replay != nil, player.bar != .expanded {
+        // A replay, or a channel behind live (time-shift, step 14): Left /
+        // Right skip back and on (Up / Down: live channels).
+        if player.replay != nil || player.isTimeShifted, player.bar != .expanded {
             switch direction {
             case .left: player.skip(by: -10); return
             case .right: player.skip(by: 30); return
@@ -769,6 +822,12 @@ struct LiveTVResumeChoice: View {
     var body: some View {
         if player.resumeChoice {
             VStack(spacing: 28) {
+                if player.replay == nil, player.isTimeShifted {
+                    Text(L10n.format("livetv_timeshift_behind_format", fallback: "%@ behind live",
+                                     LiveTVPlayerBar.duration(player.behindLive)))
+                        .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
+                        .foregroundColor(LiveTVTheme.primaryText)
+                }
                 if let show = player.replay {
                     Text(show.title)
                         .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))

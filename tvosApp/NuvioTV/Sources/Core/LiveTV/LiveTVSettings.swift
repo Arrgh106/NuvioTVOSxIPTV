@@ -41,6 +41,14 @@ final class LiveTVSettings: ObservableObject {
     @Published var rememberLastGroup = true { didSet { save(rememberLastGroup, Key.rememberLastGroup) } }
     @Published var infoBarOnZap = true { didSet { save(infoBarOnZap, Key.infoBarOnZap) } }
     @Published var reverseZap = false { didSet { save(reverseZap, Key.reverseZap) } }
+    /// Pause and rewind live TV (step 14, Android's "Pause and Rewind Live
+    /// TV"): the channel playing is kept on the Apple TV for a while.
+    @Published var timeshift = true { didSet { save(timeshift, Key.timeshift) } }
+    /// How far back, in minutes (Android's "Keep Up To").
+    @Published var timeshiftMinutes = 30 {
+        didSet { if !loading { ProfileSettings.current.set(timeshiftMinutes, forKey: Key.timeshiftMinutes) } }
+    }
+    static let timeshiftChoices = [10, 30, 60, 120]
 
     // Integration
     @Published var homeRow = true { didSet { save(homeRow, Key.homeRow) } }
@@ -65,6 +73,8 @@ final class LiveTVSettings: ObservableObject {
         static let rememberLastGroup = prefix + "rememberLastGroup"
         static let infoBarOnZap = prefix + "infoBarOnZap"
         static let reverseZap = prefix + "reverseZap"
+        static let timeshift = prefix + "timeshift"
+        static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
         static let homeRowSource = prefix + "homeRowSource"
     }
@@ -111,6 +121,10 @@ final class LiveTVSettings: ObservableObject {
         assign(\.rememberLastGroup, bool(Key.rememberLastGroup, true))
         assign(\.infoBarOnZap, bool(Key.infoBarOnZap, true))
         assign(\.reverseZap, bool(Key.reverseZap, false))
+        assign(\.timeshift, bool(Key.timeshift, true))
+        let minutes = store.integer(forKey: Key.timeshiftMinutes)
+        let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30
+        if keep != timeshiftMinutes { timeshiftMinutes = keep }
         assign(\.homeRow, bool(Key.homeRow, true))
         let source = store.string(forKey: Key.homeRowSource).flatMap(HomeRowSource.init(rawValue:)) ?? .favorites
         if source != homeRowSource { homeRowSource = source }

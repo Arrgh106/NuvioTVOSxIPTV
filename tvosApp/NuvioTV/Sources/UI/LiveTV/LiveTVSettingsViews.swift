@@ -98,6 +98,28 @@ struct LiveTVSettingsView: View {
                     isOn: $settings.reverseZap,
                     accentColor: accentColor
                 )
+                LiveTVSettingsRows.toggle(
+                    title: L10n.string("livetv_settings_timeshift", fallback: "Pause and Rewind Live TV"),
+                    subtitle: L10n.string("livetv_settings_timeshift_detail", fallback: "The channel playing is kept on this Apple TV: Play/Pause pauses it, ◀ / ▶ skip back and on once you're behind live. Deleted when you change channel or leave Live TV"),
+                    isOn: $settings.timeshift,
+                    accentColor: accentColor
+                )
+                LiveTVSettingsRows.option(
+                    title: L10n.string("livetv_settings_timeshift_keep", fallback: "Keep Up To"),
+                    subtitle: L10n.string("livetv_settings_timeshift_keep_detail", fallback: "How far back you can go (at most a quarter of the free space)"),
+                    selection: Binding(
+                        get: { String(settings.timeshiftMinutes) },
+                        set: { settings.timeshiftMinutes = Int($0) ?? 30 }),
+                    options: LiveTVSettings.timeshiftChoices.map(String.init),
+                    accentColor: accentColor,
+                    optionLabel: { minutes in
+                        let value = Int(minutes) ?? 30
+                        return value >= 60
+                            ? L10n.format("livetv_settings_hours_format", fallback: "%d h", value / 60)
+                            : L10n.format("livetv_settings_minutes_format", fallback: "%d min", value)
+                    }
+                )
+                .disabled(!settings.timeshift)
             }
 
             LiveTVSettingsRows.group(

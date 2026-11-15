@@ -66,6 +66,9 @@ struct PlaybackLoadRequest: Equatable {
     var startupBenchmarkToken: UUID?
     /// Force sequential origin without byte range seeking (used to recover from origins that fabricate ranges).
     var forceSequentialOrigin: Bool = false
+    /// Fork (Live TV step 14, time-shift): how far back a live channel can
+    /// be paused and rewound (AetherEngine's DVR window). nil: live only.
+    var liveDVRWindowSeconds: Double? = nil
 
     init(
         videoURL: URL,
