@@ -151,12 +151,12 @@ enum LiveTVStalkerWire {
 
     /// `{"js": …}`: what's inside, or why there's nothing usable.
     static func unwrap(_ data: Data) -> Answer {
-        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        if isAuthMessage(text) { return .unauthorised }
+        let body = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if isAuthMessage(body) { return .unauthorised }
         guard let root = (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? [String: Any],
               let js = root["js"] else { return .invalid }
         if let message = js as? String, isAuthMessage(message) { return .unauthorised }
-        if let envelope = js as? [String: Any], let error = text(envelope, "error", "message"), isAuthMessage(error) {
+        if let envelope = js as? [String: Any], let error = Self.text(envelope, "error", "message"), isAuthMessage(error) {
             return .unauthorised
         }
         return .value(js)
