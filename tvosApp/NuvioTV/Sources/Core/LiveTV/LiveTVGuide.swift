@@ -77,6 +77,10 @@ final class LiveTVGuide: ObservableObject {
     private static let rereadAge: TimeInterval = 36 * 3600
     /// A forced refresh asked for while one runs: done right after it.
     private var queued: (force: Bool, reuseDownloads: Bool)?
+    /// The sources changed while a refresh ran (a source turned off during
+    /// a read): done with these once it ends, else the change was lost.
+    private var pending: (builtIn: [LiveTVGuideFeed], channels: [LiveTVEPGChannelRef],
+                          overrides: [Int: String], extra: [LiveTVGuideFeed], reuseDownloads: Bool)?
     private var sourcesObserver: NSObjectProtocol?
 
     private init() {
@@ -135,6 +139,8 @@ final class LiveTVGuide: ObservableObject {
         if refreshTask != nil {
             if force {
                 queued = (true, (queued?.reuseDownloads ?? true) && reuseDownloads)
+            } else {
+                pending = (builtIn, channels, overrides, extra, (pending?.reuseDownloads ?? true) && reuseDownloads)
             }
             return
         }
@@ -173,7 +179,13 @@ final class LiveTVGuide: ObservableObject {
                     self.refreshTask = nil
                     if let again = self.queued {
                         self.queued = nil
+                        self.pending = nil
                         self.refreshAgain(force: again.force, reuseDownloads: again.reuseDownloads)
+                    } else if let next = self.pending {
+                        self.pending = nil
+                        self.refreshIfNeeded(
+                            builtIn: next.builtIn, channels: next.channels, overrides: next.overrides,
+                            extra: next.extra, reuseDownloads: next.reuseDownloads)
                     }
                 }
             }
