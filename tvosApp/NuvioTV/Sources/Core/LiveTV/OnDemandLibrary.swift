@@ -32,6 +32,7 @@ final class OnDemandLibrary: ObservableObject {
     private static let inStreamsKey = "nuvio.tv.livetv.onDemandInStreams"
     private var importTask: Task<Void, Never>?
     private var profileObserver: NSObjectProtocol?
+    private var sourcesObserver: NSObjectProtocol?
     private var scope = ""
     /// Read off the main thread by lookups.
     nonisolated(unsafe) private(set) var database: OnDemandDatabase?
@@ -42,6 +43,13 @@ final class OnDemandLibrary: ObservableObject {
             forName: ProfileSettings.activeProfileChangedNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.load() }
+        }
+        // A login added, removed or with VOD turned on or off (step 13c):
+        // read again when the set changed.
+        sourcesObserver = NotificationCenter.default.addObserver(
+            forName: LiveTVSourceStore.changedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshIfNeeded() }
         }
     }
 
@@ -71,9 +79,10 @@ final class OnDemandLibrary: ObservableObject {
     /// for another login.
     func refreshIfNeeded() {
         // Not while Live TV plays full screen: no work next to the picture.
+        let logins = OnDemandSources.all()
         guard isWanted, importTask == nil, !LiveTVFullscreenState.shared.isActive,
-              let account = XtreamAccountStore.load(), let database else { return }
-        let sameAccount = database.meta("account") == account.id
+              !logins.isEmpty, let database else { return }
+        let sameAccount = database.meta("logins") == OnDemandSources.fingerprint(logins)
         let updated = database.meta("updated").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         let failed = database.meta("failedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         // After a failure: once an hour, not on every title opened.
@@ -92,25 +101,35 @@ final class OnDemandLibrary: ObservableObject {
 
     /// Settings → Live TV → VOD → Update Now, or when due.
     func refresh() {
-        guard importTask == nil, let account = XtreamAccountStore.load(), let database else { return }
-        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
+        let logins = OnDemandSources.all()
+        guard importTask == nil, !logins.isEmpty, let database else { return }
+        let routes = OnDemandSources.routes()
         let profileScope = scope
-        if database.meta("account") != account.id {
+        // Before step 13c one login was read: its index is kept (slot 0).
+        if let old = database.meta("account"), !logins.contains(where: { $0.slot == 0 && $0.id == old }) {
             database.clear()
-            database.setMeta("account", account.id)
         }
+        database.setMeta("account", nil)
+        // Logins removed or with VOD off: their titles go now.
+        database.keepOnly(slots: Set(logins.map(\.slot)))
         status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"), fraction: nil)
         importTask = Task { [weak self] in
             var errors: [String] = []
-            for kind in OnDemandKind.allCases {
+            var attempts = 0
+            for (position, login) in logins.enumerated() {
+              guard let client = routes[login.slot]?.client else { continue }
+              // The login's name with several (step 13c).
+              let named = logins.count > 1 ? " \u{00B7} " + login.displayName : ""
+              for kind in OnDemandKind.allCases {
                 guard !Task.isCancelled else { return }
+                attempts += 1
                 // As Jellyfin's: how many are in, then how many are saved.
-                let loading = kind == .movie
+                let loading = (kind == .movie
                     ? L10n.string("livetv_ondemand_loading_movies", fallback: "Loading movies")
-                    : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")
-                let saving = kind == .movie
+                    : L10n.string("livetv_ondemand_loading_series", fallback: "Loading series")) + named
+                let saving = (kind == .movie
                     ? L10n.string("livetv_ondemand_saving_movies", fallback: "Saving movies")
-                    : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")
+                    : L10n.string("livetv_ondemand_saving_series", fallback: "Saving series")) + named
                 self?.status = .importing(loading, fraction: nil)
                 do {
                     let categories = (try? await (kind == .movie ? client.vodCategories() : client.seriesCategories())) ?? []
@@ -120,10 +139,16 @@ final class OnDemandLibrary: ObservableObject {
                             self.status = .importing(Self.progressText(loading, titles), fraction: nil)
                         }
                     }
+                    let slot = login.slot
                     let saved = await Task.detached(priority: .utility) { () -> Int? in
                         guard let list = OnDemandParse.list(data, kind: kind) else { return nil }
                         let total = list.items.count
-                        database.replace(kind: kind, items: list.items, categories: categories, tags: list.tags) { done in
+                        let items = slot == 0 ? list.items : list.items.map { $0.inSource(slot: slot) }
+                        let shownCategories = slot == 0 ? categories : categories.map { $0.inSource(slot: slot) }
+                        database.replace(
+                            kind: kind, slot: slot, position: position, items: items, categories: shownCategories,
+                            tags: list.tags
+                        ) { done in
                             Task { @MainActor in
                                 guard let self, self.importTask != nil else { return }
                                 self.status = .importing(Self.progressText(saving, done), fraction: nil)
@@ -131,20 +156,22 @@ final class OnDemandLibrary: ObservableObject {
                         }
                         return total
                     }.value
-                    if saved == nil { errors.append(kind == .movie ? "movies" : "series") }
+                    if saved == nil { errors.append((kind == .movie ? "movies" : "series") + named) }
                 } catch {
-                    errors.append(error.localizedDescription)
+                    errors.append(error.localizedDescription + named)
                 }
+              }
             }
             guard !Task.isCancelled, let self, self.scope == profileScope else { return }
             self.importTask = nil
             let now = String(Date().timeIntervalSince1970)
-            if errors.count == OnDemandKind.allCases.count {
+            if errors.count >= attempts {
                 database.setMeta("failedAt", now)
                 self.status = .failed(errors.joined(separator: " · "))
             } else {
                 database.setMeta("updated", now)
                 database.setMeta("failedAt", nil)
+                database.setMeta("logins", OnDemandSources.fingerprint(logins))
                 self.publishCounts()
             }
         }
@@ -252,13 +279,14 @@ final class OnDemandDatabase: @unchecked Sendable {
     /// in one transaction. The tags learned from the list are kept for
     /// cleaning titles later.
     func replace(
-        kind: OnDemandKind, items: [OnDemandItem], categories: [XtreamCategory], tags: Set<String>,
-        progress: ((Int) -> Void)? = nil
+        kind: OnDemandKind, slot: Int = 0, position: Int = 0, items: [OnDemandItem], categories: [XtreamCategory],
+        tags: Set<String>, progress: ((Int) -> Void)? = nil
     ) {
         lock.lock(); defer { lock.unlock() }
         sqlite3_exec(db, "BEGIN", nil, nil, nil)
-        run("DELETE FROM items WHERE kind = ?", kind.rawValue)
-        run("DELETE FROM categories WHERE kind = ?", kind.rawValue)
+        // Only this login's titles go (step 13c: the others stay).
+        sqlite3_exec(db, "DELETE FROM items WHERE kind = '\(kind.rawValue)' AND (id >> 32) = \(slot)", nil, nil, nil)
+        sqlite3_exec(db, "DELETE FROM categories WHERE kind = '\(kind.rawValue)' AND \(Self.categorySlot(slot))", nil, nil, nil)
         var statement: OpaquePointer?
         let sql = "INSERT OR REPLACE INTO items (kind, id, name, key, cat, ext, tmdb, year, icon, added, rating, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         // The language (step 12c): from the name's tag, else the category.
@@ -284,18 +312,19 @@ final class OnDemandDatabase: @unchecked Sendable {
             sqlite3_finalize(statement)
         }
         if sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO categories (kind, id, name, pos) VALUES (?, ?, ?, ?)", -1, &statement, nil) == SQLITE_OK {
-            for (position, category) in categories.enumerated() {
+            for (index, category) in categories.enumerated() {
                 sqlite3_reset(statement)
                 sqlite3_bind_text(statement, 1, kind.rawValue, -1, onDemandTransient)
                 sqlite3_bind_text(statement, 2, category.id, -1, onDemandTransient)
                 sqlite3_bind_text(statement, 3, category.name, -1, onDemandTransient)
-                sqlite3_bind_int64(statement, 4, Int64(position))
+                // The logins in your order, each in its provider's order.
+                sqlite3_bind_int64(statement, 4, Int64(position) * 1_000_000 + Int64(index))
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
         }
         if sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, "tags." + kind.rawValue, -1, onDemandTransient)
+            sqlite3_bind_text(statement, 1, Self.tagsKey(kind, slot: slot), -1, onDemandTransient)
             sqlite3_bind_text(statement, 2, tags.sorted().joined(separator: "\n"), -1, onDemandTransient)
             sqlite3_step(statement)
             sqlite3_finalize(statement)
@@ -303,8 +332,43 @@ final class OnDemandDatabase: @unchecked Sendable {
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 
+    /// Every login's learned tags.
     func tags(_ kind: OnDemandKind) -> Set<String> {
-        Set((meta("tags." + kind.rawValue) ?? "").split(separator: "\n").map(String.init))
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT v FROM meta WHERE k = ? OR k LIKE ?", -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, "tags." + kind.rawValue, -1, onDemandTransient)
+        sqlite3_bind_text(statement, 2, "tags." + kind.rawValue + ".s%", -1, onDemandTransient)
+        var result = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 0) {
+                result.formUnion(String(cString: text).split(separator: "\n").map(String.init))
+            }
+        }
+        return result
+    }
+
+    private static func tagsKey(_ kind: OnDemandKind, slot: Int) -> String {
+        slot == 0 ? "tags." + kind.rawValue : "tags.\(kind.rawValue).s\(slot)"
+    }
+
+    /// The categories of a login: "s2:…" for slot 2, none of those for 0.
+    private static func categorySlot(_ slot: Int) -> String {
+        slot == 0 ? "id NOT GLOB 's[0-9]*:*'" : "id LIKE 's\(slot):%'"
+    }
+
+    /// Titles of logins no longer read (removed, VOD off) go.
+    func keepOnly(slots: Set<Int>) {
+        lock.lock(); defer { lock.unlock() }
+        let list = slots.sorted().map(String.init).joined(separator: ",")
+        sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        sqlite3_exec(db, "DELETE FROM items WHERE (id >> 32) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
+        if !slots.contains(0) {
+            sqlite3_exec(db, "DELETE FROM categories WHERE \(Self.categorySlot(0))", nil, nil, nil)
+        }
+        sqlite3_exec(db, "DELETE FROM categories WHERE id GLOB 's[0-9]*:*' AND CAST(substr(id, 2, instr(id, ':') - 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 
     func count(_ kind: OnDemandKind) -> Int {

@@ -614,5 +614,16 @@ check(own.saw(key: "phoenix.tv", id: "phoenix.tv", names: ["Phoenix"], guide: 0,
 let ownLinks = own.links(listed: ["b2|zdf.de", "phoenix.tv"])
 check(ownLinks[secondSourceChannel] == "b2|zdf.de" && ownLinks[firstSourceChannel] == nil, "own guide: only its channel linked")
 
+// MARK: VOD from every login (step 13c)
+
+let vodFirst = OnDemandItem(kind: .movie, id: 55, name: "Dune", key: "dune", categoryID: "12", ext: "mkv", tmdb: 1, year: 2021)
+check(vodFirst.inSource(slot: 0) == vodFirst, "vod sources: the first login keeps its ids")
+var vodOtherSource = vodFirst
+vodOtherSource.icon = "http://icon"
+let vodMoved = vodOtherSource.inSource(slot: 3)
+check(LiveTVSourceIDs.slot(ofChannel: vodMoved.id) == 3 && LiveTVSourceIDs.raw(ofChannel: vodMoved.id) == 55
+      && vodMoved.categoryID == "s3:12" && vodMoved.icon == "http://icon" && vodMoved.key == "dune",
+      "vod sources: another login's ids, the rest kept")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

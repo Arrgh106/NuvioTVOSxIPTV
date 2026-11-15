@@ -86,9 +86,10 @@ enum OnDemandDetails {
               let database = OnDemandLibrary.shared.database,
               let item = database.item(kind: parsed.kind, id: parsed.id),
               !OnDemandBrowse.isHidden(item, categoryName: database.categoryNames(parsed.kind)[item.categoryID] ?? ""),
-              let account = XtreamAccountStore.load() else { return nil }
-        let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))
-        let info = await self.info(contentID: contentID, kind: parsed.kind, id: parsed.id, client: client)
+              let route = OnDemandSources.route(parsed.id, in: OnDemandSources.routes()) else { return nil }
+        // The login the title is from, with its own id (step 13c).
+        let info = await self.info(
+            contentID: contentID, kind: parsed.kind, id: OnDemandSources.raw(parsed.id), client: route.client)
         let details = info?["info"] as? [String: Any] ?? [:]
         func text(_ keys: String...) -> String? {
             for key in keys {
