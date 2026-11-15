@@ -23,6 +23,7 @@ struct LiveTVSourcesGroup: View {
                     source: source,
                     status: store.sourceStatus[source.id],
                     isFirst: source.id == sources.sources.first?.id,
+                    isEntry: source.id == sources.sources.first?.id,
                     isLast: source.id == sources.sources.last?.id,
                     accentColor: accentColor,
                     onEdit: { editing = .init(source: source, isNew: false) },
@@ -36,6 +37,7 @@ struct LiveTVSourcesGroup: View {
                 accentColor: accentColor,
                 action: { editing = .init(source: sources.newPlaylist(), isNew: true) }
             )
+            .settingsEntryAnchor(sources.sources.isEmpty)
             LiveTVSettingsRows.action(
                 title: L10n.string("livetv_sources_add_xtream", fallback: "Add Xtream Codes Login"),
                 subtitle: L10n.string("livetv_sources_add_xtream_detail", fallback: "Sign in with the server, username and password from your provider. Its TV guide comes with it."),
@@ -81,6 +83,7 @@ private struct LiveTVSourceRow: View {
     let source: LiveTVSource
     let status: LiveTVSourceStatus?
     let isFirst: Bool
+    let isEntry: Bool
     let isLast: Bool
     let accentColor: Color
     let onEdit: () -> Void
@@ -97,6 +100,7 @@ private struct LiveTVSourceRow: View {
                 accentColor: accentColor,
                 action: onEdit
             )
+            .settingsEntryAnchor(isEntry)
             HStack(spacing: 12) {
                 LiveTVSettingsRows.rowButton(
                     title: status?.loading == true
@@ -129,6 +133,7 @@ private struct LiveTVSourceRow: View {
                 Spacer()
                 LiveTVSettingsRows.deleteButton(action: onDelete)
             }
+            .entryLockable()
             .focusSection()
         }
         .padding(.bottom, 4)
@@ -191,8 +196,6 @@ struct LiveTVSourceEditor: View {
     let target: Target
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
-    /// The form opens on its first field (not on the switches below).
-    @Namespace private var formScope
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @State private var name: String
@@ -240,9 +243,11 @@ struct LiveTVSourceEditor: View {
                             title: L10n.string("livetv_source_name", fallback: "Name"),
                             subtitle: L10n.string("livetv_source_name_detail", fallback: "Shown in the group column and here. Empty: the server"),
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
-                            text: $name
+                            text: $name,
+                            // The form opens on its first field (default focus
+                            // went to the row nearest the button pressed).
+                            focusOnAppear: true
                         )
-                        .prefersDefaultFocus(true, in: formScope)
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_server", fallback: "Server"),
                             subtitle: L10n.string("livetv_source_server_detail", fallback: "e.g. http://example.com:8080"),
@@ -318,7 +323,6 @@ struct LiveTVSourceEditor: View {
                     .focusSection()
                 }
                 .padding(40)
-                .focusScope(formScope)
             }
         }
     }
@@ -371,8 +375,6 @@ struct LiveTVPlaylistEditor: View {
     let target: LiveTVSourceEditor.Target
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
-    /// The form opens on its first field (not on the switches below).
-    @Namespace private var formScope
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @State private var name: String
@@ -413,9 +415,11 @@ struct LiveTVPlaylistEditor: View {
                             title: L10n.string("livetv_source_name", fallback: "Name"),
                             subtitle: L10n.string("livetv_source_name_detail_m3u", fallback: "Shown in the group column and here"),
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
-                            text: $name
+                            text: $name,
+                            // The form opens on its first field (default focus
+                            // went to the row nearest the button pressed).
+                            focusOnAppear: true
                         )
-                        .prefersDefaultFocus(true, in: formScope)
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_link", fallback: "Playlist Link"),
                             subtitle: L10n.string("livetv_source_link_detail", fallback: "e.g. http://example.com/playlist.m3u"),
@@ -471,7 +475,6 @@ struct LiveTVPlaylistEditor: View {
                     .focusSection()
                 }
                 .padding(40)
-                .focusScope(formScope)
             }
         }
     }
@@ -503,8 +506,6 @@ struct LiveTVStalkerEditor: View {
     let target: LiveTVSourceEditor.Target
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
-    /// The form opens on its first field (not on the switches below).
-    @Namespace private var formScope
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @State private var name: String
@@ -545,9 +546,11 @@ struct LiveTVStalkerEditor: View {
                             title: L10n.string("livetv_source_name", fallback: "Name"),
                             subtitle: L10n.string("livetv_source_name_detail", fallback: "Shown in the group column and here. Empty: the server"),
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
-                            text: $name
+                            text: $name,
+                            // The form opens on its first field (default focus
+                            // went to the row nearest the button pressed).
+                            focusOnAppear: true
                         )
-                        .prefersDefaultFocus(true, in: formScope)
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_stalker_portal", fallback: "Portal Address"),
                             subtitle: L10n.string("livetv_stalker_portal_detail", fallback: "e.g. http://example.com:8080/c/"),
@@ -660,7 +663,6 @@ struct LiveTVStalkerEditor: View {
                     .focusSection()
                 }
                 .padding(40)
-                .focusScope(formScope)
             }
         }
     }

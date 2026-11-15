@@ -2020,7 +2020,9 @@ struct SettingsView: View {
                 .foregroundColor(.white)
                 .padding(.leading, 10)
 
-            VStack(alignment: .leading, spacing: 14) {
+            // Fork: 10 apart (14 upstream) and 84 high pills, so the ninth
+            // category (Live TV / VOD) still fits above the screen's edge.
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(SettingsCategory.allCases) { category in
                     let isSelectedCategory = selectedCategory == category
                     let isFocusedCategory = focusedCategory == category
@@ -2151,7 +2153,7 @@ private struct SettingsCategoryPill: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 26)
-            .frame(width: 430, height: 92, alignment: .leading)
+            .frame(width: 430, height: 84, alignment: .leading)
             .modifier(SettingsCategoryPillBackground(isSelected: isSelected, isFocused: isFocused))
             .overlay(
                 Capsule()
@@ -22690,13 +22692,14 @@ enum LiveTVSettingsRows {
 
     static func textField(
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
-        status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
+        status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false,
+        focusOnAppear: Bool = false
     ) -> some View {
         // The system's field: tvOS goes on to the next one by itself when
         // a field is confirmed (also typing on the iPhone).
         SettingsNativeTextFieldRow(
             title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
-            fieldWidth: fieldWidth, status: status, statusColor: statusColor)
+            fieldWidth: fieldWidth, status: status, statusColor: statusColor, focusOnAppear: focusOnAppear)
     }
 
     static func stepper(
@@ -23029,6 +23032,8 @@ private struct SettingsNativeTextFieldRow: View {
     var statusColor: Color = .white.opacity(0.56)
     var subtitleLineLimit: Int = 2
     var onCommit: () -> Void = {}
+    /// Fork: takes the focus when its sheet has opened (a form's first field).
+    var focusOnAppear: Bool = false
 
     @FocusState private var isFocused: Bool
 
@@ -23063,6 +23068,11 @@ private struct SettingsNativeTextFieldRow: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onSubmit(onCommit)
+                .onAppear {
+                    guard focusOnAppear else { return }
+                    // After the sheet's own first focus pass.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { isFocused = true }
+                }
                 .frame(width: fieldWidth, height: 48)
                 // Keep the reliable native editor in the focus hierarchy, but
                 // hide tvOS's hard-coded white focus pill.
