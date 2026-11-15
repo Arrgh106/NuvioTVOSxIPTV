@@ -17932,21 +17932,10 @@ private struct SettingsTextFieldRow: View {
                     prompt: title,
                     returnKey: chain != nil && !chainLast ? .next : .done,
                     onCommit: onCommit,
-                    onReturn: chain == nil || chainLast ? nil : { () -> Bool in
-                        // The keyboard stays: the next field takes it over.
-                        if SettingsFieldChain.advance(from: chainIndex) { return true }
+                    onReturn: chain == nil || chainLast ? nil : {
                         let next = chainIndex + 1
-                        // Else once the keyboard has gone.
+                        // After the keyboard has gone.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chain?.wrappedValue = next }
-                        return false
-                    },
-                    onField: chain == nil ? nil : { [chainIndex] (field: UITextField) in
-                        let editing = $isEditing
-                        let focus = $isFocused
-                        SettingsFieldChain.register(chainIndex, field: field) {
-                            focus.wrappedValue = true
-                            editing.wrappedValue = true
-                        }
                     }
                 )
             }
@@ -18045,8 +18034,7 @@ struct SettingsGlassTextField: View {
     var prompt: String? = nil
     var returnKey: UIReturnKeyType = .done
     var onCommit: () -> Void = {}
-    var onReturn: (() -> Bool)? = nil
-    var onField: ((UITextField) -> Void)? = nil
+    var onReturn: (() -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -18058,8 +18046,7 @@ struct SettingsGlassTextField: View {
                 keyboardType: keyboardType,
                 returnKey: returnKey,
                 onCommit: onCommit,
-                onReturn: onReturn,
-                onField: onField
+                onReturn: onReturn
             )
                 .frame(width: 1, height: 1)
                 .offset(x: -4_000)
@@ -18100,11 +18087,8 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     /// `.next` when Return goes on to the next field.
     var returnKey: UIReturnKeyType = .done
     var onCommit: () -> Void = {}
-    /// Return pressed (not dismissed): to go on to the next field. True:
-    /// the next field has the keyboard (this one keeps it open).
-    var onReturn: (() -> Bool)? = nil
-    /// The field, for a form's chain (`SettingsFieldChain`).
-    var onField: ((UITextField) -> Void)? = nil
+    /// Return pressed (not dismissed): to go on to the next field.
+    var onReturn: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> HiddenSettingsUITextField {
         let textField = HiddenSettingsUITextField(frame: .zero)
@@ -18124,12 +18108,10 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
             action: #selector(Coordinator.textDidChange(_:)),
             for: .editingChanged
         )
-        onField?(textField)
         return textField
     }
 
     func updateUIView(_ uiView: HiddenSettingsUITextField, context: Context) {
-        onField?(uiView)
         if uiView.text != text {
             uiView.text = text
         }
@@ -18154,10 +18136,10 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
         private let text: Binding<String>
         private let isEditing: Binding<Bool>
         private let onCommit: () -> Void
-        private let onReturn: (() -> Bool)?
+        private let onReturn: (() -> Void)?
         private var committedCurrentEditingSession = false
 
-        init(text: Binding<String>, isEditing: Binding<Bool>, onCommit: @escaping () -> Void, onReturn: (() -> Bool)? = nil) {
+        init(text: Binding<String>, isEditing: Binding<Bool>, onCommit: @escaping () -> Void, onReturn: (() -> Void)? = nil) {
             self.text = text
             self.isEditing = isEditing
             self.onCommit = onCommit
@@ -18174,9 +18156,8 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
 
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             commit(textField)
-            // A form's next field took the keyboard over: it stays open.
-            if onReturn?() == true { return false }
             textField.resignFirstResponder()
+            onReturn?()
             return true
         }
 
@@ -18194,38 +18175,6 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
             committedCurrentEditingSession = true
             onCommit()
         }
-    }
-}
-
-/// The fields of the form on screen, by their place: Return hands the
-/// keyboard to the next one without closing it, so a login is typed in
-/// one go (also from the iPhone).
-@MainActor
-enum SettingsFieldChain {
-    private final class Entry {
-        weak var field: UITextField?
-        var start: () -> Void
-        init(field: UITextField, start: @escaping () -> Void) {
-            self.field = field
-            self.start = start
-        }
-    }
-
-    private static var entries: [Int: Entry] = [:]
-
-    static func register(_ index: Int, field: UITextField, start: @escaping () -> Void) {
-        if let entry = entries[index], entry.field === field {
-            entry.start = start
-        } else {
-            entries[index] = Entry(field: field, start: start)
-        }
-    }
-
-    /// True when the field after `index` has the keyboard now.
-    static func advance(from index: Int) -> Bool {
-        guard let entry = entries[index + 1], let field = entry.field, field.window != nil else { return false }
-        entry.start()
-        return field.becomeFirstResponder()
     }
 }
 
