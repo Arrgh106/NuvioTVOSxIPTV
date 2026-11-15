@@ -83,12 +83,21 @@ final class OnDemandLibrary: ObservableObject {
         guard isWanted, importTask == nil, !LiveTVFullscreenState.shared.isActive,
               !logins.isEmpty, let database else { return }
         let sameAccount = database.meta("logins") == OnDemandSources.fingerprint(logins)
-        let updated = database.meta("updated").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         let failed = database.meta("failedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         // After a failure: once an hour, not on every title opened.
         if let failed, Date().timeIntervalSince(failed) < 3600, sameAccount { return }
-        guard !sameAccount || updated.map({ Date().timeIntervalSince($0) > Self.refreshAge }) ?? true else { return }
-        refresh()
+        guard !sameAccount || !Self.due(logins, in: database).isEmpty else { return }
+        refresh(force: false)
+    }
+
+    /// The logins to read: new, changed, or read more than a day ago (step
+    /// 13c: turning one on or off leaves the others as they are).
+    private static func due(_ logins: [LiveTVSource], in database: OnDemandDatabase) -> [LiveTVSource] {
+        logins.filter { login in
+            guard database.meta("login.s\(login.slot)") == OnDemandSources.key(login),
+                  let updated = database.meta("updated.s\(login.slot)").flatMap(Double.init) else { return true }
+            return Date().timeIntervalSince1970 - updated > refreshAge
+        }
     }
 
     /// Read at all: for the stream lists, the VOD page or the Home row.
@@ -100,7 +109,8 @@ final class OnDemandLibrary: ObservableObject {
     }
 
     /// Settings → Live TV → VOD → Update Now, or when due.
-    func refresh() {
+    /// `force` (Update Now): every login; else only the ones due.
+    func refresh(force: Bool = true) {
         let logins = OnDemandSources.all()
         guard importTask == nil, !logins.isEmpty, let database else { return }
         let routes = OnDemandSources.routes()
@@ -112,12 +122,19 @@ final class OnDemandLibrary: ObservableObject {
         database.setMeta("account", nil)
         // Logins removed or with VOD off: their titles go now.
         database.keepOnly(slots: Set(logins.map(\.slot)))
+        let dueIDs = Set((force ? logins : Self.due(logins, in: database)).map(\.id))
+        guard !dueIDs.isEmpty else {
+            database.setMeta("logins", OnDemandSources.fingerprint(logins))
+            publishCounts()
+            return
+        }
         status = .importing(L10n.string("livetv_ondemand_loading", fallback: "Loading movies & series"), fraction: nil)
         importTask = Task { [weak self] in
             var errors: [String] = []
             var attempts = 0
-            for (position, login) in logins.enumerated() {
+            for (position, login) in logins.enumerated() where dueIDs.contains(login.id) {
               guard let client = routes[login.slot]?.client else { continue }
+              var loginFailed = false
               // The login's name with several (step 13c).
               let named = logins.count > 1 ? " \u{00B7} " + login.displayName : ""
               for kind in OnDemandKind.allCases {
@@ -156,10 +173,19 @@ final class OnDemandLibrary: ObservableObject {
                         }
                         return total
                     }.value
-                    if saved == nil { errors.append((kind == .movie ? "movies" : "series") + named) }
+                    if saved == nil {
+                        errors.append((kind == .movie ? "movies" : "series") + named)
+                        loginFailed = true
+                    }
                 } catch {
                     errors.append(error.localizedDescription + named)
+                    loginFailed = true
                 }
+              }
+              // This login read: not again until it's due.
+              if !loginFailed {
+                  database.setMeta("login.s\(login.slot)", OnDemandSources.key(login))
+                  database.setMeta("updated.s\(login.slot)", String(Date().timeIntervalSince1970))
               }
             }
             guard !Task.isCancelled, let self, self.scope == profileScope else { return }
@@ -368,6 +394,8 @@ final class OnDemandDatabase: @unchecked Sendable {
             sqlite3_exec(db, "DELETE FROM categories WHERE \(Self.categorySlot(0))", nil, nil, nil)
         }
         sqlite3_exec(db, "DELETE FROM categories WHERE id GLOB 's[0-9]*:*' AND CAST(substr(id, 2, instr(id, ':') - 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
+        // A login turned on again is read again.
+        sqlite3_exec(db, "DELETE FROM meta WHERE (k GLOB 'login.s*' OR k GLOB 'updated.s*') AND CAST(substr(k, instr(k, '.s') + 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 

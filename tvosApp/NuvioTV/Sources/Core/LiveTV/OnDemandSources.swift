@@ -42,8 +42,13 @@ enum OnDemandSources {
     }
 
     /// What the logins were read with: another set (added, removed, other
-    /// server or user) reads the index again.
+    /// server or user) is looked at again.
     static func fingerprint(_ sources: [LiveTVSource]) -> String {
-        sources.map { "\($0.slot)|\($0.xtream?.server ?? "")|\($0.xtream?.username ?? "")" }.sorted().joined(separator: ";")
+        sources.map(key).sorted().joined(separator: ";")
+    }
+
+    /// One login as read: another server or user reads it again.
+    static func key(_ source: LiveTVSource) -> String {
+        "\(source.slot)|\(source.xtream?.server ?? "")|\(source.xtream?.username ?? "")"
     }
 }
