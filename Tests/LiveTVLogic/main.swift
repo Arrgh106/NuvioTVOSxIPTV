@@ -625,5 +625,39 @@ check(LiveTVSourceIDs.slot(ofChannel: vodMoved.id) == 3 && LiveTVSourceIDs.raw(o
       && vodMoved.categoryID == "s3:12" && vodMoved.icon == "http://icon" && vodMoved.key == "dune",
       "vod sources: another login's ids, the rest kept")
 
+// MARK: M3U catch-up (step 13d)
+
+let catchupList = LiveTVM3U.parse("""
+#EXTM3U catchup="shift" catchup-days="3"
+#EXTINF:-1 tvg-id="a",Shifted
+http://cdn.example/a/index.m3u8
+#EXTINF:-1 catchup="append" catchup-source="?start={utc}&end={utcend}" catchup-days="7",Appended
+http://cdn.example/b.ts
+#EXTINF:-1 catchup="flussonic",Fluss
+http://fs.example/ch1/index.m3u8?token=x
+""")
+check(catchupList.entries[0].catchup == LiveTVM3UCatchup(type: "shift", source: nil, days: 3), "m3u catch-up: the playlist's for every entry")
+check(catchupList.entries[1].catchup?.type == "append" && catchupList.entries[1].catchup?.days == 7, "m3u catch-up: the entry's own wins")
+check(LiveTVM3UCatchup(attributes: ["tvg-rec": "2"])?.type == "default" && LiveTVM3UCatchup(attributes: [:]) == nil,
+      "m3u catch-up: days alone mean default, nothing means none")
+let cStart = Date(timeIntervalSince1970: 1_800_000_000)
+let cEnd = cStart.addingTimeInterval(3600)
+let cNow = cStart.addingTimeInterval(7200)
+check(LiveTVCatchupM3U.urls(live: "http://cdn.example/a/index.m3u8", catchup: LiveTVM3UCatchup(type: "shift", source: nil, days: 3),
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://cdn.example/a/index.m3u8?utc=1800000000&lutc=1800007200", "m3u catch-up: shift")
+check(LiveTVCatchupM3U.urls(live: "http://cdn.example/b.ts", catchup: catchupList.entries[1].catchup!,
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://cdn.example/b.ts?start=1800000000&end=1800003600", "m3u catch-up: append")
+check(LiveTVCatchupM3U.urls(live: "http://fs.example/ch1/index.m3u8?token=x", catchup: LiveTVM3UCatchup(type: "flussonic", source: nil, days: 1),
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://fs.example/ch1/index-1800000000-3600.m3u8?token=x", "m3u catch-up: flussonic")
+let xcLinks = LiveTVCatchupM3U.urls(live: "http://xt.example:8080/user/pass/123.ts", catchup: LiveTVM3UCatchup(type: "xc", source: nil, days: 1),
+                                    start: cStart, end: cEnd, now: cNow, serverTimeZone: TimeZone(identifier: "UTC"))
+check(xcLinks.first?.absoluteString == "http://xt.example:8080/timeshift/user/pass/60/2027-01-15:08-00/123.ts" && xcLinks.count > 1,
+      "m3u catch-up: xc as Xtream's forms")
+check(LiveTVCatchupM3U.fill("{utc:Y-m-d H:M:S}|${duration:60}|{offset}", start: 1_800_000_000, end: 1_800_003_600,
+                            now: 1_800_007_200, duration: 3600) == "2027-01-15 08:00:00|60|7200", "m3u catch-up: templates")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

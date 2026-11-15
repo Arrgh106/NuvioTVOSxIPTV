@@ -190,6 +190,8 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
     /// M3U playlists (step 13b): the channel's own link and headers.
     var streamURL: String? = nil
     var headers: [String: String]? = nil
+    /// M3U: how its archive is asked for (step 13d).
+    var catchup: LiveTVM3UCatchup? = nil
 
     var id: Int { streamID }
     /// What the provider calls it: guide matching and separator rows go by this.
@@ -214,6 +216,7 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         case archiveDays = "tv_archive_duration"
         case streamURL = "nuvio_url"
         case headers = "nuvio_headers"
+        case catchup = "nuvio_catchup"
     }
 
     init(
@@ -240,6 +243,7 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         copy.providerName = providerName
         copy.streamURL = streamURL
         copy.headers = headers
+        copy.catchup = catchup
         return copy
     }
 
@@ -255,6 +259,7 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         archiveDays = hasArchive ? (c.lossyInt(.archiveDays) ?? 0) : 0
         streamURL = try? c.decodeIfPresent(String.self, forKey: .streamURL)
         headers = try? c.decodeIfPresent([String: String].self, forKey: .headers)
+        catchup = try? c.decodeIfPresent(LiveTVM3UCatchup.self, forKey: .catchup)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -269,6 +274,7 @@ struct XtreamLiveChannel: Codable, Identifiable, Hashable, Sendable {
         try c.encode(archiveDays, forKey: .archiveDays)
         try c.encodeIfPresent(streamURL, forKey: .streamURL)
         try c.encodeIfPresent(headers, forKey: .headers)
+        try c.encodeIfPresent(catchup, forKey: .catchup)
     }
 }
 
