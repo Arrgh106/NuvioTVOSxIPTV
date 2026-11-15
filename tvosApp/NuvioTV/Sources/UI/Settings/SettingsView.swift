@@ -17614,7 +17614,9 @@ enum LiveTVSettingsRows {
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
         status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
     ) -> some View {
-        SettingsNativeTextFieldRow(
+        // The editor kept off screen (as the other settings fields): the
+        // native one behind the capsule shone through on the TV.
+        SettingsTextFieldRow(
             title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
             fieldWidth: fieldWidth, status: status, statusColor: statusColor)
     }
@@ -17891,6 +17893,8 @@ private struct SettingsTextFieldRow: View {
     @Binding var text: String
     var isSecure: Bool = false
     var fieldWidth: CGFloat = 300
+    var status: String? = nil
+    var statusColor: Color = .white.opacity(0.56)
     var centerDisplayText = false
     var onCommit: () -> Void = {}
 
@@ -17906,7 +17910,7 @@ private struct SettingsTextFieldRow: View {
             isEditing = true
         } label: {
             SettingsRowShell(isFocused: isFocused, accentColor: .white) {
-                SettingsRowText(title: title, subtitle: subtitle)
+                SettingsRowText(title: title, subtitle: subtitle, status: status, statusColor: statusColor)
 
                 Spacer(minLength: 24)
 
