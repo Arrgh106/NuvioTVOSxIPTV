@@ -246,6 +246,7 @@ struct NativeSearchView: View {
     var onLongPress: ((NuvioMeta) -> Void)? = nil
 
     @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
+    @AppStorage(SettingsKey.useTopNavigation) private var useTopNavigation = false
 
     @FocusState private var focusedResultID: String?
     @FocusState private var focusedFilterID: String?
@@ -274,6 +275,8 @@ struct NativeSearchView: View {
     @State private var searchPresented = true
     @State private var linearKeyboardExpandedHeight: CGFloat = 220
     @State private var resultFocusGeneration = 0
+    /// The results without unreleased titles, worked out once per results list.
+    @State private var resultsMemo = ReleasedTitlesMemo()
     @Environment(\.isEnabled) private var isEnabled
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
@@ -490,7 +493,9 @@ struct NativeSearchView: View {
                 .autocorrectionDisabled()
                 #if os(tvOS)
                 .toolbar(.hidden, for: .navigationBar)
-                .toolbar(.hidden, for: .tabBar)
+                // Hiding the tab bar suits the sidebar layout; the native top bar is the only
+                // way back to the other tabs, so it stays under the system's control there.
+                .toolbar(useTopNavigation ? .automatic : .hidden, for: .tabBar)
                 #endif
         }
     }
@@ -892,11 +897,14 @@ struct NativeSearchView: View {
     // MARK: - Results
 
     private var visibleResults: [NuvioMeta] {
-        guard hideUnreleased else { return viewModel.results }
-        return viewModel.results.filter { !ContentReleasePolicy.isUnreleased($0) }
+        resultsMemo.update(viewModel.results, revision: viewModel.resultsRevision, hideUnreleased: hideUnreleased)
+        return resultsMemo.titles
     }
 
-    private var visibleResultIDs: [String] { visibleResults.map(\.id) }
+    private var visibleResultIDs: [String] {
+        resultsMemo.update(viewModel.results, revision: viewModel.resultsRevision, hideUnreleased: hideUnreleased)
+        return resultsMemo.ids
+    }
 
     private var gridSuggestionTitles: [String] {
         let query = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1001,6 +1009,7 @@ struct NativeSearchView: View {
                 }
                 .padding(.top, 16)
                 .padding(.horizontal, NativeSearchGridMetrics.gridContentInset)
+                .background(TVTopBarScrollAnchor())
             }
             .onChange(of: resultsScrollTopGeneration) { _, _ in
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -1235,6 +1244,7 @@ struct NativeSearchKeyboardHost: View {
 /// Dedicated `.searchable` host for tvOS Grid keyboard (multi-row vertical layout).
 /// Fixed width on the left with full vertical height to show all rows (a-f, g-l, m-r, s-x, y-z, space/clear).
 struct NativeSearchGridKeyboardHost: View {
+    @AppStorage(SettingsKey.useTopNavigation) private var useTopNavigation = false
     @Binding var text: String
     let prompt: String
     let isDisabled: Bool
@@ -1276,7 +1286,7 @@ struct NativeSearchGridKeyboardHost: View {
                 }
                 #if os(tvOS)
                 .toolbar(.hidden, for: .navigationBar)
-                .toolbar(.hidden, for: .tabBar)
+                .toolbar(useTopNavigation ? .automatic : .hidden, for: .tabBar)
                 #endif
         }
         .padding(.top, topPadding)

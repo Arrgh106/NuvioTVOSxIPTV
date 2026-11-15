@@ -227,7 +227,7 @@ struct SceneDetailView: View {
             .padding(40)
             .frame(maxWidth: 880)
             .background {
-                if #available(tvOS 26.0, *) {
+                if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
                     RoundedRectangle(cornerRadius: 28, style: .continuous)
                         .fill(Color.black.opacity(0.28))
                         .background(Color.white.opacity(0.08), in: .rect(cornerRadius: 28))
@@ -311,7 +311,7 @@ struct SceneDetailView: View {
                         }) {
                             HStack(spacing: 8) {
                                 Image(systemName: "applelogo")
-                                Text("Open in Music")
+                                Text(L10n.string("scene_open_in_music", fallback: "Open in Music"))
                             }
                             .font(.system(size: 20, weight: .semibold))
                             .padding(.horizontal, 20)
@@ -323,7 +323,7 @@ struct SceneDetailView: View {
                     }
                     
                     Button(action: onDismiss) {
-                        Text("Done")
+                        Text(L10n.string("tvos_common_done", fallback: "Done"))
                             .font(.system(size: 20, weight: .semibold))
                             .frame(minWidth: 140)
                             .padding(.vertical, 12)

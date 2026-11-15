@@ -18,7 +18,7 @@ final class StreamsRepository: ObservableObject {
 
     /// Bounded per-add-on stream request timeout (seconds). Dead providers
     /// finish as failed without blocking the rest or smart autoplay forever.
-    static let streamRequestTimeout: TimeInterval = 15
+    nonisolated static let streamRequestTimeout: TimeInterval = 15
 
     @Published private(set) var state = StreamsDiscoveryState()
 
@@ -62,8 +62,14 @@ final class StreamsRepository: ObservableObject {
         return (season, episode)
     }
 
-    nonisolated private static func baseContentId(from videoId: String) -> String {
-        String(videoId.split(separator: ":").first ?? Substring(videoId))
+    nonisolated static func baseContentId(from videoId: String) -> String {
+        let parts = videoId.split(separator: ":")
+        guard parts.count >= 3,
+              Int(parts[parts.count - 2]) != nil,
+              Int(parts[parts.count - 1]) != nil else {
+            return videoId
+        }
+        return parts.dropLast(2).joined(separator: ":")
     }
 
     private func localStreamGroup(videoId: String) -> AddonStreamGroup? {
@@ -97,31 +103,32 @@ final class StreamsRepository: ObservableObject {
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
+        var matchingTitles = JellyfinLibraryIndex.shared.titles(matching: contentId)
         // Fork: also match catalog titles (IMDb/TMDB ids) to Jellyfin copies.
-        let titles: [JellyfinIndexedTitle]
-        if let own = JellyfinLibraryIndex.shared.titles().first(where: { $0.contentId == contentId }) {
-            titles = [own]
-        } else {
-            titles = JellyfinCatalogMatch.titles(forVideoId: videoId)
-        }
-        let streams = titles.flatMap { title -> [NuvioStream] in
-            guard let server = JellyfinServerStore.shared.server(id: title.serverID),
-                  let baseURL = server.baseURL else {
-                return []
-            }
+        if matchingTitles.isEmpty { matchingTitles = JellyfinCatalogMatch.titles(forVideoId: videoId) }
+        guard !matchingTitles.isEmpty else { return nil }
+
+        let servers = Dictionary(uniqueKeysWithValues: JellyfinServerStore.shared.servers.map { ($0.id, $0) })
+        var streams: [NuvioStream] = []
+
+        for title in matchingTitles {
+            guard let server = servers[title.serverID],
+                  let baseURL = server.baseURL else { continue }
             let token = JellyfinCredentialStore.token(forServerID: server.id)
-            return title.items
-            .filter { $0.season == episode.season && $0.episode == episode.episode }
-            .compactMap { item -> NuvioStream? in
-                guard let url = item.streamURL(baseURL: baseURL, accessToken: token) else { return nil }
-                return NuvioStream(
-                    url: url.absoluteString,
-                    name: server.displayName,
-                    description: item.size.map {
-                        ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
-                    },
-                    addonName: "Jellyfin",
-                    videoSize: item.size
+            let matchingItems = title.items
+                .filter { $0.season == episode.season && $0.episode == episode.episode }
+            for item in matchingItems {
+                guard let url = item.streamURL(baseURL: baseURL, accessToken: token) else { continue }
+                streams.append(
+                    NuvioStream(
+                        url: url.absoluteString,
+                        name: server.displayName,
+                        description: item.size.map {
+                            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+                        },
+                        addonName: "Jellyfin",
+                        videoSize: item.size
+                    )
                 )
             }
         }
@@ -129,6 +136,109 @@ final class StreamsRepository: ObservableObject {
         return AddonStreamGroup(
             addonId: "local.jellyfin",
             displayName: "Jellyfin",
+            streams: streams,
+            isLoading: false
+        )
+    }
+
+    /// Sidecar subtitle files for the items about to be offered, read from the
+    /// server with a short limit so a slow server never holds up the list.
+    private func plexTracks(videoId: String) async -> [String: PlexOfferedTracks] {
+        let contentId = Self.baseContentId(from: videoId)
+        let episode = Self.seasonEpisode(fromVideoId: videoId)
+        var requests: [(ratingKey: String, client: PlexClient, baseURL: URL, token: String)] = []
+        for title in PlexLibraryIndex.shared.titles(matching: contentId) {
+            guard let client = PlexSessionManager.shared.client(forServerID: title.serverID) else { continue }
+            for item in title.items where item.season == episode.season && item.episode == episode.episode {
+                requests.append((item.ratingKey, client, client.baseURL, client.token))
+            }
+        }
+        guard !requests.isEmpty else { return [:] }
+        return await withTaskGroup(of: (String, PlexOfferedTracks).self) { group in
+            for request in requests {
+                group.addTask {
+                    let found = (try? await request.client.tracks(ratingKey: request.ratingKey)) ?? PlexClient.ItemTracks()
+                    let subtitles = found.externalSubtitles.compactMap { subtitle in
+                        PlexClient.subtitleURL(baseURL: request.baseURL, key: subtitle.key, token: request.token).map {
+                            NuvioSubtitle(url: $0.absoluteString, language: subtitle.languageCode, label: subtitle.title)
+                        }
+                    }
+                    return (request.ratingKey, PlexOfferedTracks(subtitles: subtitles, parts: found.parts))
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                return ("", PlexOfferedTracks())
+            }
+            var result: [String: PlexOfferedTracks] = [:]
+            for await (ratingKey, tracks) in group {
+                if ratingKey.isEmpty { group.cancelAll(); break }
+                result[ratingKey] = tracks
+                if result.count == requests.count { group.cancelAll(); break }
+            }
+            return result
+        }
+    }
+
+    private func plexStreamGroup(videoId: String, tracks: [String: PlexOfferedTracks] = [:]) -> AddonStreamGroup? {
+        let contentId = Self.baseContentId(from: videoId)
+        let episode = Self.seasonEpisode(fromVideoId: videoId)
+        let matchingTitles = PlexLibraryIndex.shared.titles(matching: contentId)
+        guard !matchingTitles.isEmpty else { return nil }
+
+        var streams: [NuvioStream] = []
+        for title in matchingTitles {
+            guard let server = PlexServerStore.shared.server(id: title.serverID),
+                  let baseURL = server.baseURL else { continue }
+            let token = PlexCredentialStore.token(forServerID: server.id)
+            for item in title.items where item.season == episode.season && item.episode == episode.episode {
+                PlexPlaybackSync.shared.streamOffered(
+                    PlexPlaybackSync.Item(serverID: server.id, ratingKey: item.ratingKey, durationMs: item.durationMs)
+                )
+                let itemTracks = tracks[item.ratingKey]
+                let itemSubtitles = itemTracks?.subtitles ?? []
+                // One stream per file: other versions and parts of a split file.
+                for file in item.files {
+                    guard let url = PlexClient.streamURL(baseURL: baseURL, partKey: file.partKey) else { continue }
+                    let label = PlexStreamLabel.label(
+                        for: file,
+                        tracks: itemTracks?.parts[file.partKey],
+                        serverName: server.displayName
+                    )
+                    streams.append(
+                        NuvioStream(
+                            url: url.absoluteString,
+                            name: label.name,
+                            description: label.description,
+                            addonName: "Plex",
+                            subtitles: itemSubtitles,
+                            videoSize: file.sizeBytes,
+                            httpHeaders: [PlexClient.tokenHeader: token]
+                        )
+                    )
+                }
+                // Last, for files the player can't decode: the server converts it.
+                if let url = PlexClient.transcodeURL(baseURL: baseURL, ratingKey: item.ratingKey, session: UUID().uuidString) {
+                    streams.append(
+                        NuvioStream(
+                            url: url.absoluteString,
+                            name: PlexStreamLabel.convertName,
+                            description: PlexStreamLabel.convertDescription(
+                                L10n.string("plex_stream_convert", fallback: "Convert on server (1080p) · use if the file won't play"),
+                                serverName: server.displayName
+                            ),
+                            addonName: "Plex",
+                            subtitles: itemSubtitles,
+                            httpHeaders: [PlexClient.tokenHeader: token]
+                        )
+                    )
+                }
+            }
+        }
+        guard !streams.isEmpty else { return nil }
+        return AddonStreamGroup(
+            addonId: "local.plex",
+            displayName: "Plex",
             streams: streams,
             isLoading: false
         )
@@ -295,8 +405,10 @@ final class StreamsRepository: ObservableObject {
     private func runDiscovery(requestKey: String, type: String, videoId: String,
                               addonManifestURLs: [URL]) async {
         guard !Task.isCancelled else { return }
+        let plexTracks = await plexTracks(videoId: videoId)
+        guard !Task.isCancelled else { return }
         let indexedJellyfin = jellyfinStreamGroup(videoId: videoId)
-        var ownedGroups = [localStreamGroup(videoId: videoId), indexedJellyfin]
+        var ownedGroups = [localStreamGroup(videoId: videoId), indexedJellyfin, plexStreamGroup(videoId: videoId, tracks: plexTracks)]
             .compactMap { $0 }
         // Fork: ask the Jellyfin servers live (no library index needed).
         let liveJellyfin: Task<[NuvioStream], Never>? = indexedJellyfin == nil
@@ -317,8 +429,15 @@ final class StreamsRepository: ObservableObject {
         )
 
         let enabledURLs = addonManifestURLs
+        // AIOStreams is still starting: its group waits for it.
+        let startingAIO = AIOStreamsHost.startingAddonURL(besides: enabledURLs) != nil
+        // Plugin scrapers run beside the add-ons, one group each (Android parity); an AniList
+        // title is asked by its IMDb id, as add-ons that don't take anilist: ids are.
+        let pluginVideoId = await Self.pluginVideoId(for: videoId)
+        guard !Task.isCancelled else { return }
+        let pluginTargets = PluginStreamDiscovery.targets(type: type, videoID: pluginVideoId)
 
-        guard !enabledURLs.isEmpty else {
+        guard !enabledURLs.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             if let liveJellyfin {
                 ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
                 guard !Task.isCancelled, activeRequestKey == requestKey else { return }
@@ -339,14 +458,36 @@ final class StreamsRepository: ObservableObject {
         }
 
         // Load missing manifests concurrently (app-lifetime cache).
-        let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        var manifestsByURL: [URL: StreamAddonManifest] = [:]
+        if !enabledURLs.isEmpty {
+            manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        }
+        guard !Task.isCancelled else { return }
+
+        // An AniList title: add-ons that don't take anilist: ids are asked by Kitsu or IMDb.
+        let alternatives = await Self.aniListAlternatives(
+            for: videoId, type: type, resource: "stream", manifests: enabledURLs.compactMap { manifestsByURL[$0] })
+        // The AIOStreams addon may be asked by the converted id as well.
+        let aioAlternatives = await Self.aioAlternatives(
+            for: videoId, have: alternatives, aioPresent: enabledURLs.contains(where: AIOStreamsHost.isAIOAddon))
         guard !Task.isCancelled else { return }
 
         // Preserve configured order; only include stream-capable, id-compatible add-ons.
         var targets: [StreamAddonTarget] = []
         for url in enabledURLs {
             guard let manifest = manifestsByURL[url] else { continue }
-            guard manifest.supportsResource("stream", type: type, id: videoId) else { continue }
+            let requestIds: [String]
+            if AIOStreamsHost.isAIOAddon(url) {
+                // The AIOStreams addon may be asked by two ids (an AniList title).
+                requestIds = AIOStreamsHost.requestIDs(videoId: videoId, alternatives: aioAlternatives) {
+                    manifest.supportsResource("stream", type: type, id: $0)
+                }
+            } else {
+                requestIds = AniListStreamIds.requestID(
+                    for: manifest, resource: "stream", type: type, videoId: videoId, alternatives: alternatives
+                ).map { [$0] } ?? []
+            }
+            guard !requestIds.isEmpty else { continue }
             let displayName = CinemetaCatalogRepository.streamAddonDisplayName(
                 for: url,
                 manifestName: manifest.displayName
@@ -356,12 +497,13 @@ final class StreamsRepository: ObservableObject {
                     addonId: Self.stableAddonId(manifest: manifest, manifestURL: url),
                     displayName: displayName,
                     manifestURL: url,
-                    logo: manifest.logo
+                    logo: manifest.logo,
+                    requestIds: requestIds
                 )
             )
         }
 
-        guard !targets.isEmpty else {
+        guard !targets.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             if let liveJellyfin {
                 ownedGroups = await Self.resolvingLiveJellyfin(ownedGroups, liveJellyfin)
                 guard !Task.isCancelled, activeRequestKey == requestKey else { return }
@@ -390,7 +532,12 @@ final class StreamsRepository: ObservableObject {
                 isLoading: true,
                 error: nil
             )
-        }
+        } + pluginTargets.map {
+            AddonStreamGroup(addonId: $0.groupID, displayName: $0.displayName, streams: [], isLoading: true, error: nil)
+        } + (startingAIO
+            ? [AddonStreamGroup(addonId: Self.startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: true, error: nil)]
+            : [])
+        // Fork (Live TV step 12a): the VOD group, last.
         if onDemand != nil { initialGroups.append(Self.onDemandGroup(streams: [], isLoading: true)) }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
@@ -403,8 +550,30 @@ final class StreamsRepository: ObservableObject {
 
         await withTaskGroup(of: GroupUpdate.self) { group in
             for target in targets {
-                group.addTask {
-                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                group.addTask { [weak self] in
+                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId) { [weak self] partial in
+                        await self?.applyPartial(partial, requestKey: requestKey)
+                    }
+                }
+            }
+            if startingAIO {
+                group.addTask { [weak self] in
+                    await Self.fetchStartingAIOGroup(type: type, videoId: videoId) { [weak self] partial in
+                        await self?.applyPartial(partial, requestKey: requestKey)
+                    }
+                }
+            }
+            for target in pluginTargets {
+                group.addTask { [weak self] in
+                    let result = await PluginStreamDiscovery.fetchGroup(
+                        target: target,
+                        type: type,
+                        videoID: pluginVideoId,
+                        onPartial: { [weak self] partial in
+                            await self?.applyPartial(partial, requestKey: requestKey)
+                        }
+                    )
+                    return GroupUpdate(addonId: target.groupID, group: result)
                 }
             }
             if let liveJellyfin {
@@ -469,6 +638,19 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    /// Streams a group got while it still searches — a plugin's, or the first
+    /// of the AIOStreams addon's two answers; ignored once the
+    /// group has finished (the final list wins).
+    private func applyPartial(_ partial: AddonStreamGroup, requestKey: String) {
+        guard activeRequestKey == requestKey,
+              state.requestKey == requestKey,
+              let index = state.groups.firstIndex(where: { $0.addonId == partial.addonId }),
+              state.groups[index].isLoading else { return }
+        var groups = state.groups
+        groups[index] = partial
+        publish(groups: groups, requestKey: requestKey, forceLoading: true)
+    }
+
     private func apply(update: GroupUpdate, requestKey: String, forceLoading: Bool) {
         var groups = state.groups
         guard let index = groups.firstIndex(where: { $0.addonId == update.addonId }) else { return }
@@ -502,6 +684,10 @@ final class StreamsRepository: ObservableObject {
         let displayName: String
         let manifestURL: URL
         let logo: String?
+        /// The ids it is asked by; [] = the title's own. One: the title's own, or for an
+        /// AniList title an add-on doesn't take, its Kitsu or IMDb id. Two (the
+        /// AIOStreams addon for an AniList title): asked by both at once, merged.
+        var requestIds: [String] = []
     }
 
     // MARK: Fork: Jellyfin live lookup
@@ -546,9 +732,92 @@ final class StreamsRepository: ObservableObject {
         }
     }
 
+    /// Other ids of a title for add-ons that don't take its own but offer `resource`: an AniList
+    /// title's Kitsu, MAL, AniDB, IMDb and TMDB ids; a Cinemeta anime's AniList, Kitsu, MAL and
+    /// AniDB ones.
+    nonisolated static func aniListAlternatives(
+        for videoId: String,
+        type: String,
+        resource: String,
+        manifests: [StreamAddonManifest]
+    ) async -> [String] {
+        let someoneNeeds = manifests.contains { manifest in
+            !manifest.supportsResource(resource, type: type, id: videoId)
+                && (manifest.resources ?? []).contains { $0.name.caseInsensitiveCompare(resource) == .orderedSame }
+        }
+        guard someoneNeeds else { return [] }
+        if AniListMetaBuilder.isAniListID(videoId) {
+            return await AniListStreamIds.alternatives(for: videoId)
+        }
+        // A Cinemeta anime, for add-ons that take only anime ids (kitsu:, anilist:, mal:, anidb:).
+        return await AniListStreamIds.cinemetaAlternatives(for: videoId)
+    }
+
+    /// The id plugins are asked by: the title's own, or an AniList title's IMDb id (plugins
+    /// take IMDb and TMDB ids), as add-ons that don't take anilist: ids are asked by it.
+    nonisolated static func pluginVideoId(for videoId: String) async -> String {
+        guard AniListMetaBuilder.isAniListID(videoId) else { return videoId }
+        return await AniListStreamIds.alternatives(for: videoId).first { $0.hasPrefix("tt") } ?? videoId
+    }
+
+    /// The converted ids of an AniList title for the AIOStreams addon
+    /// (AIOStreams' "Anime searches"), also when no other add-on needs them or "Ask Other
+    /// Add-ons" is off: that setting decides for AIOStreams.
+    nonisolated static func aioAlternatives(for videoId: String, have alternatives: [String], aioPresent: Bool) async -> [String] {
+        guard aioPresent, AniListMetaBuilder.isAniListID(videoId),
+              AIOStreamsHost.animeRequestSetting != .aniList else { return alternatives }
+        guard alternatives.isEmpty else { return alternatives }
+        return await AniListStreamIds.convertedIDs(for: videoId)
+    }
+
+    typealias PartialGroupHandler = @Sendable (AddonStreamGroup) async -> Void
+
     private struct GroupUpdate {
         let addonId: String
         let group: AddonStreamGroup
+    }
+
+    // The AIOStreams addon while AIOStreams starts.
+    private static let startingAIOGroupID = "aio.experiment.starting"
+
+    /// Waits (up to 20 s) for AIOStreams to start, then asks its addon like
+    /// any other; the group replaces the waiting one.
+    private static func fetchStartingAIOGroup(
+        type: String,
+        videoId: String,
+        onPartial: PartialGroupHandler? = nil
+    ) async -> GroupUpdate {
+        let waiting = AddonStreamGroup(addonId: startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: false, error: nil)
+        guard let url = await AIOStreamsHost.waitForAddon(seconds: 20) else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let manifests = await loadManifestsConcurrently(urls: [url])
+        guard let manifest = manifests[url] else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let alternatives = await aioAlternatives(for: videoId, have: [], aioPresent: true)
+        let requestIds = AIOStreamsHost.requestIDs(videoId: videoId, alternatives: alternatives) {
+            manifest.supportsResource("stream", type: type, id: $0)
+        }
+        guard !requestIds.isEmpty else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let target = StreamAddonTarget(
+            addonId: stableAddonId(manifest: manifest, manifestURL: url),
+            displayName: CinemetaCatalogRepository.streamAddonDisplayName(for: url, manifestName: manifest.displayName),
+            manifestURL: url,
+            logo: manifest.logo,
+            requestIds: requestIds
+        )
+        // The first of two answers goes in the waiting group's place.
+        let waitingID = startingAIOGroupID
+        let partial: PartialGroupHandler? = onPartial.map { handler -> PartialGroupHandler in
+            { group in
+                await handler(AddonStreamGroup(addonId: waitingID, displayName: group.displayName, streams: group.streams, isLoading: true, error: nil))
+            }
+        }
+        let update = await fetchAddonGroup(target: target, type: type, videoId: videoId, onPartial: partial)
+        return GroupUpdate(addonId: startingAIOGroupID, group: update.group)
     }
 
     /// Stable instance id matching Android: `addon:<manifestId>:<manifestUrl>`.
@@ -564,16 +833,26 @@ final class StreamsRepository: ObservableObject {
         stableAddonId(manifestId: manifest.id, manifestURL: manifestURL)
     }
 
-    private static func fetchAddonGroup(
+    /// Off the main thread (as `fetchStreams`): as static members of this main-actor class they
+    /// ran on it, so every add-on's answer was decoded, turned into streams and its titles
+    /// parsed there, holding Details up for 200-330 ms as it opened.
+    nonisolated private static func fetchAddonGroup(
         target: StreamAddonTarget,
         type: String,
-        videoId: String
+        videoId: String,
+        onPartial: PartialGroupHandler? = nil
     ) async -> GroupUpdate {
+        // AIOStreams listening again after the Home screen.
+        await AIOStreamsHost.waitWhileWaking(for: target.manifestURL)
+        let ids = target.requestIds.isEmpty ? [videoId] : target.requestIds
+        if ids.count > 1 {
+            return await fetchMergedAddonGroup(target: target, type: type, ids: ids, onPartial: onPartial)
+        }
         guard let streamURL = AddonTransportUrls.buildResourceURL(
             manifestURL: target.manifestURL,
             resource: "stream",
             type: type,
-            id: videoId
+            id: ids[0]
         ) else {
             return GroupUpdate(
                 addonId: target.addonId,
@@ -588,17 +867,7 @@ final class StreamsRepository: ObservableObject {
         }
 
         do {
-            var attempt = 0
-            var streams: [NuvioStream] = []
-            while true {
-                do {
-                    streams = try await fetchStreams(from: streamURL, addonName: target.displayName, logo: target.logo)
-                    break
-                } catch {
-                    guard attempt == 0, StreamRequestRetryPolicy.shouldRetry(error) else { throw error }
-                    attempt += 1
-                }
-            }
+            let streams = try await fetchStreamsRetrying(from: streamURL, target: target)
             let presentedStreams = await DebridStreamPresentation.present(streams: streams)
             return GroupUpdate(
                 addonId: target.addonId,
@@ -628,6 +897,126 @@ final class StreamsRepository: ObservableObject {
         }
     }
 
+    /// One retry for a connection that broke off before an answer.
+    private static func fetchStreamsRetrying(from streamURL: URL, target: StreamAddonTarget) async throws -> [NuvioStream] {
+        var attempt = 0
+        while true {
+            do {
+                return try await fetchStreams(from: streamURL, addonName: target.displayName, logo: target.logo)
+            } catch {
+                guard attempt == 0, StreamRequestRetryPolicy.shouldRetry(error) else { throw error }
+                attempt += 1
+            }
+        }
+    }
+
+    /// The AIOStreams addon asked by two ids at once (an
+    /// AniList title, AIOStreams' "Anime searches"). The first answer shows
+    /// at once; the group is the streams of both, in the order of the ids,
+    /// each once. The times go to the AIOStreams log and sheet.
+    private static func fetchMergedAddonGroup(
+        target: StreamAddonTarget,
+        type: String,
+        ids: [String],
+        onPartial: PartialGroupHandler?
+    ) async -> GroupUpdate {
+        let begin = Date()
+        var results: [Int: Result<[NuvioStream], Error>] = [:]
+        var seconds: [Int: TimeInterval] = [:]
+        await withTaskGroup(of: (Int, Result<[NuvioStream], Error>, TimeInterval).self) { group in
+            for (index, id) in ids.enumerated() {
+                group.addTask {
+                    let start = Date()
+                    guard let url = AddonTransportUrls.buildResourceURL(
+                        manifestURL: target.manifestURL, resource: "stream", type: type, id: id
+                    ) else {
+                        return (index, .failure(URLError(.badURL)), 0)
+                    }
+                    do {
+                        let streams = try await fetchStreamsRetrying(from: url, target: target)
+                        return (index, .success(streams), Date().timeIntervalSince(start))
+                    } catch {
+                        return (index, .failure(error), Date().timeIntervalSince(start))
+                    }
+                }
+            }
+            for await (index, result, took) in group {
+                results[index] = result
+                seconds[index] = took
+                if results.count < ids.count, let onPartial, case .success(let streams) = result, !streams.isEmpty {
+                    let presented = await DebridStreamPresentation.present(streams: streams)
+                    await onPartial(AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: presented, isLoading: true, error: nil))
+                }
+            }
+        }
+        let lists = ids.indices.compactMap { try? results[$0]?.get() }
+        let merged = mergeStreamLists(lists)
+        let parts = ids.indices.map { index -> String in
+            let id = ids[index]
+            let took = String(format: "%.1f s", seconds[index] ?? 0)
+            switch results[index] {
+            case .success(let streams): return "\(id) \(streams.count) in \(took)"
+            case .failure(let error): return "\(id) failed (\((error as? URLError)?.code == .timedOut ? "timed out" : error.localizedDescription)) after \(took)"
+            case .none: return "\(id) -"
+            }
+        }
+        let summary = parts.joined(separator: " · ")
+            + " · together \(merged.count) in \(String(format: "%.1f s", Date().timeIntervalSince(begin)))"
+        AIOStreamsHost.shared.noteAnimeSearch(summary)
+
+        guard !lists.isEmpty else {
+            var message = "No answer"
+            if case .failure(let error) = results[0] {
+                message = (error as? URLError)?.code == .timedOut ? "Timed out" : error.localizedDescription
+            }
+            return GroupUpdate(
+                addonId: target.addonId,
+                group: AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: [], isLoading: false, error: message)
+            )
+        }
+        let presented = await DebridStreamPresentation.present(streams: merged)
+        return GroupUpdate(
+            addonId: target.addonId,
+            group: AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: presented, isLoading: false, error: nil)
+        )
+    }
+
+    /// Answers of one add-on to several requests as one list, in order: a
+    /// stream a later answer repeats is left out — the same address, or the
+    /// same torrent file or file (name and size) under the same name (so the
+    /// same file through two debrid services stays twice). Within one answer
+    /// nothing is left out.
+    nonisolated static func mergeStreamLists(_ lists: [[NuvioStream]]) -> [NuvioStream] {
+        var seen = Set<String>()
+        var merged: [NuvioStream] = []
+        for list in lists {
+            var added = Set<String>()
+            for stream in list {
+                let keys = streamIdentityKeys(stream)
+                if keys.contains(where: seen.contains) { continue }
+                merged.append(stream)
+                added.formUnion(keys)
+            }
+            seen.formUnion(added)
+        }
+        return merged
+    }
+
+    nonisolated private static func streamIdentityKeys(_ stream: NuvioStream) -> [String] {
+        let label = stream.name ?? ""
+        var keys: [String] = []
+        if let url = stream.url, !url.isEmpty {
+            keys.append("url:\(url)")
+        }
+        if let hash = stream.infoHash?.lowercased(), !hash.isEmpty {
+            keys.append("hash:\(hash):\(stream.fileIdx ?? -1):\(label)")
+        }
+        if let file = stream.filename?.lowercased(), !file.isEmpty, let size = stream.videoSize, size > 0 {
+            keys.append("file:\(file):\(size):\(label)")
+        }
+        return keys
+    }
+
     enum StreamRequestRetryPolicy {
         static func shouldRetry(_ error: Error) -> Bool {
             guard let urlError = error as? URLError else { return false }
@@ -636,7 +1025,7 @@ final class StreamsRepository: ObservableObject {
         }
     }
 
-    static func fetchStreams(
+    nonisolated static func fetchStreams(
         from url: URL,
         addonName: String,
         logo: String?,
@@ -691,6 +1080,7 @@ final class StreamsRepository: ObservableObject {
         await withTaskGroup(of: (URL, StreamAddonManifest?).self) { group in
             for url in missing {
                 group.addTask {
+                    await AIOStreamsHost.waitWhileWaking(for: url)
                     let manifest = await fetchManifest(url)
                     return (url, manifest)
                 }
@@ -714,6 +1104,8 @@ final class StreamsRepository: ObservableObject {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
 
@@ -758,21 +1150,25 @@ final class StreamsRepository: ObservableObject {
 
         let manifests = await Self.loadManifestsConcurrently(urls: manifestURLs)
         guard !Task.isCancelled else { return [] }
-        let providers = Self.compatibleExternalSubtitleProviders(
-            manifestURLs: manifestURLs, manifests: manifests, type: subtitleType, id: videoId)
+        // An AniList title: subtitle add-ons that don't take anilist: ids are asked by Kitsu or IMDb.
+        let alternatives = await Self.aniListAlternatives(
+            for: videoId, type: subtitleType, resource: "subtitles", manifests: manifestURLs.compactMap { manifests[$0] })
+        guard !Task.isCancelled else { return [] }
+        let providers = Self.externalSubtitleProviders(
+            manifestURLs: manifestURLs, manifests: manifests, type: subtitleType, id: videoId, alternatives: alternatives)
         for provider in providers {
             if let baseURL = AddonTransportUrls.buildResourceURL(
                 manifestURL: provider.manifestURL,
                 resource: "subtitles",
                 type: subtitleType,
-                id: videoId
+                id: provider.id
             ) {
                 endpoints.append((provider.name, baseURL))
             }
             if let extraURL = AddonTransportUrls.buildSubtitleURL(
                 manifestURL: provider.manifestURL,
                 type: subtitleType,
-                id: videoId,
+                id: provider.id,
                 videoHash: videoHash,
                 videoSize: videoSize,
                 filename: filename
@@ -811,18 +1207,34 @@ final class StreamsRepository: ObservableObject {
         type: String,
         id: String
     ) -> [(name: String, manifestURL: URL)] {
+        externalSubtitleProviders(manifestURLs: manifestURLs, manifests: manifests, type: type, id: id, alternatives: [])
+            .map { ($0.name, $0.manifestURL) }
+    }
+
+    /// Subtitle add-ons for `id`, each with the id it is asked by (an AniList title's Kitsu or
+    /// IMDb id for one that doesn't take anilist: ids).
+    nonisolated static func externalSubtitleProviders(
+        manifestURLs: [URL],
+        manifests: [URL: StreamAddonManifest],
+        type: String,
+        id: String,
+        alternatives: [String]
+    ) -> [(name: String, manifestURL: URL, id: String)] {
         manifestURLs.compactMap { url in
             guard let manifest = manifests[url],
-                  manifest.supportsResource("subtitles", type: type, id: id) else { return nil }
+                  let requestId = AniListStreamIds.requestID(
+                    for: manifest, resource: "subtitles", type: type, videoId: id, alternatives: alternatives
+                  ) else { return nil }
             let displayName = CinemetaCatalogRepository.streamAddonDisplayName(
                 for: url,
                 manifestName: manifest.displayName
             )
-            return (displayName, url)
+            return (displayName, url, requestId)
         }
     }
 
     private static func fetchSubtitles(from url: URL, source: String) async -> [NuvioSubtitle] {
+        await AIOStreamsHost.waitWhileWaking(for: url)
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 8
@@ -1523,4 +1935,10 @@ private struct LossyPrimitiveString: Decodable {
             value = nil
         }
     }
+}
+
+/// The subtitle files and per-file tracks of one Plex item being offered.
+struct PlexOfferedTracks {
+    var subtitles: [NuvioSubtitle] = []
+    var parts: [String: PlexClient.PartTracks] = [:]
 }

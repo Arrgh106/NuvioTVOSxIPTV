@@ -18,6 +18,11 @@ import Combine
 
 struct PlayerView: View {
     @StateObject var viewModel: PlayerViewModel
+    @State var revealableNextEpisodeSpoilerKey: String?
+    @State var trustedWatchedEpisodeKeys: Set<String> = []
+    @State private var completedLedgerEpisodeKeysByContentID: [String: Set<String>] = [:]
+    @State private var hasCachedCompletedLedgerEvidence = false
+    @AppStorage(SettingsKey.revealNextEpisodeSpoilers) var revealNextEpisodeSpoilers = false
     @Environment(\.scenePhase) var scenePhase
 
     let url: URL
@@ -64,7 +69,8 @@ struct PlayerView: View {
     var onWatchPartyIncomingMediaResolved: WatchPartyIncomingEpisodePlan.Completion? = nil
     var onWatchPartyEpisodeResolved: (@MainActor (NuvioVideo, PreparedNextStream) async -> Bool)? = nil
     var onWatchPartySourceChanged: (@MainActor () async -> Void)? = nil
-    var onRequestSources: (() -> Void)? = nil
+    var onEpisodeChanged: ((NuvioVideo) -> Void)? = nil
+    var onRequestSources: ((NuvioVideo?) -> Void)? = nil
     var onFinished: (() -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlayRecommendation: ((_ meta: NuvioMeta, _ playManually: Bool) -> Void)? = nil
@@ -112,7 +118,8 @@ struct PlayerView: View {
         onWatchPartyIncomingMediaResolved: WatchPartyIncomingEpisodePlan.Completion? = nil,
         onWatchPartyEpisodeResolved: (@MainActor (NuvioVideo, PreparedNextStream) async -> Bool)? = nil,
         onWatchPartySourceChanged: (@MainActor () async -> Void)? = nil,
-        onRequestSources: (() -> Void)? = nil,
+        onEpisodeChanged: ((NuvioVideo) -> Void)? = nil,
+        onRequestSources: ((NuvioVideo?) -> Void)? = nil,
         onFinished: (() -> Void)? = nil,
         onPlaybackStarted: (() -> Void)? = nil,
         onPlayRecommendation: ((NuvioMeta, Bool) -> Void)? = nil,
@@ -162,6 +169,7 @@ struct PlayerView: View {
         self.onWatchPartyIncomingMediaResolved = onWatchPartyIncomingMediaResolved
         self.onWatchPartyEpisodeResolved = onWatchPartyEpisodeResolved
         self.onWatchPartySourceChanged = onWatchPartySourceChanged
+        self.onEpisodeChanged = onEpisodeChanged
         self.onRequestSources = onRequestSources
         self.onFinished = onFinished
         self.onPlaybackStarted = onPlaybackStarted
@@ -188,6 +196,67 @@ struct PlayerView: View {
 
     var body: some View {
         layersWithRemoteCommands
+            .onAppear {
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onChange(of: revealNextEpisodeSpoilers) { _, _ in
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onChange(of: viewModel.nextEpisode?.id) { _, _ in
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onChange(of: viewModel.currentEpisodeVideo?.id) { _, _ in
+                if let ep = viewModel.currentEpisodeVideo {
+                    onEpisodeChanged?(ep)
+                }
+            }
+            .onChange(of: episodes.map(\.id)) { _, _ in
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AniListAccount.changedNotification).receive(on: RunLoop.main)) { _ in
+                refreshNextEpisodeSpoilerEligibility()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: WatchProgressLedger.changedNotification).receive(on: RunLoop.main)) { _ in
+                refreshNextEpisodeSpoilerEligibility(refreshCompletedLedgerEvidence: true)
+            }
+    }
+
+    func refreshNextEpisodeSpoilerEligibility(refreshCompletedLedgerEvidence: Bool = false) {
+        var ledgerEvidenceChanged = false
+        if refreshCompletedLedgerEvidence || !hasCachedCompletedLedgerEvidence {
+            let latestEvidence = EpisodeSpoilerPolicy.completedLedgerEpisodeKeysByContentID()
+            ledgerEvidenceChanged = !hasCachedCompletedLedgerEvidence
+                || latestEvidence != completedLedgerEpisodeKeysByContentID
+            completedLedgerEpisodeKeysByContentID = latestEvidence
+            hasCachedCompletedLedgerEvidence = true
+        }
+        if refreshCompletedLedgerEvidence && hasCachedCompletedLedgerEvidence && !ledgerEvidenceChanged {
+            return
+        }
+        guard meta.isSeries,
+              !episodes.isEmpty else {
+            revealableNextEpisodeSpoilerKey = nil
+            trustedWatchedEpisodeKeys = []
+            return
+        }
+        let watchedKeys = EpisodeSpoilerPolicy.watchedEpisodeKeys(
+            for: meta,
+            in: episodes,
+            snapshot: WatchedStore.currentSnapshot(),
+            completedLedgerKeysByContentID: completedLedgerEpisodeKeysByContentID
+        )
+        trustedWatchedEpisodeKeys = watchedKeys
+        guard revealNextEpisodeSpoilers else {
+            revealableNextEpisodeSpoilerKey = nil
+            return
+        }
+        revealableNextEpisodeSpoilerKey = EpisodeSpoilerPolicy.revealableNextEpisodeKey(
+            in: episodes,
+            watchedEpisodeKeys: watchedKeys
+        )
     }
 
     var isStandalonePlaybackSession: Bool {

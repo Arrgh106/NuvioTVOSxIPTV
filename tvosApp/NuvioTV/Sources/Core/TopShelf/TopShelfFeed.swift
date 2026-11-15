@@ -67,14 +67,20 @@ private func topShelfInfoPlistGroupIdentifiers(at appBundleURL: URL) -> [String]
 }
 
 private func topShelfProvisioningProfileGroupIdentifiers(at appBundleURL: URL) -> [String] {
-    let profileURL = appBundleURL.appendingPathComponent("embedded.mobileprovision")
+    topShelfProvisioningProfileGroups(at: appBundleURL) ?? []
+}
+
+/// The App Groups a bundle's embedded provisioning profile allows: nil when the bundle carries
+/// no profile (or it cannot be read), empty when the profile allows none.
+private func topShelfProvisioningProfileGroups(at bundleURL: URL) -> [String]? {
+    let profileURL = bundleURL.appendingPathComponent("embedded.mobileprovision")
     guard let profileData = try? Data(contentsOf: profileURL),
           let xmlStart = profileData.range(of: Data("<?xml".utf8)),
           let plistEnd = profileData.range(
             of: Data("</plist>".utf8),
             in: xmlStart.lowerBound..<profileData.endIndex
           ) else {
-        return []
+        return nil
     }
 
     let plistData = profileData.subdata(in: xmlStart.lowerBound..<plistEnd.upperBound)
@@ -83,12 +89,85 @@ private func topShelfProvisioningProfileGroupIdentifiers(at appBundleURL: URL) -
         options: [],
         format: nil
     ),
-    let profile = plistObject as? [String: Any],
-    let entitlements = profile["Entitlements"] as? [String: Any],
-    let groupIDs = entitlements["com.apple.security.application-groups"] as? [String] else {
-        return []
+    let profile = plistObject as? [String: Any] else {
+        return nil
     }
-    return groupIDs
+    let entitlements = profile["Entitlements"] as? [String: Any]
+    return entitlements?["com.apple.security.application-groups"] as? [String] ?? []
+}
+
+/// The Top Shelf extension inside the app, found by its extension point (an installer may
+/// rename it, or leave it out).
+private func topShelfExtensionBundleURL(in appBundleURL: URL) -> URL? {
+    let plugIns = appBundleURL.appendingPathComponent("PlugIns", isDirectory: true)
+    guard let contents = try? FileManager.default.contentsOfDirectory(
+        at: plugIns,
+        includingPropertiesForKeys: nil
+    ) else {
+        return nil
+    }
+    return contents.first { url in
+        guard url.pathExtension == "appex",
+              let info = Bundle(url: url)?.infoDictionary,
+              let extensionInfo = info["NSExtension"] as? [String: Any] else {
+            return false
+        }
+        return extensionInfo["NSExtensionPointIdentifier"] as? String == "com.apple.tv-top-shelf"
+    }
+}
+
+/// What this install's signing gives the Top Shelf, for Settings. A sideloaded build can lose
+/// the App Group or the extension itself, and the home screen row then stays empty with no
+/// other sign of what is missing.
+public struct TopShelfSigningCheck: Equatable, Sendable {
+    public enum Problem: Equatable, Sendable {
+        /// The installer left the Top Shelf extension out of the app.
+        case extensionMissing
+        /// The app cannot open an App Group. `profileGroups` are the groups its provisioning
+        /// profile allows (empty: none); nil when the build carries no profile.
+        case appWithoutGroup(profileGroups: [String]?)
+        /// The app opens `groupID`, but the extension's provisioning profile does not allow
+        /// it, so the extension cannot read what the app writes there.
+        case extensionWithoutGroup
+    }
+
+    /// The App Group the app uses, or would use (`group.<bundle ID>`) when it can open none.
+    public let groupID: String
+    public let problem: Problem?
+
+    /// Signing does not change while the app runs, so it is read once.
+    public static let installed: TopShelfSigningCheck = {
+        let appBundleURL = topShelfContainingAppBundleURL()
+        let extensionURL = topShelfExtensionBundleURL(in: appBundleURL)
+        let groupID = topShelfAppGroupID
+        return TopShelfSigningCheck(
+            groupID: groupID,
+            problem: diagnose(
+                groupID: groupID,
+                appOpensGroup: FileManager.default
+                    .containerURL(forSecurityApplicationGroupIdentifier: groupID) != nil,
+                appProfileGroups: topShelfProvisioningProfileGroups(at: appBundleURL),
+                hasExtension: extensionURL != nil,
+                extensionProfileGroups: extensionURL.flatMap { topShelfProvisioningProfileGroups(at: $0) }
+            )
+        )
+    }()
+
+    static func diagnose(
+        groupID: String,
+        appOpensGroup: Bool,
+        appProfileGroups: [String]?,
+        hasExtension: Bool,
+        extensionProfileGroups: [String]?
+    ) -> Problem? {
+        guard hasExtension else { return .extensionMissing }
+        guard appOpensGroup else { return .appWithoutGroup(profileGroups: appProfileGroups) }
+        // A build without a profile (App Store, TestFlight) has nothing to compare.
+        if let extensionProfileGroups, !extensionProfileGroups.contains(groupID) {
+            return .extensionWithoutGroup
+        }
+        return nil
+    }
 }
 
 /// One Top Shelf row. Each section is mirrored to its own file so the stores
@@ -162,6 +241,12 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
     /// place of the title's own poster and card art, which stay the fallback.
     public let customPosterURL: String?
     public let customLandscapeURL: String?
+    /// The full name drawn under the logo in the carousel: an AniList season shows the series'
+    /// logo, so its own name says which one it is.
+    public let logoCaption: String?
+    /// IMDb ids to ask Trailerio after `imdbId` when it has no trailer: an AniList season's
+    /// earlier seasons, back to the first.
+    public let trailerFallbackIMDbIds: [String]?
 
     public init(contentId: String, contentType: String, title: String,
                 subtitle: String?, imageURL: String?, backdropURL: String? = nil,
@@ -172,7 +257,8 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
                 logoURL: String? = nil, cast: [String]? = nil, directors: [String]? = nil,
                 carouselArtworkFileName: String? = nil, airDate: String? = nil,
                 imdbId: String? = nil, tmdbId: Int? = nil, imdbRating: Double? = nil,
-                homeOrder: Int? = nil, customPosterURL: String? = nil, customLandscapeURL: String? = nil) {
+                homeOrder: Int? = nil, customPosterURL: String? = nil, customLandscapeURL: String? = nil,
+                logoCaption: String? = nil, trailerFallbackIMDbIds: [String]? = nil) {
         self.contentId = contentId
         self.contentType = contentType
         self.title = title
@@ -198,6 +284,24 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
         self.homeOrder = homeOrder
         self.customPosterURL = customPosterURL
         self.customLandscapeURL = customLandscapeURL
+        self.logoCaption = logoCaption
+        self.trailerFallbackIMDbIds = trailerFallbackIMDbIds
+    }
+
+    /// The same entry with other artwork and ids (the app's `TopShelfFeedStore.entryEnricher`).
+    public func with(
+        backdropURL: String?, logoURL: String?, imdbId: String?, logoCaption: String?,
+        trailerFallbackIMDbIds: [String]? = nil
+    ) -> TopShelfEntry {
+        TopShelfEntry(
+            contentId: contentId, contentType: contentType, title: title, subtitle: subtitle,
+            imageURL: imageURL, backdropURL: backdropURL, progress: progress, action: action ?? .resume,
+            artworkFileName: artworkFileName, summary: summary, genres: genres, year: year,
+            releaseDate: releaseDate, runtimeMinutes: runtimeMinutes, logoURL: logoURL, cast: cast,
+            directors: directors, carouselArtworkFileName: carouselArtworkFileName, airDate: airDate,
+            imdbId: imdbId, tmdbId: tmdbId, imdbRating: imdbRating, homeOrder: homeOrder,
+            customPosterURL: customPosterURL, customLandscapeURL: customLandscapeURL,
+            logoCaption: logoCaption, trailerFallbackIMDbIds: trailerFallbackIMDbIds ?? self.trailerFallbackIMDbIds)
     }
 
     /// Artwork the card is rendered from: the backdrop, else the poster.
@@ -324,10 +428,22 @@ public enum TopShelfRatingsStore {
     public struct Record: Codable, Equatable, Sendable {
         public let badges: [TopShelfRatingBadge]
         public let fetchedAt: Date
+        public let ratingsConfigurationIdentity: String?
+
+        public init(
+            badges: [TopShelfRatingBadge],
+            fetchedAt: Date,
+            ratingsConfigurationIdentity: String? = nil
+        ) {
+            self.badges = badges
+            self.fetchedAt = fetchedAt
+            self.ratingsConfigurationIdentity = ratingsConfigurationIdentity
+        }
     }
 
     static let fileName = "ratings.json"
     static let maximumAge: TimeInterval = 24 * 60 * 60
+    static let emptyMaximumAge: TimeInterval = 30 * 60
 
     static func read(in directory: URL) -> [String: Record] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(fileName)),
@@ -344,7 +460,8 @@ public enum TopShelfRatingsStore {
 
     static func isFresh(_ record: Record?, now: Date = Date()) -> Bool {
         guard let record else { return false }
-        return now.timeIntervalSince(record.fetchedAt) < maximumAge
+        // No rating at all is usually a refused or slow answer: asked again soon.
+        return now.timeIntervalSince(record.fetchedAt) < (record.badges.isEmpty ? emptyMaximumAge : maximumAge)
     }
 }
 
@@ -422,7 +539,7 @@ public enum TopShelfFeedStore {
         init(_ style: TopShelfConfiguration.Style) {
             switch style {
             case .carouselDetails, .carouselActions: self = .carousel
-            case .rows: self = .card
+            case .rows, .featuredCards: self = .card
             case .posters: self = .poster
             }
         }
@@ -430,6 +547,13 @@ public enum TopShelfFeedStore {
     /// Set by the app: the ratings the carousel shows for a title, in Nuvio's
     /// own sources and order. Nil in the extension, which only reads them.
     public static var ratingsProvider: (@Sendable (TopShelfEntry) async -> [TopShelfRatingBadge])?
+    /// Set by the app so cached ratings refresh when providers, order or visibility change.
+    /// Nil in the extension, which only reads the stamped records.
+    public static var ratingsConfigurationIdentityProvider: (@Sendable () -> String)?
+    /// Set by the app: better artwork and ids for an entry before it is written (an AniList
+    /// title's backdrop, logo and IMDb id). Nil in the extension.
+    public static var entryEnricher: (@Sendable (TopShelfEntry) async -> TopShelfEntry)?
+    static let enrichmentConcurrency = 4
     private static let writeCoordinators: [TopShelfSection: TopShelfWriteCoordinator] =
         Dictionary(uniqueKeysWithValues: TopShelfSection.allCases.map { ($0, TopShelfWriteCoordinator()) })
 
@@ -487,9 +611,9 @@ public enum TopShelfFeedStore {
     static func writeCatalogRowsAndWait(_ rows: [TopShelfFeedRow]) async {
         guard isAvailable, let writeCoordinator = writeCoordinators[.catalog] else { return }
         let generation = writeCoordinator.beginWrite()
-        let feed = TopShelfFeed(
+        let feed = await enriched(TopShelfFeed(
             entries: [],
-            rows: rows.map { TopShelfFeedRow(id: $0.id, title: $0.title, entries: $0.entries.map(decorated)) })
+            rows: rows.map { TopShelfFeedRow(id: $0.id, title: $0.title, entries: $0.entries.map(decorated)) }))
         guard writeCoordinator.commitIfCurrent(generation, commit: {
             writeFeed(feed, section: .catalog)
         }) else { return }
@@ -500,12 +624,49 @@ public enum TopShelfFeedStore {
         guard isAvailable, let writeCoordinator = writeCoordinators[section] else { return }
         let generation = writeCoordinator.beginWrite()
         Task.detached(priority: .utility) {
-            let feed = makeFeed()
+            let feed = await enriched(makeFeed())
             guard writeCoordinator.commitIfCurrent(generation, commit: {
                 writeFeed(feed, section: section)
             }) else { return }
             await refreshArtworkNow()
         }
+    }
+
+    /// `feed` with the app's `entryEnricher` applied to every entry (a few at a time), the render
+    /// names named again for what changed.
+    static func enriched(_ feed: TopShelfFeed) async -> TopShelfFeed {
+        guard let enricher = entryEnricher else { return feed }
+        func enrich(_ entries: [TopShelfEntry]) async -> [TopShelfEntry] {
+            var result = entries
+            await withTaskGroup(of: (Int, TopShelfEntry).self) { group in
+                var next = 0
+                while next < min(enrichmentConcurrency, entries.count) {
+                    let index = next
+                    let entry = entries[index]
+                    group.addTask { (index, await enricher(entry)) }
+                    next += 1
+                }
+                while let (index, entry) = await group.next() {
+                    result[index] = entry == entries[index] ? entry : decorated(entry)
+                    if next < entries.count {
+                        let following = next
+                        let waiting = entries[following]
+                        group.addTask { (following, await enricher(waiting)) }
+                        next += 1
+                    }
+                }
+            }
+            return result
+        }
+        var rows: [TopShelfFeedRow]? = nil
+        if let feedRows = feed.rows {
+            var enrichedRows: [TopShelfFeedRow] = []
+            for row in feedRows {
+                enrichedRows.append(TopShelfFeedRow(id: row.id, title: row.title, entries: await enrich(row.entries)))
+            }
+            rows = enrichedRows
+        }
+        return TopShelfFeed(entries: await enrich(feed.entries), title: feed.title, rows: rows, updatedAt: feed.updatedAt)
     }
 
     /// Redraws the shelf for the current setting: renders the artwork the
@@ -530,9 +691,14 @@ public enum TopShelfFeedStore {
             var ratings = TopShelfRatingsStore.read(in: container)
             if configuration.style.isCarousel, let provider = ratingsProvider {
                 var changed = false
-                for entry in displayed where !TopShelfRatingsStore.isFresh(ratings[entry.contentId]) {
+                let ratingsIdentity = ratingsConfigurationIdentityProvider?()
+                for entry in displayed where needsRatingsRefresh(ratings[entry.contentId], identity: ratingsIdentity) {
                     let badges = await provider(entry)
-                    ratings[entry.contentId] = TopShelfRatingsStore.Record(badges: badges, fetchedAt: Date())
+                    ratings[entry.contentId] = TopShelfRatingsStore.Record(
+                        badges: badges,
+                        fetchedAt: Date(),
+                        ratingsConfigurationIdentity: ratingsIdentity
+                    )
                     changed = true
                 }
                 // Titles no longer on the shelf drop out, so the file stays small.
@@ -543,11 +709,26 @@ public enum TopShelfFeedStore {
                     TopShelfRatingsStore.write(ratings, in: container)
                 }
             }
-            await cacheArtwork(for: displayed, kind: ArtworkKind(configuration.style), ratings: ratings, scale: scale)
+            if configuration.style == .featuredCards {
+                let sections = TopShelfComposer.featuredSections(from: rows)
+                await cacheArtwork(for: sections.first?.entries ?? [], kind: .card, ratings: ratings, scale: scale)
+                await cacheArtwork(for: sections.dropFirst().flatMap(\.entries), kind: .poster, ratings: ratings, scale: scale)
+            } else {
+                await cacheArtwork(for: displayed, kind: ArtworkKind(configuration.style), ratings: ratings, scale: scale)
+            }
             #endif
             TopShelfArtworkPruner.prune(in: container)
             notifyTopShelfContentChanged()
         }
+    }
+
+    private static func needsRatingsRefresh(
+        _ record: TopShelfRatingsStore.Record?,
+        identity: String?
+    ) -> Bool {
+        guard TopShelfRatingsStore.isFresh(record) else { return true }
+        guard let identity else { return false }
+        return record?.ratingsConfigurationIdentity != identity
     }
 
     /// Resolves a rendered card that both the app and extension can read from
@@ -561,6 +742,16 @@ public enum TopShelfFeedStore {
     public static func carouselArtworkURL(for entry: TopShelfEntry, ratings: [String: TopShelfRatingsStore.Record]) -> URL? {
         existingArtwork(named: carouselImageName(for: entry, badges: ratings[entry.contentId]?.badges))
             ?? existingArtwork(named: entry.carouselArtworkFileName)
+    }
+
+    /// Hidden labels use the original artwork, never an already-decorated cache
+    /// file. Top Shelf does not offer a per-focus artwork overlay callback.
+    public static func sectionedArtworkURL(
+        for entry: TopShelfEntry, poster: Bool, showsEpisodeLabels: Bool
+    ) -> URL? {
+        let original = (poster ? entry.posterSourceURL : entry.cardSourceURL).flatMap(URL.init(string:))
+        guard showsEpisodeLabels else { return original }
+        return (poster ? posterArtworkURL(for: entry) : artworkURL(for: entry)) ?? original
     }
 
     /// Resolves the rendered 2:3 poster with its episode/time pill.
@@ -590,7 +781,17 @@ public enum TopShelfFeedStore {
     static func carouselImageName(for entry: TopShelfEntry, badges: [TopShelfRatingBadge]?) -> String? {
         guard let base = entry.carouselArtworkFileName else { return nil }
         guard let badges, !badges.isEmpty else { return base }
-        return generatedName(for: [base] + badges.map { "\($0.source)=\($0.value)" })
+        let badgeSignature = badges.flatMap { badge in
+            [
+                badge.source,
+                badge.name,
+                badge.value,
+                badge.iconAssetName ?? "",
+                badge.iconURL ?? "",
+                String(badge.iconWidth)
+            ]
+        }
+        return generatedName(for: [base] + badgeSignature)
     }
 
     private static func existingArtwork(named name: String?) -> URL? {
@@ -632,7 +833,7 @@ public enum TopShelfFeedStore {
             entry.contentId,
             entry.artworkSourceURL ?? "",
             entry.logoURL ?? ""
-        ])
+        ] + (entry.logoCaption.map { [$0] } ?? []))
     }
 
     /// The same image at the largest size its host serves, then the URL as
@@ -726,7 +927,7 @@ public enum TopShelfFeedStore {
                     let icon = await ratingIcon(for: badge, cache: &icons)
                     drawn.append((icon: icon, badge: badge))
                 }
-                rendered = renderedCarouselArtwork(from: image, logo: logo, ratings: drawn, scale: scale)
+                rendered = renderedCarouselArtwork(from: image, logo: logo, caption: entry.logoCaption, ratings: drawn, scale: scale)
             case .card:
                 rendered = renderedArtwork(from: image, subtitle: entry.subtitle)
             }
@@ -865,6 +1066,7 @@ public enum TopShelfFeedStore {
     private static func renderedCarouselArtwork(
         from image: UIImage,
         logo: UIImage?,
+        caption: String? = nil,
         ratings: [(icon: UIImage?, badge: TopShelfRatingBadge)],
         scale: CGFloat
     ) -> Data? {
@@ -892,10 +1094,40 @@ public enum TopShelfFeedStore {
                 let origin = CGPoint(x: 120, y: size.height * logoCenterHeight - logoSize.height / 2)
                 logo.draw(in: CGRect(origin: origin, size: logoSize))
                 ratingsTop = origin.y + logoSize.height + 32
+                if let caption, !caption.isEmpty {
+                    ratingsTop = drawCaption(caption, at: CGPoint(x: 120, y: origin.y + logoSize.height + 20),
+                                             width: maximum.width) + 28
+                }
             }
             drawRatings(ratings, at: CGPoint(x: 120, y: ratingsTop), maximumX: size.width * 0.55)
         }
         return rendered.jpegData(compressionQuality: 0.85)
+    }
+
+    /// The name under the logo, up to two lines; returns where it ends.
+    private static func drawCaption(_ caption: String, at origin: CGPoint, width: CGFloat) -> CGFloat {
+        let shadow = NSShadow()
+        shadow.shadowColor = UIColor.black.withAlphaComponent(0.7)
+        shadow.shadowBlurRadius = 6
+        shadow.shadowOffset = CGSize(width: 0, height: 1)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 34, weight: .semibold),
+            .foregroundColor: UIColor.white,
+            .shadow: shadow,
+            .paragraphStyle: paragraph
+        ]
+        let text = NSAttributedString(string: caption, attributes: attributes)
+        let lineHeight = ceil(UIFont.systemFont(ofSize: 34, weight: .semibold).lineHeight)
+        let bounds = text.boundingRect(
+            with: CGSize(width: width, height: lineHeight * 2),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+            context: nil)
+        let height = min(ceil(bounds.height), lineHeight * 2)
+        text.draw(with: CGRect(x: origin.x, y: origin.y, width: width, height: height),
+                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
+        return origin.y + height
     }
 
     /// One row of provider icons with their scores, as on the Details page.

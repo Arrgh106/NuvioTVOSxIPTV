@@ -222,7 +222,7 @@ enum TmdbDetailsService {
         config.waitsForConnectivity = false
         config.requestCachePolicy = .useProtocolCachePolicy
         let totalRam = ProcessInfo.processInfo.physicalMemory
-        let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
+        let isLegacyDevice = totalRam <= 2_500_000_000 || !AppleTVCapability.current.supportsLiquidGlass
         config.urlCache = URLCache(
             memoryCapacity: isLegacyDevice ? (10 * 1024 * 1024) : (30 * 1024 * 1024),
             diskCapacity: isLegacyDevice ? (50 * 1024 * 1024) : (150 * 1024 * 1024),
@@ -312,6 +312,16 @@ enum TmdbDetailsService {
         }
 
         return nil
+    }
+
+    /// The TMDB id a plugin's `getStreams` receives for an IMDb title, as on
+    /// Android: any configured TMDB key is used, nil without one or a match.
+    static func pluginTmdbId(forImdb imdbId: String, mediaType: String) async -> Int? {
+        if requestContext == nil {
+            return await withRequestContext { await pluginTmdbId(forImdb: imdbId, mediaType: mediaType) }
+        }
+        guard apiKey != nil, imdbId.hasPrefix("tt") else { return nil }
+        return await findByImdb(imdbId, mediaTypeHint: mediaType)?.id
     }
 
     static func fetchCompanies(for meta: NuvioMeta) async -> [MetaCompany] {
@@ -815,6 +825,21 @@ enum TmdbDetailsService {
             isFromAddon: meta.isFromAddon,
             landscapePosterUrl: nonEmpty(meta.landscapePosterUrl)
         )
+    }
+
+    /// The backdrop and title logo of a TMDB title, by id and nothing else
+    /// (no titles or descriptions). Used for AniList films that TheTVDB has
+    /// no pictures of. nil without TMDB, its key, or TMDB artwork turned on.
+    static func artwork(tmdbId: Int, mediaType: String) async -> (background: String?, logo: String?)? {
+        if requestContext == nil {
+            return await withRequestContext { await artwork(tmdbId: tmdbId, mediaType: mediaType) }
+        }
+        guard isEnabled, apiKey != nil, useArtwork, tmdbId > 0,
+              let details = await fetchLocalizedDetails(tmdbId: tmdbId, mediaType: mediaType) else { return nil }
+        let background = imageURL(details.backdropPath, size: "w1280")
+        let logo = imageURL(preferredLogoPath(from: details.images?.logos), size: "w500")
+        guard background != nil || logo != nil else { return nil }
+        return (background, logo)
     }
 
     /// Applies the lightweight TMDB title/description/artwork enrichment to
@@ -1883,6 +1908,97 @@ private struct TmdbCompanyDTO: Decodable {
     }
 }
 
+// MARK: - Surprise Me
+
+extension TmdbDetailsService {
+    /// TMDB's movie genre ids, with the English names Nuvio's catalogs use.
+    static let surpriseMeMovieGenres: [Int: String] = [
+        28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+        99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+        27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Sci-Fi",
+        10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+    ]
+
+    static func surpriseMeGenreID(for name: String) -> Int? {
+        let key = TasteProfile.normalized(name)
+        return surpriseMeMovieGenres.first { TasteProfile.normalized($0.value) == key }?.key
+    }
+
+    /// Whether TMDB is turned on with a key in Settings > Integrations.
+    static var isAvailableForSurpriseMe: Bool { isEnabled && apiKey != nil }
+
+    /// Movies TMDB recommends to people who liked `meta`.
+    static func surpriseMeRecommendations(for meta: NuvioMeta) async -> [NuvioMeta] {
+        guard isEnabled, let apiKey,
+              let resolved = await resolveTmdbId(for: meta), resolved.mediaType == "movie" else { return [] }
+        return await surpriseMeMovies(path: "movie/\(resolved.id)/recommendations", query: [:], apiKey: apiKey)
+    }
+
+    /// The movie TMDB finds for a title the AI suggested, or nil when there is
+    /// no match. With a year, the release year must be within one year of it.
+    static func surpriseMeFindMovie(title: String, year: Int?) async -> NuvioMeta? {
+        guard isEnabled, let apiKey else { return nil }
+        var query = ["query": title, "include_adult": "false"]
+        if let year { query["year"] = String(year) }
+        var results = await surpriseMeMovies(path: "search/movie", query: query, apiKey: apiKey)
+        if results.isEmpty, year != nil {
+            // Release years differ between countries; try again without it.
+            query["year"] = nil
+            results = await surpriseMeMovies(path: "search/movie", query: query, apiKey: apiKey)
+        }
+        let wanted = title.lowercased().filter { $0.isLetter || $0.isNumber }
+        return results.first { meta in
+            let yearMatches = year == nil || meta.year.map { abs($0 - year!) <= 1 } == true
+            let name = meta.name.lowercased().filter { $0.isLetter || $0.isNumber }
+            return yearMatches && (name == wanted || results.count == 1)
+        } ?? results.first { meta in
+            year != nil && meta.year.map { abs($0 - year!) <= 1 } == true
+        }
+    }
+
+    /// Well-rated movies in any of `genres`, most popular first.
+    static func surpriseMeDiscover(genres: [String], page: Int = 1) async -> [NuvioMeta] {
+        guard isEnabled, let apiKey else { return [] }
+        let ids = genres.compactMap(surpriseMeGenreID(for:))
+        guard !ids.isEmpty else { return [] }
+        return await surpriseMeMovies(path: "discover/movie", query: [
+            "with_genres": ids.map(String.init).joined(separator: "|"),
+            "sort_by": "popularity.desc",
+            "vote_average.gte": "6.5",
+            "vote_count.gte": "300",
+            "page": String(max(1, page)),
+        ], apiKey: apiKey)
+    }
+
+    private static func surpriseMeMovies(path: String, query: [String: String], apiKey: String) async -> [NuvioMeta] {
+        var components = URLComponents(url: apiBase.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: preferredLanguage),
+        ] + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = components.url,
+              let (data, response) = try? await data(for: url),
+              let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(TmdbPagedResults.self, from: data) else { return [] }
+        return decoded.results.compactMap { item in
+            let name = (item.title ?? item.name)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard item.id > 0, !name.isEmpty else { return nil }
+            return NuvioMeta(
+                id: "tmdb:\(item.id)",
+                name: name,
+                description: item.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+                posterUrl: imageURL(item.posterPath, size: "w500"),
+                backgroundUrl: imageURL(item.backdropPath, size: "w1280"),
+                tmdbId: item.id,
+                type: "movie",
+                year: item.releaseDate.flatMap { Int($0.prefix(4)) },
+                genres: (item.genreIds ?? []).compactMap { surpriseMeMovieGenres[$0] },
+                rating: item.voteAverage.flatMap { $0 > 0 ? $0 : nil }
+            )
+        }
+    }
+}
+
 private struct TmdbPagedResults: Decodable {
     let results: [TmdbListItem]
 }
@@ -1903,6 +2019,7 @@ private struct TmdbListItem: Decodable {
     let firstAirDate: String?
     let voteAverage: Double?
     let mediaType: String?
+    var genreIds: [Int]? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview
@@ -1912,6 +2029,7 @@ private struct TmdbListItem: Decodable {
         case firstAirDate = "first_air_date"
         case voteAverage = "vote_average"
         case mediaType = "media_type"
+        case genreIds = "genre_ids"
     }
 }
 
@@ -2081,7 +2199,28 @@ enum MdbListDetailsService {
         }
     }
 
+    /// MDBList's ratings; with MyAnimeList on, the MAL score straight from MAL instead of
+    /// MDBList's copy (MDBList's stays when MAL has none to give).
     static func fetchRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        let defaults = ProfileSettings.current
+        let malKey = providerSettings[providerMyAnimeList] ?? ""
+        let showsMAL = defaults.object(forKey: malKey) == nil || defaults.bool(forKey: malKey)
+        async let ownMAL = ownMALScore(for: meta, shows: showsMAL)
+        var ratings = await mdbListRatings(for: meta)
+        guard let mal = await ownMAL else { return ratings }
+        ratings.removeAll { $0.source == providerMyAnimeList }
+        ratings.append(mal)
+        return ratings.sorted {
+            (providerPriorityOrder.firstIndex(of: $0.source) ?? Int.max) < (providerPriorityOrder.firstIndex(of: $1.source) ?? Int.max)
+        }
+    }
+
+    private static func ownMALScore(for meta: NuvioMeta, shows: Bool) async -> NuvioExternalRating? {
+        guard shows else { return nil }
+        return await MALCatalogs.seriesScore(for: meta)
+    }
+
+    private static func mdbListRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
         let defaults = ProfileSettings.current
         guard defaults.bool(forKey: SettingsKey.mdbListEnabled),
               let apiKey = defaults.string(forKey: SettingsKey.mdbListApiKey)?
@@ -2108,6 +2247,12 @@ enum MdbListDetailsService {
             guard providers.contains(provider), let value = all[provider] else { return nil }
             return NuvioExternalRating(source: provider, value: value)
         }
+    }
+
+    /// `fetchRatings(for:)`, or nothing without a title to ask about.
+    static func fetchRatings(forOptional meta: NuvioMeta?) async -> [NuvioExternalRating] {
+        guard let meta else { return [] }
+        return await fetchRatings(for: meta)
     }
 
     private static func extractImdbID(from meta: NuvioMeta) -> String? {

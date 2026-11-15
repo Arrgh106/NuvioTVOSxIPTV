@@ -111,7 +111,7 @@ The last change wins. Trakt and Simkl logins themselves can't be synced (nuvio.t
 
 You don't need to import your library. When you open a film or an episode (from Cinemeta, TMDB, …), the app asks your Jellyfin server(s) live whether they have it, matched by IMDb/TMDB id, and lists the file as a **Jellyfin** stream next to your add-ons.
 
-Reading a library into the app (for upstream's Jellyfin Home rows) is optional. After the first full read, background syncs only fetch what changed, and the sync screen shows its progress.
+Reading a library into the app (for upstream's Jellyfin Home rows) is optional. It uses upstream's sync (resumes after an interruption, waits when the server is busy); its progress shows in the sync screen and in the activity pill.
 
 ## Feature status
 
@@ -154,7 +154,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 
 You don't need a Mac. Every push runs [`.github/workflows/build-ipa.yml`](.github/workflows/build-ipa.yml) on a GitHub-hosted macOS runner and uploads an unsigned IPA as an artifact. Pushing a tag like `v0.1.0` also publishes a GitHub Release with the IPA.
 
-The upstream code targets the tvOS 27 SDK (Xcode 27), but GitHub's runners currently ship Xcode 26. The few tvOS 27-only sidebar APIs are wrapped in `#if compiler(>=6.4)`. Built with Xcode 26, the profile button appears as a sidebar tab instead of in the tvOS 27 sidebar header. Everything else is unchanged.
+The upstream code targets the tvOS 27 SDK (Xcode 27), but GitHub's runners currently ship Xcode 26. The few tvOS 27-only sidebar APIs are wrapped in `#if compiler(>=6.4)`. Upstream's optional native IPTV (its own Live TV tab) is left out: this fork's Live TV takes its place. Built with Xcode 26, the profile button appears as a sidebar tab instead of in the tvOS 27 sidebar header. Everything else is unchanged.
 
 To build locally on a Mac you need Xcode (26 or 27), [mise](https://mise.jdx.dev) and [Tuist](https://tuist.dev) (version pinned in `mise.toml`):
 

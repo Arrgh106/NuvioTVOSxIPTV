@@ -155,48 +155,39 @@ final class TraktContinueWatchingOwnershipTests: XCTestCase {
     }
 
     @MainActor
-    func testHomeMetadataResolutionBackfillsBeyondTheFirstTwentyCandidates() async {
-        let seeds = Array(0..<TraktProgressService.maxHomeContinueWatchingSeeds)
+    func testHomeMetadataResolutionBackfillsPastTheFirstBatch() async {
+        let batchSize = TraktProgressService.homeContinueWatchingBatchSize
+        let isVisible: (ContinueWatchingItem) -> Bool = { $0.meta.id != "hidden" }
         let resolved = await TraktProgressService.resolveContinueWatchingMetadata(
-            from: seeds,
-            candidateLimit: TraktProgressService.maxHomeContinueWatchingSeeds
+            from: Array(0..<(batchSize * 3)),
+            batchSize: batchSize
         ) { seed in
-            self.item(
-                meta: NuvioMeta(id: "home-seed-\(seed)", name: "Seed \(seed)", type: "movie"),
-                date: Date().addingTimeInterval(Double(-seed))
-            )
+            if seed < batchSize - 2 { return nil }
+            let id = seed < batchSize ? "hidden" : "home-seed-\(seed / 2)"
+            return self.item(meta: NuvioMeta(id: id, name: "Seed", type: "movie"))
         }
 
         let selected = TraktProgressService.selectContinueWatchingItemsForDisplay(
             resolved ?? [],
-            predicate: { item in
-                guard let seed = Int(item.meta.id.replacingOccurrences(of: "home-seed-", with: "")) else {
-                    return false
-                }
-                return seed >= 16
-            }
+            predicate: isVisible
         )
-
-        XCTAssertEqual(selected.count, 20)
-        XCTAssertEqual(selected.map(\.meta.id), (16..<36).map { "home-seed-\($0)" })
+        XCTAssertEqual(selected.map(\.meta.id), (18..<54).map { "home-seed-\($0)" })
     }
 
     @MainActor
-    func testHomeMetadataResolutionNeverExceedsThirtySixCandidates() async {
+    func testHomeMetadataResolutionContinuesPastAFilledBatch() async {
         var resolvedSeeds: [Int] = []
+        let batchSize = TraktProgressService.homeContinueWatchingBatchSize
         let resolved = await TraktProgressService.resolveContinueWatchingMetadata(
             from: Array(0..<100),
-            candidateLimit: TraktProgressService.maxHomeContinueWatchingSeeds
+            batchSize: batchSize
         ) { seed in
             resolvedSeeds.append(seed)
-            return self.item(
-                meta: NuvioMeta(id: "bounded-seed-\(seed)", name: "Seed \(seed)", type: "movie"),
-                date: Date().addingTimeInterval(Double(-seed))
-            )
+            return self.item(meta: NuvioMeta(id: "bounded-seed-\(seed)", name: "Seed", type: "movie"))
         }
 
-        XCTAssertEqual(resolved?.count, 36)
-        XCTAssertEqual(resolvedSeeds.sorted(), Array(0..<36))
+        XCTAssertEqual(resolved?.count, 100)
+        XCTAssertEqual(resolvedSeeds.sorted(), Array(0..<100))
     }
 
     @MainActor
@@ -230,7 +221,7 @@ final class TraktContinueWatchingOwnershipTests: XCTestCase {
     }
 
     @MainActor
-    func testHomeEligibilityAndTitleDedupApplyAfterCheckpointMergeAndBeforeCap() {
+    func testHomeEligibilityAndTitleDedupApplyAfterCheckpointMergeAndWithoutACap() {
         seedCheckpoint()
         let now = Date()
         let visibleItems = (0..<22).map { index in
@@ -250,8 +241,8 @@ final class TraktContinueWatchingOwnershipTests: XCTestCase {
             displaySort: { $0 }
         )
 
-        XCTAssertEqual(result?.count, 20)
-        XCTAssertEqual(result?.map(\.meta.id), (0..<20).map { "home-visible-\($0)" })
+        XCTAssertEqual(result?.count, 22)
+        XCTAssertEqual(result?.map(\.meta.id), (0..<22).map { "home-visible-\($0)" })
         XCTAssertFalse(result?.contains { $0.meta.id == checkpointMeta.id } ?? true)
     }
 
@@ -285,7 +276,7 @@ final class TraktContinueWatchingOwnershipTests: XCTestCase {
     }
 
     @MainActor
-    func testSeparateUpcomingSelectionKeepsUpcomingInTheCombinedTwentyItemPool() {
+    func testSeparateUpcomingSelectionSortsUpcomingInTheCombinedPool() {
         let now = Date()
         let releasedItems = (0..<20).map { index in
             item(
@@ -315,8 +306,8 @@ final class TraktContinueWatchingOwnershipTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(selected.count, 20)
-        XCTAssertTrue(selected.contains { $0.meta.id == upcoming.meta.id })
+        XCTAssertEqual(selected.count, 21)
+        XCTAssertEqual(selected.first?.meta.id, upcoming.meta.id)
     }
 
     @MainActor

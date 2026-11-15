@@ -246,6 +246,10 @@ final class PlaybackSessionCoordinator: ObservableObject {
         return activeEngine.loadingStepMessage
     }
 
+    var isAwaitingDisplaySwitch: Bool {
+        activeEngine.isAwaitingDisplaySwitch
+    }
+
     init(
         aetherController: AetherPlaybackController? = nil,
         aetherControllerFactory: @escaping @MainActor () -> AetherPlaybackController? = { AetherPlaybackController() },
@@ -400,6 +404,30 @@ final class PlaybackSessionCoordinator: ObservableObject {
             progress: aetherController?.startupLoadCheckpointWitness,
             graceAlreadyGranted: graceAlreadyGranted
         )
+    }
+
+    func shouldGrantStartupWatchdogGrace(generation: UInt64, graceAlreadyGranted: Bool) -> Bool {
+        guard loadGeneration == generation else { return false }
+        if shouldGrantDiscStartupWatchdogGrace(generation: generation, graceAlreadyGranted: graceAlreadyGranted) {
+            return true
+        }
+        guard !graceAlreadyGranted,
+              activeBackend == .aether,
+              dispatchedLoadGeneration == generation,
+              let request = lastRequest,
+              !request.isLiveStream,
+              !request.isSports,
+              PlaybackBackendPolicy.isRemoteHTTP(request.videoURL.absoluteString),
+              let progress = aetherController?.startupLoadCheckpointWitness,
+              progress.ownerLoadGeneration == generation,
+              let floor = progress.engineGenerationFloor,
+              let pGen = progress.progressGeneration,
+              pGen >= floor,
+              let cp = progress.checkpoint,
+              cp >= .containerOpened else {
+            return false
+        }
+        return true
     }
 
     func hasDispatchedCurrentLoad(generation: UInt64) -> Bool {

@@ -729,19 +729,19 @@ check(LiveTVStalkerWire.resolved("/media/42.mpg", endpoint: loadPHP)?.absoluteSt
 check(LiveTVStalkerWire.resolved("//cdn.example/b.ts", endpoint: loadPHP)?.absoluteString == "http://cdn.example/b.ts",
       "stalker: resolved protocol-relative")
 check(LiveTVStalkerWire.image("/logos/1.png", endpoint: loadPHP) == "http://portal.example/logos/1.png", "stalker: logo path")
-let utc = TimeZone(identifier: "UTC")!
-check(LiveTVStalkerWire.timestamp("1731700000", zone: utc)?.timeIntervalSince1970 == 1_731_700_000, "stalker: unix time")
-check(LiveTVStalkerWire.timestamp("1731700000000", zone: utc)?.timeIntervalSince1970 == 1_731_700_000, "stalker: ms time")
-check(LiveTVStalkerWire.timestamp("2027-01-15 08:00:00", zone: utc)?.timeIntervalSince1970 == 1_800_000_000, "stalker: date time")
+let stalkerUTC = TimeZone(identifier: "UTC")!
+check(LiveTVStalkerWire.timestamp("1731700000", zone: stalkerUTC)?.timeIntervalSince1970 == 1_731_700_000, "stalker: unix time")
+check(LiveTVStalkerWire.timestamp("1731700000000", zone: stalkerUTC)?.timeIntervalSince1970 == 1_731_700_000, "stalker: ms time")
+check(LiveTVStalkerWire.timestamp("2027-01-15 08:00:00", zone: stalkerUTC)?.timeIntervalSince1970 == 1_800_000_000, "stalker: date time")
 let keyedGuide: [String: Any] = ["data": ["12": [
     ["name": "News", "start_timestamp": "1800000000", "stop_timestamp": "1800003600", "descr": "Today"],
     ["name": "Broken", "start_timestamp": "1800003600", "stop_timestamp": "1800003600"],
 ]]]
-let keyedProgrammes = LiveTVStalkerWire.programmes(keyedGuide, zone: utc)
+let keyedProgrammes = LiveTVStalkerWire.programmes(keyedGuide, zone: stalkerUTC)
 check(keyedProgrammes.count == 1 && keyedProgrammes[0].channel == "12" && keyedProgrammes[0].description == "Today",
       "stalker: guide keyed by channel, empty show left out")
 let listGuide: [Any] = [["ch_id": 7, "title": "Film", "start": "2027-01-15 08:00:00", "stop": "2027-01-15 09:30:00"]]
-check(LiveTVStalkerWire.programmes(listGuide, zone: utc).first?.stop.timeIntervalSince1970 == 1_800_005_400,
+check(LiveTVStalkerWire.programmes(listGuide, zone: stalkerUTC).first?.stop.timeIntervalSince1970 == 1_800_005_400,
       "stalker: guide list with ch_id")
 check(LiveTVStalkerWire.xmltvTime(Date(timeIntervalSince1970: 1_800_000_000)) == "20270115080000 +0000", "stalker: XMLTV time")
 check(LiveTVStalkerWire.xmlEscaped("A & B <\"C\">\u{01}") == "A &amp; B &lt;&quot;C&quot;&gt;", "stalker: XML escaped")

@@ -129,7 +129,7 @@ final class ASSRenderCoordinator {
                 if abs(sourceTime - self.lastSourceTime) > 1.0 {
                     // Seek or discontinuity: clear throttling so upcoming cues load immediately
                     self.lastReloadAt = .distantPast
-                    self.pendingRender = nil
+                    self.dropStalePendingRender(at: sourceTime - self.subtitleDelaySeconds)
                 }
                 self.lastSourceTime = sourceTime
                 self.lastSourceTimeWallClock = CACurrentMediaTime()
@@ -232,6 +232,11 @@ final class ASSRenderCoordinator {
         requestRender(at: targetTime - subtitleDelaySeconds)
     }
 
+    /// Pipeline compensation lead (seconds). Compensates for AVPlayerLayer video presentation lead
+    /// over audio currentTime (~100ms) plus asynchronous SwiftAssRenderer workQueue rasterization,
+    /// image blending, main-thread hop, and CoreAnimation commit (~50ms).
+    static let presentationPipelineLeadSeconds: TimeInterval = 0.150
+
     /// Evaluates the true presentation time of the playing media.
     /// When AVPlayer is playing, reads its exact hardware timebase directly,
     /// eliminating the 50-150ms quantization and queue delay of periodic observer hops.
@@ -242,13 +247,16 @@ final class ASSRenderCoordinator {
                 // The playlist shift is piecewise constant across producer seams. Use the
                 // shift attached to this item-time position so buffered frames on either side
                 // of a seam stay aligned with source-PTS subtitle cues.
-                if let target = targetTimestamp, player.state == .playing {
-                    // Compensate for display scanout lead (link.targetTimestamp is when
-                    // the prepared frame will physically be scanned out by the display).
+                if player.state == .playing {
+                    // Compensate for:
+                    // 1. Display scanout lead (targetTimestamp is when the prepared frame will physically be scanned out).
+                    // 2. Async render pipeline latency (libass workQueue -> blending -> main hop -> CA commit: ~50ms).
+                    // 3. AVPlayerLayer video presentation lead over audio currentTime (~100ms).
                     let rate = Double(avPlayer.rate)
                     let playbackRate = rate.isFinite ? max(0, rate) : 0
-                    let lead = max(0, min(0.08, target - CACurrentMediaTime())) * playbackRate
-                    let ledItemTime = t.seconds + lead
+                    let vsyncLead = targetTimestamp.map { max(0, min(0.08, $0 - CACurrentMediaTime())) } ?? 0
+                    let totalLead = (vsyncLead + Self.presentationPipelineLeadSeconds) * playbackRate
+                    let ledItemTime = t.seconds + totalLead
                     return player.presentationAxisMap.sourceSeconds(forItemSeconds: ledItemTime)
                         ?? (ledItemTime + player.playlistShiftSeconds)
                 }
@@ -258,9 +266,9 @@ final class ASSRenderCoordinator {
         }
         let elapsed = CACurrentMediaTime() - lastSourceTimeWallClock
         var base = lastSourceTime + (elapsed >= 0 && elapsed < 0.5 ? elapsed : 0)
-        if let target = targetTimestamp, player.state == .playing {
-            let lead = max(0, min(0.08, target - CACurrentMediaTime()))
-            base += lead
+        if player.state == .playing {
+            let vsyncLead = targetTimestamp.map { max(0, min(0.08, $0 - CACurrentMediaTime())) } ?? 0
+            base += vsyncLead + Self.presentationPipelineLeadSeconds
         }
         return base
     }
@@ -421,7 +429,37 @@ final class ASSRenderCoordinator {
         return !renderer.dialogues(at: time).isEmpty
     }
 
+    /// A frame queued for the time before a seek is stale and goes. A pass that a reload in
+    /// flight still needs does not: dropping it left the reload unfinished for good
+    /// (`reloadInFlightRevision` set, no pass coming), every frame was then held for it, no
+    /// track was ever loaded, and the subtitles stayed blank until the track was selected
+    /// again. Starting playback at a resume point jumps the clock this way, sometimes just
+    /// while the overlay's first canvas-size reload waits for its pass.
+    private func dropStalePendingRender(at offset: TimeInterval) {
+        guard let pending = pendingRender else { return }
+        if pending.isRequiredReloadRender {
+            pendingRender = (offset, pending.reloadRevision, true)
+        } else {
+            pendingRender = nil
+        }
+    }
+
+    /// Safety net for the same stall from any other path: a reload in flight that still
+    /// needs passes, with nothing rendering and nothing queued, gets its next pass.
+    private func resumeStalledReloadIfNeeded() {
+        guard let revision = reloadInFlightRevision,
+              requiredReloadPasses > 0,
+              !isRendering,
+              pendingRender == nil else { return }
+        requestRender(
+            at: currentPlaybackTime() - subtitleDelaySeconds,
+            reloadRevision: revision,
+            isRequiredReloadRender: true
+        )
+    }
+
     private func flushIfDue() {
+        resumeStalledReloadIfNeeded()
         guard pendingReload, let builder, let renderer else { return }
         guard reloadInFlightRevision == nil else { return }
         let elapsed = Date().timeIntervalSince(lastReloadAt)

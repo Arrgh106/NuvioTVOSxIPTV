@@ -40,7 +40,7 @@ struct CalendarHomeToday: Equatable {
             row.entries[entry.itemId] = entry
             row.metas.append(meta(for: entry))
             row.labels[entry.itemId] = CardLabel(
-                episode: entry.seasonNumber.flatMap { season in entry.episodeNumber.map { "S\(season)E\($0)" } },
+                episode: entry.episodeCode,
                 episodeTitle: hideSpoilers ? nil : entry.episodeName,
                 badge: badge(for: entry, time: time),
                 artworkURL: hideSpoilers ? nil : entry.stillURL?.absoluteString
@@ -57,8 +57,7 @@ struct CalendarHomeToday: Equatable {
     static func badge(for entry: CalendarEntry, time: (Date) -> String) -> String {
         if let airTime = entry.airTime { return time(airTime) }
         if entry.kind == .movie, let release = CalendarFormat.releaseLabel(entry.releaseKind) { return release }
-        // Matches Nuvio's own green "airing today" badge, so not translated.
-        return "AIRING TODAY"
+        return L10n.string("calendar_home_today_badge", fallback: "AIRING TODAY")
     }
 
     /// A compact card; Home fills in the hero's details once it is focused,
@@ -71,7 +70,7 @@ struct CalendarHomeToday: Equatable {
             name: entry.title,
             posterUrl: entry.posterURL?.absoluteString,
             imdbId: imdb,
-            tmdbId: entry.tmdbId,
+            tmdbId: entry.isFromAniList ? nil : entry.tmdbId,
             type: entry.itemType.isEmpty ? (entry.kind == .series ? "series" : "movie") : entry.itemType
         )
     }

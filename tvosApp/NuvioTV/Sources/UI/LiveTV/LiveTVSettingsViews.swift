@@ -13,8 +13,8 @@ struct LiveTVSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             // Step 13a: the sources first, as Android's "Playlists & Guides".
+            // Its first row is the entry anchor (right from the sidebar).
             LiveTVSourcesGroup(accentColor: accentColor)
-                .settingsEntryAnchor()
 
             LiveTVSettingsRows.group(
                 title: L10n.string("livetv_settings_guide", fallback: "Guide"),

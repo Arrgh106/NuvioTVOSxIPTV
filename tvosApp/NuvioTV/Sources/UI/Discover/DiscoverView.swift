@@ -42,6 +42,8 @@ struct DiscoverSection: View {
     @State private var overlayRestoreGeneration = 0
     @State private var scrollToTopGeneration = 0
     @State private var filterResultHandoffGeneration = 0
+    /// The items without unreleased titles, worked out once per list.
+    @State private var itemsMemo = ReleasedTitlesMemo()
     @Environment(\.isEnabled) private var isEnabled
     @Binding private var parentTransitionActive: Bool
     @AppStorage(SettingsKey.hideUnreleased) private var hideUnreleased = false
@@ -270,8 +272,8 @@ struct DiscoverSection: View {
     // MARK: - Content
 
     private var visibleItems: [NuvioMeta] {
-        guard hideUnreleased else { return viewModel.items }
-        return viewModel.items.filter { !ContentReleasePolicy.isUnreleased($0) }
+        itemsMemo.update(viewModel.items, revision: viewModel.itemsRevision, hideUnreleased: hideUnreleased)
+        return itemsMemo.titles
     }
 
     @ViewBuilder
@@ -555,14 +557,13 @@ private struct DiscoverCard: View {
                 .overlay(
                     shape.stroke(showsFocusedAppearance ? focusBorderColor : .clear, lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width)
                 )
-                .shadow(color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2), radius: showsFocusedAppearance ? 16 : 6)
+                .shadow(color: .black.opacity(showsFocusedAppearance ? 0.5 : 0), radius: showsFocusedAppearance ? 16 : 0)
 
                 if posterLabels {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(meta.name)
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(showsFocusedAppearance ? .white : .white.opacity(0.78))
-                            .lineLimit(1)
+                        MarqueeText(meta.name, size: 20, weight: .semibold,
+                                    color: showsFocusedAppearance ? .white : .white.opacity(0.78),
+                                    isActive: showsFocusedAppearance)
                         if let year = meta.year {
                             Text(String(year))
                                 .font(.system(size: 16, weight: .medium))
@@ -584,7 +585,14 @@ private struct DiscoverCard: View {
             onOpenDetails: action
         )
         .onChange(of: focused) { _, isFocused in onFocusChange?(isFocused) }
-        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocusedAppearance)
+        .animation(
+            smoothFocus
+                ? (AppleTVCapability.current.supportsLiquidGlass
+                    ? .spring(response: 0.28, dampingFraction: 0.75)
+                    : .easeOut(duration: 0.14))
+                : nil,
+            value: showsFocusedAppearance
+        )
     }
 
     private var focusBorderColor: Color {

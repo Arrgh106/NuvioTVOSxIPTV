@@ -47,6 +47,10 @@ enum AppLanguage: String, CaseIterable, Identifiable, Hashable {
     case hebrew = "he"
     case chineseSimplified = "zh-CN"
     case chineseTraditional = "zh-TW"
+    case bengali = "bn"
+    case croatian = "hr"
+    case albanian = "sq"
+    case serbianLatin = "sr-Latn"
 
     var id: String { rawValue.isEmpty ? "system" : rawValue }
 
@@ -101,6 +105,10 @@ enum AppLanguage: String, CaseIterable, Identifiable, Hashable {
         case .lithuanian: return "Lithuanian"
         case .hebrew: return "Hebrew"
         case .chineseSimplified, .chineseTraditional: return "Chinese"
+        case .bengali: return "Bengali"
+        case .croatian: return "Croatian"
+        case .albanian: return "Albanian"
+        case .serbianLatin: return "Serbian"
         }
     }
 
@@ -141,6 +149,9 @@ enum AppLanguage: String, CaseIterable, Identifiable, Hashable {
         if normalized.caseInsensitiveCompare("iw") == .orderedSame {
             return .hebrew
         }
+        if normalized.caseInsensitiveCompare("sr") == .orderedSame {
+            return .serbianLatin
+        }
         if let match = allCases.first(where: { $0.tag.caseInsensitiveCompare(normalized) == .orderedSame }) {
             return match
         }
@@ -159,10 +170,12 @@ enum AppLanguage: String, CaseIterable, Identifiable, Hashable {
 
     private static let legacyDisplayNameMap: [String: AppLanguage] = [
         "English": .english,
+        "Albanian": .albanian,
         "Arabic": .arabic,
+        "Bengali": .bengali,
         "Bulgarian": .bulgarian,
         "Chinese": .chineseSimplified,
-        "Croatian": .system, // not in Android TV app set; fall back to system
+        "Croatian": .croatian,
         "Czech": .czech,
         "Danish": .danish,
         "Dutch": .dutch,
@@ -182,6 +195,7 @@ enum AppLanguage: String, CaseIterable, Identifiable, Hashable {
         "Portuguese": .portuguesePortugal,
         "Romanian": .romanian,
         "Russian": .russian,
+        "Serbian": .serbianLatin,
         "Spanish": .spanish,
         "Swedish": .swedish,
         "Thai": .system,
@@ -270,6 +284,7 @@ enum L10n {
     private static var activeTable: [String: String] = [:]
 
     static func reload(languageTag: String?) {
+        formatTemplates.removeAllObjects()
         activeTag = languageTag
         let english = catalog["en"] ?? [:]
         let selected: [String: String]
@@ -306,6 +321,17 @@ enum L10n {
 
     /// Formats Android-style templates (`%1$s`, `%d`) with the active locale.
     static func format(_ key: String, fallback: String, _ args: CVarArg...) -> String {
+        String(format: formatTemplate(key, fallback: fallback), locale: AppLocaleManager.shared.locale, arguments: args)
+    }
+
+    /// Converted templates by key, for the active table. Cards format their labels ("12m left")
+    /// every time they redraw; the nine replacements per call showed up in main-thread samples
+    /// on an Apple TV.
+    private static let formatTemplates = NSCache<NSString, NSString>()
+
+    private static func formatTemplate(_ key: String, fallback: String) -> String {
+        let cacheKey = (key + "\u{1}" + fallback) as NSString
+        if let cached = formatTemplates.object(forKey: cacheKey) { return cached as String }
         var template = string(key, fallback: fallback)
         for index in 1...9 {
             // Keep positional indices so translators can reorder arguments for
@@ -314,7 +340,8 @@ enum L10n {
             // conversion specifier.
             template = template.replacingOccurrences(of: "%\(index)$s", with: "%\(index)$@")
         }
-        return String(format: template, locale: AppLocaleManager.shared.locale, arguments: args)
+        formatTemplates.setObject(template as NSString, forKey: cacheKey)
+        return template
     }
 
     /// Localized *display* label for stored settings option values.
@@ -393,6 +420,58 @@ enum L10n {
             return string("tvos_settings_option_size", fallback: "Size")
         case "Name":
             return string("tvos_settings_option_name", fallback: "Name")
+        case "Focused Only", "focused":
+            return string("tvos_settings_option_focused_only", fallback: "Focused Only")
+        case "Hidden", "hidden":
+            return string("tvos_settings_option_hidden", fallback: "Hidden")
+        case "Sharp (0pt)":
+            return string("tvos_settings_option_sharp", fallback: "Sharp (0pt)")
+        case "Subtle (8pt)":
+            return string("tvos_settings_option_subtle", fallback: "Subtle (8pt)")
+        case "Classic (16pt)":
+            return string("tvos_settings_option_classic", fallback: "Classic (16pt)")
+        case "Rounded (22pt)":
+            return string("tvos_settings_option_rounded", fallback: "Rounded (22pt)")
+        case "Pill (28pt)":
+            return string("tvos_settings_option_pill", fallback: "Pill (28pt)")
+        case "Small":
+            return string("tvos_settings_option_small", fallback: "Small")
+        case "Wide":
+            return string("tvos_settings_option_wide", fallback: "Wide")
+        case "Full":
+            return string("tvos_settings_option_full", fallback: "Full")
+        case "Tall":
+            return string("tvos_settings_option_tall", fallback: "Tall")
+        case "Tight":
+            return string("tvos_settings_option_tight", fallback: "Tight")
+        case "Loose":
+            return string("tvos_settings_option_loose", fallback: "Loose")
+        case "All":
+            return string("action_all", fallback: "All")
+        case "Software Host":
+            return string("tvos_settings_option_software_host", fallback: "Software Host")
+        case "Native Pipeline":
+            return string("tvos_settings_option_native_pipeline", fallback: "Native Pipeline")
+        case "Custom":
+            return string("subtitle_style_custom", fallback: "Custom")
+        case "Large Text":
+            return string("subtitle_style_large_text", fallback: "Large Text")
+        case "Outline Text":
+            return string("subtitle_style_outline_text", fallback: "Outline Text")
+        case "Solid Black":
+            return string("subtitle_style_solid_black", fallback: "Solid Black")
+        case "Transparent Background":
+            return string("subtitle_style_transparent_bg", fallback: "Transparent Background")
+        case "Yellow on Black":
+            return string("subtitle_style_yellow_on_black", fallback: "Yellow on Black")
+        case "Featured Card & Posters":
+            return string("tvos_settings_topshelf_style_featured_cards", fallback: "Featured Card & Posters")
+        case "Just Carousel":
+            return string("tvos_settings_topshelf_style_carousel_details", fallback: "Just Carousel")
+        case "Landscape Posters":
+            return string("tvos_settings_topshelf_style_rows", fallback: "Landscape Posters")
+        case "Posters":
+            return string("tvos_settings_topshelf_style_posters", fallback: "Posters")
         default:
             return stored
         }
@@ -427,6 +506,9 @@ enum L10n {
         }
         if lower.hasPrefix("he") || lower.hasPrefix("iw") {
             return "he"
+        }
+        if lower.hasPrefix("sr") {
+            return "sr-Latn"
         }
         let lang = String(preferred.split(separator: "-").first ?? Substring(preferred))
         if catalog[lang] != nil { return lang }

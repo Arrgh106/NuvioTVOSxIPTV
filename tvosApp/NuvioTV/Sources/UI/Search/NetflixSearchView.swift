@@ -922,10 +922,8 @@ struct NetflixSearchView: View {
                             viewModel.commitCurrentSearch()
                             onContentClick(item.id, item.type)
                         } label: {
-                            Text(item.name)
-                                .font(.system(size: 24, weight: isFocused ? .bold : .regular))
-                                .foregroundColor(isFocused ? .black : .white.opacity(0.85))
-                                .lineLimit(1)
+                            MarqueeText(item.name, size: 24, weight: isFocused ? .bold : .regular,
+                                        color: isFocused ? .black : .white.opacity(0.85), isActive: isFocused)
                                 .padding(.horizontal, 20)
                                 .frame(height: 54)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -953,6 +951,7 @@ struct NetflixSearchView: View {
                 }
                 .padding(.top, 6)
                 .padding(.bottom, 40)
+                .background(TVTopBarScrollAnchor(isActive: focusedItemID?.hasPrefix("list:") == true))
             }
             .background {
                 GeometryReader { geometry in
@@ -1028,6 +1027,7 @@ struct NetflixSearchView: View {
                 .padding(.top, 12)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 40)
+                .background(TVTopBarScrollAnchor(isActive: focusedItemID?.hasPrefix("list:") != true))
             }
             .background {
                 GeometryReader { geometry in

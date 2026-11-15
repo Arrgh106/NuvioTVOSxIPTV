@@ -15,7 +15,7 @@ struct JellyfinLibrary: Identifiable, Equatable {
 /// over its series'. `JellyfinLibraryResolver` groups these locally; nothing
 /// here is looked up against any other metadata source — the whole point of
 /// fetching this many fields directly is that Jellyfin never needs to be.
-struct JellyfinMediaItem: Equatable {
+struct JellyfinMediaItem: Codable, Equatable {
     let id: String
     let name: String
     /// `"Movie"`, `"Series"`, or `"Episode"`.
@@ -50,8 +50,8 @@ struct JellyfinMediaItem: Equatable {
     var videoRange: String? = nil
     var videoRangeType: String? = nil
 
-    /// "2160p · DV" for the stream list (by the width too: a wide film
-    /// in 4K is 3840 × 1600).
+    /// Fork: "2160p · DV" for the stream list (by the width too: a wide
+    /// film in 4K is 3840 × 1600).
     var qualityLabel: String? {
         let width = videoWidth ?? 0
         let height = videoHeight ?? 0
@@ -85,6 +85,13 @@ struct JellyfinMediaItem: Equatable {
         let parts = [resolution, range].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+}
+
+struct JellyfinItemsPage {
+    let items: [JellyfinMediaItem]
+    let startIndex: Int
+    let nextStartIndex: Int
+    let totalRecordCount: Int?
 }
 
 /// Thin REST client for one Jellyfin server. Stateless beyond the
@@ -219,50 +226,166 @@ struct JellyfinClient {
         return payload.Items.map { JellyfinLibrary(id: $0.Id, name: $0.Name, collectionType: $0.CollectionType) }
     }
 
-    /// Every movie, series, and episode under one library, with every field
-    /// `JellyfinLibraryResolver` needs to build display metadata and a
-    /// playable file locally — no second request per title.
-    ///
-    /// Fork: fetched in pages. One request for a whole large library (or a
-    /// server reached over the internet) ran past the request timeout
-    /// ("The request timed out"), so nothing was indexed.
-    func items(
-        userId: String,
-        libraryId: String,
-        changedSince: Date? = nil,
-        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
-    ) async throws -> [JellyfinMediaItem] {
-        var query = [
-            "ParentId": libraryId,
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Series,Episode",
-            "Fields": Self.itemFields,
-            "EnableImages": "true",
-        ]
-        if let changedSince {
-            query["MinDateLastSaved"] = ISO8601DateFormatter().string(from: changedSince)
+    private struct ItemsPayload: Decodable {
+        struct ProviderIds: Decodable {
+            let Imdb: String?
+            let Tmdb: String?
         }
-        return try await pagedItems(userId: userId, query: query, pageSize: 250, onProgress: onProgress)
+        struct MediaStream: Decodable {
+            let `Type`: String?
+            let Width: Int?
+            let Height: Int?
+            let VideoRange: String?
+            let VideoRangeType: String?
+        }
+        struct MediaSource: Decodable {
+            let Container: String?
+            let Size: Int64?
+            // Fork: for the resolution in the stream list.
+            let MediaStreams: [MediaStream]?
+
+            enum CodingKeys: String, CodingKey { case Container, Size, MediaStreams }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                Container = try? c.decodeIfPresent(String.self, forKey: .Container)
+                Size = try? c.decodeIfPresent(Int64.self, forKey: .Size)
+                MediaStreams = (try? c.decodeIfPresent([LossyDecodable<MediaStream>].self, forKey: .MediaStreams))?
+                    .compactMap(\.value)
+            }
+        }
+        struct Person: Decodable {
+            let Name: String
+            let PersonType: String?
+        }
+        struct ImageTags: Decodable {
+            let Primary: String?
+        }
+        struct Item: Decodable {
+            let Id: String
+            let Name: String
+            let Overview: String?
+            let ProductionYear: Int?
+            let PremiereDate: String?
+            let CommunityRating: Double?
+            let OfficialRating: String?
+            let Genres: [String]?
+            let RunTimeTicks: Int64?
+            let ProviderIds: ProviderIds?
+            let MediaSources: [MediaSource]?
+            let ParentIndexNumber: Int?
+            let IndexNumber: Int?
+            let SeriesId: String?
+            let People: [Person]?
+            let ImageTags: ImageTags?
+            let BackdropImageTags: [String]?
+
+            enum CodingKeys: String, CodingKey {
+                case Id, Name, Overview, ProductionYear, PremiereDate, CommunityRating, OfficialRating
+                case Genres, RunTimeTicks, ProviderIds, MediaSources, ParentIndexNumber, IndexNumber
+                case SeriesId, People, ImageTags, BackdropImageTags
+                case ItemType = "Type"
+            }
+            let ItemType: String?
+
+            /// Fork: only Id is required. A field that's missing or shaped
+            /// differently (a cast entry without a name, common on series)
+            /// is left empty instead of dropping the item.
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                Id = try c.decode(String.self, forKey: .Id)
+                ItemType = try? c.decodeIfPresent(String.self, forKey: .ItemType)
+                Name = (try? c.decodeIfPresent(String.self, forKey: .Name)) ?? ""
+                Overview = try? c.decodeIfPresent(String.self, forKey: .Overview)
+                ProductionYear = try? c.decodeIfPresent(Int.self, forKey: .ProductionYear)
+                PremiereDate = try? c.decodeIfPresent(String.self, forKey: .PremiereDate)
+                CommunityRating = try? c.decodeIfPresent(Double.self, forKey: .CommunityRating)
+                OfficialRating = try? c.decodeIfPresent(String.self, forKey: .OfficialRating)
+                Genres = try? c.decodeIfPresent([String].self, forKey: .Genres)
+                RunTimeTicks = try? c.decodeIfPresent(Int64.self, forKey: .RunTimeTicks)
+                ProviderIds = try? c.decodeIfPresent(ItemsPayload.ProviderIds.self, forKey: .ProviderIds)
+                MediaSources = (try? c.decodeIfPresent([LossyDecodable<MediaSource>].self, forKey: .MediaSources))?
+                    .compactMap(\.value)
+                ParentIndexNumber = try? c.decodeIfPresent(Int.self, forKey: .ParentIndexNumber)
+                IndexNumber = try? c.decodeIfPresent(Int.self, forKey: .IndexNumber)
+                SeriesId = try? c.decodeIfPresent(String.self, forKey: .SeriesId)
+                People = (try? c.decodeIfPresent([LossyDecodable<Person>].self, forKey: .People))?
+                    .compactMap(\.value)
+                ImageTags = try? c.decodeIfPresent(ItemsPayload.ImageTags.self, forKey: .ImageTags)
+                BackdropImageTags = try? c.decodeIfPresent([String].self, forKey: .BackdropImageTags)
+            }
+        }
+
+        let Items: [Item]
+        let TotalRecordCount: Int?
+        let StartIndex: Int?
+
+        init(from decoder: Decoder) throws {
+            if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+                // Fork: one item that can't be read is skipped, not the page.
+                Items = try container.decode([LossyDecodable<Item>].self, forKey: .Items).compactMap(\.value)
+                TotalRecordCount = try container.decodeIfPresent(Int.self, forKey: .TotalRecordCount)
+                StartIndex = try container.decodeIfPresent(Int.self, forKey: .StartIndex)
+            } else {
+                let singleContainer = try decoder.singleValueContainer()
+                Items = try singleContainer.decode([LossyDecodable<Item>].self).compactMap(\.value)
+                // A bare array has no pagination metadata. Its length is only
+                // this response's page size, not the server's full result count.
+                TotalRecordCount = nil
+                StartIndex = nil
+            }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case Items, TotalRecordCount, StartIndex
+        }
     }
 
-    /// Full details for specific items (new ones found by `itemStubs`),
-    /// 100 ids per request.
-    func items(userId: String, ids: [String]) async throws -> [JellyfinMediaItem] {
-        var result: [JellyfinMediaItem] = []
-        var start = 0
-        while start < ids.count {
-            try Task.checkCancellation()
-            let batch = ids[start..<min(start + 100, ids.count)]
-            let (data, response) = try await get("Users/\(userId)/Items", query: [
-                "Ids": batch.joined(separator: ","),
-                "Fields": Self.itemFields,
-                "EnableImages": "true",
-            ], timeout: 120)
-            try Self.validate(response, data: data)
-            result += try Self.decodeItems(data).items
-            start += batch.count
+    private static func mapMediaItem(
+        _ item: ItemsPayload.Item,
+        fallbackSeriesId: String? = nil,
+        fallbackType: String = "Movie"
+    ) -> JellyfinMediaItem {
+        let rawType = item.ItemType ?? fallbackType
+        let normalizedType: String
+        if rawType.caseInsensitiveCompare("Series") == .orderedSame {
+            normalizedType = "Series"
+        } else if rawType.caseInsensitiveCompare("Episode") == .orderedSame {
+            normalizedType = "Episode"
+        } else if rawType.caseInsensitiveCompare("Movie") == .orderedSame {
+            normalizedType = "Movie"
+        } else {
+            normalizedType = rawType
         }
-        return result
+
+        let video = item.MediaSources?.first?.MediaStreams?.first { $0.`Type` == "Video" }
+        return JellyfinMediaItem(
+            id: item.Id,
+            name: item.Name,
+            type: normalizedType,
+            overview: item.Overview,
+            productionYear: item.ProductionYear,
+            premiereDate: item.PremiereDate,
+            communityRating: item.CommunityRating,
+            officialRating: item.OfficialRating,
+            genres: item.Genres,
+            runTimeTicks: item.RunTimeTicks,
+            imdbId: item.ProviderIds?.Imdb,
+            tmdbId: item.ProviderIds?.Tmdb.flatMap(Int.init),
+            primaryImageTag: item.ImageTags?.Primary,
+            backdropImageTag: item.BackdropImageTags?.first,
+            cast: item.People?.filter { $0.PersonType == "Actor" }.map(\.Name),
+            directors: item.People?.filter { $0.PersonType == "Director" }.map(\.Name),
+            seriesId: item.SeriesId ?? fallbackSeriesId,
+            parentIndexNumber: item.ParentIndexNumber,
+            indexNumber: item.IndexNumber,
+            container: item.MediaSources?.first?.Container,
+            sizeBytes: item.MediaSources?.first?.Size,
+            videoWidth: video?.Width,
+            videoHeight: video?.Height,
+            videoRange: video?.VideoRange,
+            videoRangeType: video?.VideoRangeType
+        )
     }
 
     /// Fork (live lookup): titles matching a name, across all libraries.
@@ -278,7 +401,7 @@ struct JellyfinClient {
             "Limit": String(limit),
         ], timeout: 8)
         try Self.validate(response, data: data)
-        return try Self.decodeItems(data).items
+        return try JSONDecoder().decode(ItemsPayload.self, from: data).Items.map { Self.mapMediaItem($0) }
     }
 
     /// Fork (live lookup): the episodes of one season of a series.
@@ -291,223 +414,187 @@ struct JellyfinClient {
             "EnableUserData": "false",
         ], timeout: 8)
         try Self.validate(response, data: data)
-        return try Self.decodeItems(data).items
+        return try JSONDecoder().decode(ItemsPayload.self, from: data).Items.map {
+            Self.mapMediaItem($0, fallbackSeriesId: seriesId, fallbackType: "Episode")
+        }
     }
 
-    /// One library's item ids only (no metadata, no images): a few bytes per
-    /// item, so comparing against the local index stays cheap even for tens
-    /// of thousands of episodes.
-    struct ItemStub: Hashable {
-        let id: String
-        let type: String
-        let seriesId: String?
-    }
-
-    func itemStubs(
+    /// Every movie, series, and episode under one library, with every field
+    /// `JellyfinLibraryResolver` needs to build display metadata and a
+    /// playable file locally — no second request per title.
+    /// Paginates through all results using `StartIndex` and `Limit` so servers
+    /// with default page sizes (such as Silo or paginated Jellyfin instances)
+    /// import complete libraries rather than only the first page.
+    func items(
         userId: String,
         libraryId: String,
-        onProgress: (_ loaded: Int, _ total: Int?) async -> Void = { _, _ in }
-    ) async throws -> [ItemStub] {
-        var result: [ItemStub] = []
-        var startIndex = 0
-        let pageSize = 2000
-        while true {
+        onPageFetched: ((Int) -> Void)? = nil
+    ) async throws -> [JellyfinMediaItem] {
+        try await fetchItems(userId: userId, libraryId: libraryId, startingAt: 0, seenItemIDs: []) { page in
+            onPageFetched?(page.nextStartIndex)
+        }
+    }
+
+    /// Fetches pages starting at a saved server offset. The callback runs
+    /// after each response page has been decoded and mapped, so callers can
+    /// durably record it before another request begins.
+    func items(
+        userId: String,
+        libraryId: String,
+        startingAt: Int,
+        seenItemIDs: Set<String> = [],
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)? = nil
+    ) async throws -> [JellyfinMediaItem] {
+        try await fetchItems(userId: userId, libraryId: libraryId, startingAt: startingAt, seenItemIDs: seenItemIDs, onPageFetched: onPageFetched)
+    }
+
+    private func fetchItems(
+        userId: String,
+        libraryId: String,
+        startingAt initialStartIndex: Int,
+        seenItemIDs initialSeenItemIDs: Set<String>,
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)?
+    ) async throws -> [JellyfinMediaItem] {
+        var allItems: [JellyfinMediaItem] = []
+        var seenIds = initialSeenItemIDs
+        var startIndex = max(0, initialStartIndex)
+        let pageSize = 100
+
+        for _ in 0..<500 {
             try Task.checkCancellation()
+
             let (data, response) = try await get("Users/\(userId)/Items", query: [
                 "ParentId": libraryId,
                 "Recursive": "true",
                 "IncludeItemTypes": "Movie,Series,Episode",
-                "EnableImages": "false",
-                "EnableUserData": "false",
-                "SortBy": "SortName",
-                "SortOrder": "Ascending",
+                "Fields": Self.itemFields,
+                "EnableImages": "true",
                 "StartIndex": String(startIndex),
-                "Limit": String(pageSize),
-                "EnableTotalRecordCount": "true",
-            ], timeout: 120)
+                "Limit": String(pageSize)
+            ])
             try Self.validate(response, data: data)
-            struct Payload: Decodable {
-                struct Item: Decodable {
-                    let Id: String
-                    let ItemType: String
-                    let SeriesId: String?
-                    enum CodingKeys: String, CodingKey {
-                        case Id, SeriesId
-                        case ItemType = "Type"
-                    }
-                }
-                let Items: [LossyDecodable<Item>]
-                let TotalRecordCount: Int?
+
+            let payload = try JSONDecoder().decode(ItemsPayload.self, from: data)
+            if let reportedStartIndex = payload.StartIndex, reportedStartIndex != startIndex {
+                throw ClientError(message: "The server returned a library page for the wrong offset")
             }
-            let page = try JSONDecoder().decode(Payload.self, from: data)
-            result += page.Items.compactMap(\.value).map { ItemStub(id: $0.Id, type: $0.ItemType, seriesId: $0.SeriesId) }
-            startIndex += page.Items.count
-            await onProgress(startIndex, page.TotalRecordCount)
-            if page.Items.isEmpty || page.Items.count < pageSize
-                || page.TotalRecordCount.map({ startIndex >= $0 }) == true {
-                return result
+            if payload.Items.isEmpty {
+                return allItems
+            }
+
+            let pageItems = payload.Items.compactMap { item -> JellyfinMediaItem? in
+                guard !seenIds.contains(item.Id) else { return nil }
+                seenIds.insert(item.Id)
+                return Self.mapMediaItem(item)
+            }
+
+            guard !pageItems.isEmpty else {
+                throw ClientError(message: "The server repeated a library page without advancing results")
+            }
+
+            allItems.append(contentsOf: pageItems)
+            let nextStartIndex = startIndex + payload.Items.count
+            try onPageFetched?(JellyfinItemsPage(
+                items: pageItems,
+                startIndex: startIndex,
+                nextStartIndex: nextStartIndex,
+                totalRecordCount: payload.TotalRecordCount
+            ))
+            startIndex = nextStartIndex
+
+            if let total = payload.TotalRecordCount, startIndex >= total {
+                return allItems
             }
         }
+
+        throw ClientError(message: "The server library exceeded the 500-page sync limit")
     }
 
-    private func pagedItems(
-        userId: String,
-        query: [String: String],
-        pageSize: Int,
-        onProgress: (_ loaded: Int, _ total: Int?) async -> Void
+    /// All episodes under one TV series, fetched hierarchically.
+    /// Paginates results to handle large series and servers (such as Silo)
+    /// that do not return Episode items in the top-level recursive library query.
+    func episodes(
+        seriesId: String,
+        userId: String? = nil,
+        onPageFetched: ((Int) -> Void)? = nil
     ) async throws -> [JellyfinMediaItem] {
-        var result: [JellyfinMediaItem] = []
-        var startIndex = 0
-        while true {
-            try Task.checkCancellation()
-            var pageQuery = query
-            pageQuery["SortBy"] = "SortName"
-            pageQuery["SortOrder"] = "Ascending"
-            pageQuery["StartIndex"] = String(startIndex)
-            pageQuery["Limit"] = String(pageSize)
-            pageQuery["EnableTotalRecordCount"] = "true"
-            let (data, response) = try await get("Users/\(userId)/Items", query: pageQuery, timeout: 120)
-            try Self.validate(response, data: data)
-            let page = try Self.decodeItems(data)
-            result += page.items
-            startIndex += page.items.count
-            await onProgress(startIndex, page.total)
-            if page.items.isEmpty || page.items.count < pageSize
-                || page.total.map({ startIndex >= $0 }) == true {
-                return result
-            }
+        try await fetchEpisodes(seriesId: seriesId, userId: userId, startingAt: 0, seenItemIDs: []) { page in
+            onPageFetched?(page.nextStartIndex)
         }
     }
 
-    private static func decodeItems(_ data: Data) throws -> (items: [JellyfinMediaItem], total: Int?) {
-        struct Payload: Decodable {
-            struct ProviderIds: Decodable {
-                let Imdb: String?
-                let Tmdb: String?
-            }
-            struct MediaStream: Decodable {
-                let `Type`: String?
-                let Width: Int?
-                let Height: Int?
-                let VideoRange: String?
-                let VideoRangeType: String?
-            }
-            struct MediaSource: Decodable {
-                let Container: String?
-                let Size: Int64?
-                let MediaStreams: [MediaStream]?
+    func episodes(
+        seriesId: String,
+        userId: String? = nil,
+        startingAt: Int,
+        seenItemIDs: Set<String> = [],
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)? = nil
+    ) async throws -> [JellyfinMediaItem] {
+        try await fetchEpisodes(seriesId: seriesId, userId: userId, startingAt: startingAt, seenItemIDs: seenItemIDs, onPageFetched: onPageFetched)
+    }
 
-                enum CodingKeys: String, CodingKey { case Container, Size, MediaStreams }
+    private func fetchEpisodes(
+        seriesId: String,
+        userId: String?,
+        startingAt initialStartIndex: Int,
+        seenItemIDs initialSeenItemIDs: Set<String>,
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)?
+    ) async throws -> [JellyfinMediaItem] {
+        var allEpisodes: [JellyfinMediaItem] = []
+        var seenIds = initialSeenItemIDs
+        var startIndex = max(0, initialStartIndex)
+        let pageSize = 100
 
-                // An odd stream entry leaves the streams out, not the file.
-                init(from decoder: Decoder) throws {
-                    let c = try decoder.container(keyedBy: CodingKeys.self)
-                    Container = try? c.decodeIfPresent(String.self, forKey: .Container)
-                    Size = try? c.decodeIfPresent(Int64.self, forKey: .Size)
-                    MediaStreams = (try? c.decodeIfPresent([LossyDecodable<MediaStream>].self, forKey: .MediaStreams))?
-                        .compactMap(\.value)
-                }
-            }
-            struct Person: Decodable {
-                let Name: String
-                let PersonType: String?
-            }
-            struct ImageTags: Decodable {
-                let Primary: String?
-            }
-            struct Item: Decodable {
-                let Id: String
-                let Name: String
-                let Overview: String?
-                let ProductionYear: Int?
-                let PremiereDate: String?
-                let CommunityRating: Double?
-                let OfficialRating: String?
-                let Genres: [String]?
-                let RunTimeTicks: Int64?
-                let ProviderIds: ProviderIds?
-                let MediaSources: [MediaSource]?
-                let ParentIndexNumber: Int?
-                let IndexNumber: Int?
-                let SeriesId: String?
-                let People: [Person]?
-                let ImageTags: ImageTags?
-                let BackdropImageTags: [String]?
+        for _ in 0..<500 {
+            try Task.checkCancellation()
 
-                enum CodingKeys: String, CodingKey {
-                    case Id, Name, Overview, ProductionYear, PremiereDate, CommunityRating, OfficialRating
-                    case Genres, RunTimeTicks, ProviderIds, MediaSources, ParentIndexNumber, IndexNumber
-                    case SeriesId, People, ImageTags, BackdropImageTags
-                    case ItemType = "Type"
-                }
-                let ItemType: String
-
-                /// Fork: only Id and Type are required. Every other field
-                /// that's missing or shaped differently is left empty, so
-                /// one odd field (e.g. a cast entry without a name, common on
-                /// series) no longer drops the whole series and with it all
-                /// its episodes.
-                init(from decoder: Decoder) throws {
-                    let c = try decoder.container(keyedBy: CodingKeys.self)
-                    Id = try c.decode(String.self, forKey: .Id)
-                    ItemType = try c.decode(String.self, forKey: .ItemType)
-                    Name = (try? c.decodeIfPresent(String.self, forKey: .Name)) ?? ""
-                    Overview = try? c.decodeIfPresent(String.self, forKey: .Overview)
-                    ProductionYear = try? c.decodeIfPresent(Int.self, forKey: .ProductionYear)
-                    PremiereDate = try? c.decodeIfPresent(String.self, forKey: .PremiereDate)
-                    CommunityRating = try? c.decodeIfPresent(Double.self, forKey: .CommunityRating)
-                    OfficialRating = try? c.decodeIfPresent(String.self, forKey: .OfficialRating)
-                    Genres = try? c.decodeIfPresent([String].self, forKey: .Genres)
-                    RunTimeTicks = try? c.decodeIfPresent(Int64.self, forKey: .RunTimeTicks)
-                    ProviderIds = try? c.decodeIfPresent(Payload.ProviderIds.self, forKey: .ProviderIds)
-                    MediaSources = (try? c.decodeIfPresent([LossyDecodable<MediaSource>].self, forKey: .MediaSources))?
-                        .compactMap(\.value)
-                    ParentIndexNumber = try? c.decodeIfPresent(Int.self, forKey: .ParentIndexNumber)
-                    IndexNumber = try? c.decodeIfPresent(Int.self, forKey: .IndexNumber)
-                    SeriesId = try? c.decodeIfPresent(String.self, forKey: .SeriesId)
-                    People = (try? c.decodeIfPresent([LossyDecodable<Person>].self, forKey: .People))?
-                        .compactMap(\.value)
-                    ImageTags = try? c.decodeIfPresent(Payload.ImageTags.self, forKey: .ImageTags)
-                    BackdropImageTags = try? c.decodeIfPresent([String].self, forKey: .BackdropImageTags)
-                }
+            var query: [String: String] = [
+                "Fields": Self.itemFields,
+                "EnableImages": "true",
+                "StartIndex": String(startIndex),
+                "Limit": String(pageSize)
+            ]
+            if let userId, !userId.isEmpty {
+                query["userId"] = userId
             }
-            // Fork: one item missing a field skips that item instead of
-            // failing the whole page ("The data couldn't be read because
-            // it is missing").
-            let Items: [LossyDecodable<Item>]
-            let TotalRecordCount: Int?
+
+            let (data, response) = try await get("Shows/\(seriesId)/Episodes", query: query)
+            try Self.validate(response, data: data)
+
+            let payload = try JSONDecoder().decode(ItemsPayload.self, from: data)
+            if let reportedStartIndex = payload.StartIndex, reportedStartIndex != startIndex {
+                throw ClientError(message: "The server returned an episode page for the wrong offset")
+            }
+            if payload.Items.isEmpty {
+                return allEpisodes
+            }
+
+            let pageItems = payload.Items.compactMap { item -> JellyfinMediaItem? in
+                guard !seenIds.contains(item.Id) else { return nil }
+                seenIds.insert(item.Id)
+                return Self.mapMediaItem(item, fallbackSeriesId: seriesId, fallbackType: "Episode")
+            }
+
+            guard !pageItems.isEmpty else {
+                throw ClientError(message: "The server repeated an episode page without advancing results")
+            }
+
+            allEpisodes.append(contentsOf: pageItems)
+            let nextStartIndex = startIndex + payload.Items.count
+            try onPageFetched?(JellyfinItemsPage(
+                items: pageItems,
+                startIndex: startIndex,
+                nextStartIndex: nextStartIndex,
+                totalRecordCount: payload.TotalRecordCount
+            ))
+            startIndex = nextStartIndex
+
+            if let total = payload.TotalRecordCount, startIndex >= total {
+                return allEpisodes
+            }
         }
-        let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return (payload.Items.compactMap(\.value).map { item in
-            let video = item.MediaSources?.first?.MediaStreams?.first { $0.`Type` == "Video" }
-            return JellyfinMediaItem(
-                id: item.Id,
-                name: item.Name,
-                type: item.ItemType,
-                overview: item.Overview,
-                productionYear: item.ProductionYear,
-                premiereDate: item.PremiereDate,
-                communityRating: item.CommunityRating,
-                officialRating: item.OfficialRating,
-                genres: item.Genres,
-                runTimeTicks: item.RunTimeTicks,
-                imdbId: item.ProviderIds?.Imdb,
-                tmdbId: item.ProviderIds?.Tmdb.flatMap(Int.init),
-                primaryImageTag: item.ImageTags?.Primary,
-                backdropImageTag: item.BackdropImageTags?.first,
-                cast: item.People?.filter { $0.PersonType == "Actor" }.map(\.Name),
-                directors: item.People?.filter { $0.PersonType == "Director" }.map(\.Name),
-                seriesId: item.SeriesId,
-                parentIndexNumber: item.ParentIndexNumber,
-                indexNumber: item.IndexNumber,
-                container: item.MediaSources?.first?.Container,
-                sizeBytes: item.MediaSources?.first?.Size,
-                videoWidth: video?.Width,
-                videoHeight: video?.Height,
-                videoRange: video?.VideoRange,
-                videoRangeType: video?.VideoRangeType
-            )
-        }, payload.TotalRecordCount)
+
+        throw ClientError(message: "The server episode list exceeded the 500-page sync limit")
     }
 
     // MARK: - Media URLs
@@ -525,6 +612,7 @@ struct JellyfinClient {
 
     // MARK: - Plumbing
 
+    /// Fork: `timeout` for the live lookup (the stream list waits on it).
     private func get(_ path: String, query: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> (Data, URLResponse) {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -534,7 +622,116 @@ struct JellyfinClient {
         var request = URLRequest(url: url)
         if let timeout { request.timeoutInterval = timeout }
         request.setValue(Self.authorizationHeader(token: accessToken), forHTTPHeaderField: "Authorization")
-        return try await session.data(for: request)
+        // A library sync sends many requests in a row (one or more per series for
+        // episodes). Servers behind a reverse proxy or a hosted plan can answer
+        // 429 Too Many Requests, or 503 while busy. Wait and ask again instead of
+        // failing the whole sync, but never sooner than the server asked, and
+        // never for longer than we're willing to sit silently: then stop and say
+        // when to try again.
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 429 || http.statusCode == 503 else {
+                return (data, response)
+            }
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+            guard attempt < Self.rateLimitRetryLimit else {
+                throw RateLimitedError(retryAfter: Self.retryAfterSeconds(retryAfter))
+            }
+            switch Self.retryDecision(retryAfter: retryAfter, attempt: attempt) {
+            case .retry(let delay):
+                attempt += 1
+                // Throws CancellationError at once if the sync is cancelled.
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            case .giveUp(let serverWait):
+                throw RateLimitedError(retryAfter: serverWait)
+            }
+        }
+    }
+
+    static let rateLimitRetryLimit = 5
+    /// The longest we wait before a retry. A server asking for more gets no
+    /// early retry (that would only hit its limit again); the request fails
+    /// with a "try again in" message instead.
+    static let maxRetryWait: TimeInterval = 30
+
+    enum RetryDecision: Equatable {
+        case retry(after: TimeInterval)
+        case giveUp(serverWait: TimeInterval)
+    }
+
+    /// The server's `Retry-After` when it sends one: wait exactly that long,
+    /// or give up when it's longer than `maxRetryWait`. Otherwise back off
+    /// 1, 2, 4, 8, 16 s.
+    static func retryDecision(retryAfter: String?, attempt: Int, now: Date = Date()) -> RetryDecision {
+        if let serverWait = retryAfterSeconds(retryAfter, now: now) {
+            return serverWait <= maxRetryWait ? .retry(after: serverWait) : .giveUp(serverWait: serverWait)
+        }
+        return .retry(after: min(pow(2, Double(max(0, attempt))), maxRetryWait))
+    }
+
+    /// Seconds from `now` that a `Retry-After` value asks for: either a number
+    /// of seconds or an HTTP date (RFC 9110: IMF-fixdate, or the obsolete
+    /// RFC 850 and asctime forms). A date in the past means now. Nil when
+    /// missing or unreadable.
+    static func retryAfterSeconds(_ value: String?, now: Date = Date()) -> TimeInterval? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespaces), !trimmed.isEmpty else { return nil }
+        if let seconds = TimeInterval(trimmed) {
+            return seconds.isFinite && seconds >= 0 ? seconds : nil
+        }
+        for formatter in httpDateFormatters {
+            if let date = formatter.date(from: trimmed) {
+                return max(0, date.timeIntervalSince(now))
+            }
+        }
+        return nil
+    }
+
+    private static let httpDateFormatters: [DateFormatter] = [
+        "EEE, dd MMM yyyy HH:mm:ss zzz",   // Sun, 06 Nov 1994 08:49:37 GMT
+        "EEEE, dd-MMM-yy HH:mm:ss zzz",    // Sunday, 06-Nov-94 08:49:37 GMT
+        "EEE MMM d HH:mm:ss yyyy",         // Sun Nov  6 08:49:37 1994
+    ].map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = format
+        formatter.isLenient = true
+        return formatter
+    }
+
+    /// The server keeps refusing requests (429/503) for longer than we wait.
+    struct RateLimitedError: LocalizedError, Equatable {
+        /// What the server asked for, in seconds, when it said.
+        let retryAfter: TimeInterval?
+
+        /// Longer waits than this (a day) get the generic message: a huge
+        /// minute count wouldn't help, and converting an oversized header
+        /// value to Int would trap.
+        static let longestWaitShown: TimeInterval = 24 * 60 * 60
+
+        /// Whole minutes to show, or nil for the generic "try again later".
+        var minutesToShow: Int? {
+            guard let retryAfter, retryAfter.isFinite, retryAfter > 0,
+                  retryAfter <= Self.longestWaitShown else { return nil }
+            return max(1, Int((retryAfter / 60).rounded(.up)))
+        }
+
+        var errorDescription: String? {
+            guard let minutes = minutesToShow else {
+                return L10n.string(
+                    "jellyfin_error_rate_limited",
+                    fallback: "The Jellyfin server is limiting requests. Try again later."
+                )
+            }
+            return L10n.format(
+                "jellyfin_error_rate_limited_minutes",
+                fallback: "The Jellyfin server is limiting requests. Try again in about %d min.",
+                minutes
+            )
+        }
     }
 
     private static func validate(_ response: URLResponse, data: Data) throws {
@@ -550,8 +747,9 @@ struct JellyfinClient {
     }
 }
 
-/// Fork: decodes to nil instead of throwing, so one malformed element
-/// doesn't fail a whole array.
+/// Fork: one entry of a list that can't be read is skipped instead of
+/// failing the whole list ("The data couldn't be read because it is
+/// missing").
 struct LossyDecodable<Value: Decodable>: Decodable {
     let value: Value?
 

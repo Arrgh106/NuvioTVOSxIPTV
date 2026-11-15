@@ -13,6 +13,302 @@ private enum TestStreamError: Error { case failed }
 
 final class StreamsDiscoveryTests: XCTestCase {
 
+    func testManualPickerPreservesNamesContainingPromotionalWordsAcrossAddonFilters() {
+        let trailer = NuvioStream(
+            url: "https://example.com/episode-a.mkv",
+            name: "Debridio 1080p",
+            description: "Trailer.Park.Boys.The.Animated.Series.S01E01.1080p.mkv",
+            addonName: "Debridio"
+        )
+        let other = NuvioStream(
+            url: "https://example.com/episode-b.mkv",
+            name: "1080p",
+            description: "ARK.The.Animated.Series.S01E01.1080p.mkv",
+            addonName: "Another Addon"
+        )
+        let groups = [
+            AddonStreamGroup(addonId: "debridio", displayName: "Debridio", streams: [trailer], isLoading: false),
+            AddonStreamGroup(addonId: "other", displayName: "Another Addon", streams: [other], isLoading: false)
+        ]
+
+        for preserve in [false, true] {
+            let all = StreamPickerListBuilder.displayedStreams(
+                streams: [trailer, other], groups: groups, selectedAddonId: nil,
+                sortOption: .default, includeDebrid: false, preserveAddonStreams: preserve
+            )
+            let addon = StreamPickerListBuilder.displayedStreams(
+                streams: [trailer, other], groups: groups, selectedAddonId: "debridio",
+                sortOption: .default, includeDebrid: false, preserveAddonStreams: preserve
+            )
+            XCTAssertEqual(Set(all.map(\.id)), Set([trailer.id, other.id]))
+            XCTAssertEqual(addon.map(\.id), [trailer.id])
+        }
+    }
+
+    func testManualPickerDoesNotTreatAddonNameOrURLAsPromotionalEvidence() {
+        let first = NuvioStream(
+            url: "https://example.com/preview/episode.mkv", name: "1080p",
+            description: "Episode 1080p", addonName: "Preview Addon"
+        )
+        let second = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Episode 1080p", addonName: "Other"
+        )
+        let result = StreamPickerListBuilder.displayedStreams(
+            streams: [first, second], groups: [], selectedAddonId: nil,
+            sortOption: .default, includeDebrid: false, preserveAddonStreams: true
+        )
+        XCTAssertEqual(Set(result.map(\.id)), Set([first.id, second.id]))
+    }
+
+    func testManualPickerRespectsQualityAndPreserveSettings() {
+        let unknown = NuvioStream(
+            url: "https://example.com/one.mkv", name: "Unknown quality",
+            description: nil, addonName: "Addon"
+        )
+        let low = NuvioStream(
+            url: "https://example.com/two.mkv", name: "Movie 360",
+            description: nil, addonName: "Addon"
+        )
+        let hd = NuvioStream(
+            url: "https://example.com/three.mkv", name: "1080p",
+            description: nil, addonName: "Addon"
+        )
+        let sortOptions: [StreamSortOption] = [.default, .quality, .recommended]
+        for preserve in [false, true] {
+            for sort in sortOptions {
+                let result = StreamPickerListBuilder.displayedStreams(
+                    streams: [unknown, low, hd], groups: [], selectedAddonId: nil,
+                    sortOption: sort, includeDebrid: false, preserveAddonStreams: preserve
+                )
+                let expected = preserve || sort == .recommended ? [unknown.id, low.id, hd.id] : [hd.id]
+                XCTAssertEqual(Set(result.map(\.id)), Set(expected))
+            }
+        }
+        let automatic = StreamPickerListBuilder.displayedStreams(
+            streams: [unknown, low, hd], groups: [], selectedAddonId: nil,
+            sortOption: .quality, includeDebrid: false, selectionMode: .automatic
+        )
+        XCTAssertEqual(automatic.map(\.id), [hd.id])
+    }
+
+    func testManualPickerPreservesTitleWithTrailerForEitherCachePreference() {
+        let cached = NuvioStream(
+            url: "https://example.com/cached.mkv", name: "1080p",
+            description: "Trailer.Park.Boys.S01E01.1080p.mkv", addonName: "Debridio", isCached: true
+        )
+        let uncached = NuvioStream(
+            url: "https://example.com/uncached.mkv", name: "720p",
+            description: "Trailer.Park.Boys.S01E01.720p.mkv", addonName: "Debridio", isCached: false
+        )
+        let unrelated = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Other.S01E01.1080p.mkv", addonName: "Another Addon", isCached: true
+        )
+        for preserve in [false, true] {
+            for cachedOnly in [false, true] {
+                let result = StreamPickerListBuilder.displayedStreams(
+                    streams: [cached, uncached, unrelated], groups: [], selectedAddonId: nil,
+                    sortOption: .default, includeDebrid: false, cachedOnly: cachedOnly,
+                    preserveAddonStreams: preserve
+                )
+                let expected = cachedOnly ? [cached.id, unrelated.id] : [cached.id, uncached.id, unrelated.id]
+                XCTAssertEqual(Set(result.map(\.id)), Set(expected))
+            }
+        }
+    }
+
+    func testAutomaticSelectionStillExcludesPromotionalStreamsWhenAlternativesExist() {
+        let trailer = NuvioStream(
+            url: "https://example.com/trailer.mkv", name: "Official trailer 1080p",
+            description: nil, addonName: "Addon"
+        )
+        let movie = NuvioStream(
+            url: "https://example.com/movie.mkv", name: "Movie 1080p",
+            description: nil, addonName: "Addon"
+        )
+        let candidates = SmartPlaybackSelector.playableStreams(
+            from: [trailer, movie], preserveAddonStreams: true
+        )
+        XCTAssertEqual(candidates.map(\.id), [movie.id])
+        let automaticList = StreamPickerListBuilder.displayedStreams(
+            streams: [trailer, movie], groups: [], selectedAddonId: nil,
+            sortOption: .default, includeDebrid: false, preserveAddonStreams: true,
+            selectionMode: .automatic
+        )
+        XCTAssertEqual(automaticList.map(\.id), [movie.id])
+    }
+
+    func testAutomaticCachedOnlyFallsBackAfterCacheFiltering() {
+        let cachedEpisode = NuvioStream(
+            url: "https://example.com/one.mkv", name: "Official trailer 1080p",
+            description: "Trailer.Park.Boys.S01E01.1080p", addonName: "Debridio", isCached: true
+        )
+        let other = NuvioStream(
+            url: "https://example.com/two.mkv", name: "1080p",
+            description: "Other.1080p", addonName: "Debridio"
+        )
+        let pool = SmartPlaybackSelector.playableStreams(
+            from: [cachedEpisode, other], cachedOnly: true, preserveAddonStreams: true
+        )
+        XCTAssertEqual(pool.map(\.id), [cachedEpisode.id])
+        let ranked = SmartPlaybackSelector.rankedStreams(
+            from: [cachedEpisode, other], qualityPreference: "Highest", subtitleLanguages: [],
+            shouldMatchSubtitles: false, cachedOnly: true
+        )
+        XCTAssertEqual(ranked.map(\.id), [cachedEpisode.id])
+    }
+
+    func testAutomaticSelectionKeepsEpisodeWhenTitleContainsTrailer() {
+        let episode = NuvioStream(
+            url: "https://example.com/preview/video.mkv", name: "1080p",
+            description: "Trailer.Park.Boys.The.Animated.Series.S01E01.1080p.mkv",
+            addonName: "Preview Addon"
+        )
+        let other = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Other.1080p", addonName: "Addon"
+        )
+        let pool = SmartPlaybackSelector.playableStreams(
+            from: [episode, other], preserveAddonStreams: true
+        )
+        XCTAssertEqual(Set(pool.map(\.id)), Set([episode.id, other.id]))
+        let ranked = SmartPlaybackSelector.rankedStreams(
+            from: [episode, other], qualityPreference: "Highest", subtitleLanguages: [],
+            shouldMatchSubtitles: false
+        )
+        XCTAssertEqual(Set(ranked.map(\.id)), Set([episode.id, other.id]))
+    }
+
+    func testAutomaticSelectionPreservesPromotionalWordsInsideTitles() {
+        let titles = ["Trailer Park Boys", "Sample of Life", "Preview Night", "Promo Story", "Teaser Town", "Featurette House"]
+        let other = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Other.1080p", addonName: "Debridio", isCached: true
+        )
+        for (index, title) in titles.enumerated() {
+            let stream = NuvioStream(
+                url: "https://example.com/episode-\(index).mkv", name: "1080p",
+                description: "\(title) S01E01 1080p", addonName: "Debridio", isCached: true
+            )
+            for cachedOnly in [false, true] {
+                let result = SmartPlaybackSelector.playableStreams(
+                    from: [stream, other], cachedOnly: cachedOnly, preserveAddonStreams: true
+                )
+                XCTAssertEqual(Set(result.map(\.id)), Set([stream.id, other.id]), title)
+            }
+        }
+    }
+
+    func testAutomaticSelectionRecognizesExplicitPromotionalLabels() {
+        let labels = ["Trailer", "Official Trailer 1080p", "Official Trailer 2", "Final Trailer", "Teaser Trailer", "Trailer #2", "Teaser", "Preview", "Promo", "Sample", "Featurette"]
+        let episode = NuvioStream(
+            url: "https://example.com/episode.mkv", name: "1080p",
+            description: "Episode 1080p", addonName: "Addon"
+        )
+        for (index, label) in labels.enumerated() {
+            let promotional = NuvioStream(
+                url: "https://example.com/clip-\(index).mkv", name: label,
+                description: nil, addonName: "Addon"
+            )
+            let result = SmartPlaybackSelector.playableStreams(
+                from: [promotional, episode], preserveAddonStreams: true
+            )
+            XCTAssertEqual(result.map(\.id), [episode.id], label)
+        }
+    }
+
+    func testAutomaticSelectionUsesYouTubeHostNotURLSubstring() {
+        let youtube = NuvioStream(
+            url: "https://www.youtube.com/watch?v=example", name: "1080p",
+            description: nil, addonName: "Addon"
+        )
+        let ordinary = NuvioStream(
+            url: "https://example.com/youtube.com/video.mkv", name: "1080p",
+            description: nil, addonName: "Addon"
+        )
+        let pool = SmartPlaybackSelector.playableStreams(
+            from: [youtube, ordinary], preserveAddonStreams: true
+        )
+        XCTAssertEqual(pool.map(\.id), [ordinary.id])
+    }
+
+    func testActionDoesNotSuppressAutomaticPlayableFallback() {
+        let action = NuvioStream(
+            url: "https://example.com/action", name: "Action",
+            description: nil, addonName: "Addon", notPlayable: true
+        )
+        let episode = NuvioStream(
+            url: "https://example.com/episode.mkv", name: "480p",
+            description: "Trailer.Park.Boys.S01E01", addonName: "Addon"
+        )
+        for preserve in [false, true] {
+            let result = SmartPlaybackSelector.playableStreams(
+                from: [action, episode], preserveAddonStreams: preserve
+            )
+            XCTAssertEqual(Set(result.map(\.id)), Set([action.id, episode.id]))
+        }
+    }
+
+    func testManualPickerStillHonorsCachedOnly() {
+        let cached = NuvioStream(
+            url: "https://example.com/cached.mkv", name: "1080p cached",
+            description: "Trailer.Park.Boys.S01E01.1080p", addonName: "Debridio", isCached: true
+        )
+        let unknown = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Other.1080p", addonName: "Debridio"
+        )
+        let result = StreamPickerListBuilder.displayedStreams(
+            streams: [cached, unknown], groups: [], selectedAddonId: nil,
+            sortOption: .default, includeDebrid: false, cachedOnly: true, preserveAddonStreams: true
+        )
+        XCTAssertEqual(result.map(\.id), [cached.id])
+    }
+
+    func testManualPickerDoesNotFilterNamesForCachedOrUncachedDirectStreams() {
+        let cached = NuvioStream(
+            url: "https://example.com/a.mkv", name: "1080p",
+            description: "Trailer.Park.Boys.S01E01.1080p", addonName: "Debridio", isCached: true
+        )
+        let uncached = NuvioStream(
+            url: "https://example.com/b.mkv", name: "1080p",
+            description: "Trailer.Park.Boys.S01E01.1080p", addonName: "Debridio", isCached: false
+        )
+        for preserve in [false, true] {
+            let allCacheStates = StreamPickerListBuilder.displayedStreams(
+                streams: [cached, uncached], groups: [], selectedAddonId: nil,
+                sortOption: .default, includeDebrid: false, cachedOnly: false, preserveAddonStreams: preserve
+            )
+            XCTAssertEqual(Set(allCacheStates.map(\.id)), Set([cached.id, uncached.id]))
+
+            let cachedOnly = StreamPickerListBuilder.displayedStreams(
+                streams: [cached, uncached], groups: [], selectedAddonId: nil,
+                sortOption: .default, includeDebrid: false, cachedOnly: true, preserveAddonStreams: preserve
+            )
+            XCTAssertEqual(cachedOnly.map(\.id), [cached.id])
+        }
+    }
+
+    func testManualPickerKeepsUnknownTorrentCacheStatusWhenRequested() {
+        let unknown = NuvioStream(
+            url: nil, name: "1080p",
+            description: "Trailer.Park.Boys.S01E01.1080p", addonName: "Torrentio",
+            infoHash: "0123456789abcdef0123456789abcdef01234567",
+            debridCacheStatusUnavailable: true
+        )
+        let other = NuvioStream(
+            url: "https://example.com/other.mkv", name: "1080p",
+            description: "Other.1080p", addonName: "Torrentio", isCached: true
+        )
+        let result = StreamPickerListBuilder.displayedStreams(
+            streams: [unknown, other], groups: [], selectedAddonId: nil,
+            sortOption: .default, includeDebrid: true, cachedOnly: true,
+            preserveAddonStreams: true, includeUnknownCacheStatus: true
+        )
+        XCTAssertEqual(Set(result.map(\.id)), Set([unknown.id, other.id]))
+    }
+
     func testStreamRequestRetryPolicyRetriesTransientErrorsOnly() {
         XCTAssertFalse(StreamsRepository.StreamRequestRetryPolicy.shouldRetry(URLError(.timedOut)))
         XCTAssertTrue(StreamsRepository.StreamRequestRetryPolicy.shouldRetry(URLError(.networkConnectionLost)))
@@ -118,7 +414,7 @@ final class StreamsDiscoveryTests: XCTestCase {
     }
 
     func testExternalSubtitleProvidersRequireConfiguredCompatibleManifest() throws {
-        let providerURL = try XCTUnwrap(URL(string: "https://opensubtitles-v3.strem.io/manifest.json"))
+        let providerURL = try XCTUnwrap(URL(string: "https://example-subs.strem.io/manifest.json"))
         let unconfiguredURL = try XCTUnwrap(URL(string: "https://other.example/manifest.json"))
         let compatible = try JSONDecoder().decode(StreamAddonManifest.self, from: Data(
             #"{"id":"com.example.subtitles","name":"Example Subs","types":["movie"],"idPrefixes":["tt"],"resources":[{"name":"subtitles","types":["movie"]}]}"#.utf8
@@ -373,6 +669,38 @@ final class StreamsDiscoveryTests: XCTestCase {
             streams: flat, groups: groups, selectedAddonId: nil, sortOption: .quality, includeDebrid: false
         )
         XCTAssertEqual(byQuality.first?.id, torrentio.id, "4K should rank above 1080p")
+    }
+
+    func testUnknownDebridCacheStatusIsOptInForCachedOnlyLists() {
+        let stream = NuvioStream(
+            url: nil,
+            name: "Torrentio 1080p",
+            description: nil,
+            addonName: "Torrentio",
+            infoHash: String(repeating: "a", count: 40),
+            debridCacheStatusUnavailable: true
+        )
+
+        let automaticCandidates = StreamPickerListBuilder.displayedStreams(
+            streams: [stream],
+            groups: [],
+            selectedAddonId: nil,
+            sortOption: .quality,
+            includeDebrid: true,
+            cachedOnly: true
+        )
+        let manualPickerCandidates = StreamPickerListBuilder.displayedStreams(
+            streams: [stream],
+            groups: [],
+            selectedAddonId: nil,
+            sortOption: .quality,
+            includeDebrid: true,
+            cachedOnly: true,
+            includeUnknownCacheStatus: true
+        )
+
+        XCTAssertTrue(automaticCandidates.isEmpty)
+        XCTAssertEqual(manualPickerCandidates.map(\.id), [stream.id])
     }
 
     func testFocusChangeDoesNotChangeDerivedStreamList() {
@@ -1392,6 +1720,433 @@ final class StreamsDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(configured.count, 1)
         XCTAssertEqual(configured[0].name, "AIO 1")
+    }
+
+    func testBaseContentIdExtractsExpectedRoot() {
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "tt1856101"), "tt1856101")
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "tt0903747:1:2"), "tt0903747")
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "tmdb:335984"), "tmdb:335984")
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "tmdb:1396:1:2"), "tmdb:1396")
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "jellyfin-server1-item1"), "jellyfin-server1-item1")
+        XCTAssertEqual(StreamsRepository.baseContentId(from: "jellyfin-server1-series1:2:3"), "jellyfin-server1-series1")
+    }
+
+    @MainActor
+    func testJellyfinLibraryIndexTitlesMatching() throws {
+        let serverID = "srv-\(UUID().uuidString)"
+        let title = JellyfinIndexedTitle(
+            contentId: "jellyfin-\(serverID)-item42",
+            serverID: serverID,
+            libraryID: "lib1",
+            libraryName: "Movies",
+            itemId: "item42",
+            type: "movie",
+            name: "Blade Runner 2049",
+            overview: "A young blade runner...",
+            year: 2017,
+            genres: ["Sci-Fi"],
+            communityRating: 8.0,
+            officialRating: "R",
+            premiereDate: "2017-10-06",
+            runTimeTicks: 164 * 60 * 10_000_000,
+            imdbId: "tt1856101",
+            tmdbId: 335984,
+            primaryImageTag: "tag1",
+            backdropImageTag: "tag2",
+            cast: ["Ryan Gosling"],
+            directors: ["Denis Villeneuve"],
+            items: [
+                JellyfinIndexedItem(
+                    itemId: "item42",
+                    container: "mkv",
+                    size: 15_000_000_000,
+                    season: nil,
+                    episode: nil,
+                    episodeName: nil,
+                    episodeOverview: nil,
+                    episodePremiereDate: nil,
+                    episodeImageTag: nil
+                )
+            ]
+        )
+
+        try JellyfinLibraryIndex.shared.replace(titles: [title], forServerID: serverID)
+        defer { JellyfinLibraryIndex.shared.removeAll(forServerID: serverID) }
+
+        // Match by synthetic contentId
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "jellyfin-\(serverID)-item42").count, 1)
+        // Match by raw itemId
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "item42").count, 1)
+        // Match by canonical IMDb ID (what NuvioMeta.streamId outputs for Blade Runner 2049)
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "tt1856101").count, 1)
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "imdb:1856101").count, 1)
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "1856101").count, 1)
+        // Match by TMDB ID
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles(matching: "tmdb:335984").count, 1)
+        // Non-matches
+        XCTAssertTrue(JellyfinLibraryIndex.shared.titles(matching: "tt9999999").isEmpty)
+        XCTAssertTrue(JellyfinLibraryIndex.shared.titles(matching: "tmdb:9999999").isEmpty)
+        XCTAssertTrue(JellyfinLibraryIndex.shared.titles(matching: "").isEmpty)
+    }
+
+    @MainActor
+    func testJellyfinCredentialStoreScopesOverwritesAndDeletesTokens() {
+        let previousStorage = JellyfinCredentialStore.storage
+        JellyfinCredentialStore.storage = MemoryJellyfinCredentialStorage()
+        defer { JellyfinCredentialStore.storage = previousStorage }
+
+        XCTAssertTrue(JellyfinCredentialStore.save("first", forServerID: "server-a", profileScope: "profile-a"))
+        XCTAssertTrue(JellyfinCredentialStore.save("other-profile", forServerID: "server-a", profileScope: "profile-b"))
+        XCTAssertTrue(JellyfinCredentialStore.save("other-server", forServerID: "server-b", profileScope: "profile-a"))
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-a"), "first")
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-b"), "other-profile")
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-b", profileScope: "profile-a"), "other-server")
+
+        XCTAssertTrue(JellyfinCredentialStore.save("replacement", forServerID: "server-a", profileScope: "profile-a"))
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-a"), "replacement")
+        XCTAssertTrue(JellyfinCredentialStore.remove(forServerID: "server-a", profileScope: "profile-a"))
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-a"), "")
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-b"), "other-profile")
+
+        XCTAssertTrue(JellyfinCredentialStore.save("", forServerID: "server-a", profileScope: "profile-b"))
+        XCTAssertEqual(JellyfinCredentialStore.token(forServerID: "server-a", profileScope: "profile-b"), "")
+    }
+
+    @MainActor
+    func testJellyfinMetadataCanUseAnAlreadyIndexedTitle() throws {
+        let previousCredentialStorage = JellyfinCredentialStore.storage
+        JellyfinCredentialStore.storage = MemoryJellyfinCredentialStorage()
+        defer { JellyfinCredentialStore.storage = previousCredentialStorage }
+
+        let previousProfileID = ProfileSettings.activeProfileID
+        let previousProfileIsPrimary = ProfileSettings.isPrimaryProfileStore(ProfileSettings.current)
+        ProfileSettings.setActiveProfile("jellyfin-meta-\(UUID().uuidString)", isPrimary: false)
+        defer {
+            if let previousProfileID {
+                ProfileSettings.setActiveProfile(previousProfileID, isPrimary: previousProfileIsPrimary)
+            } else {
+                ProfileSettings.clearActiveProfile()
+            }
+        }
+
+        let firstServerID = "srv-\(UUID().uuidString)"
+        let secondServerID = "srv-\(UUID().uuidString)"
+        for (serverID, name) in [(firstServerID, "First server"), (secondServerID, "Second server")] {
+            JellyfinServerStore.shared.upsert(JellyfinServerConfig(
+                id: serverID,
+                displayName: name,
+                baseURLString: "http://127.0.0.1:8096",
+                userId: "user-\(serverID)",
+                syncAutomatically: false
+            ))
+            JellyfinCredentialStore.save("test-token-\(serverID)", forServerID: serverID)
+        }
+        defer {
+            JellyfinServerStore.shared.remove(secondServerID)
+            JellyfinServerStore.shared.remove(firstServerID)
+        }
+
+        func indexedTitle(serverID: String, name: String, contentId: String? = nil) -> JellyfinIndexedTitle {
+            JellyfinIndexedTitle(
+                contentId: contentId ?? JellyfinLibraryIndex.contentId(serverID: serverID, itemId: "shared-item"),
+                serverID: serverID,
+                libraryID: "movies",
+                libraryName: "Movies",
+                itemId: "shared-item",
+                type: "series",
+                name: name,
+                overview: nil,
+                year: nil,
+                genres: nil,
+                communityRating: nil,
+                officialRating: nil,
+                premiereDate: nil,
+                runTimeTicks: nil,
+                imdbId: nil,
+                tmdbId: nil,
+                primaryImageTag: nil,
+                backdropImageTag: nil,
+                cast: nil,
+                directors: nil,
+                items: [
+                    JellyfinIndexedItem(
+                        itemId: "episode-\(serverID)",
+                        container: "mkv",
+                        size: 1_000,
+                        season: 1,
+                        episode: 1,
+                        episodeName: "Pilot",
+                        episodeOverview: nil,
+                        episodePremiereDate: nil,
+                        episodeImageTag: nil
+                    )
+                ]
+            )
+        }
+
+        let firstTitle = indexedTitle(serverID: firstServerID, name: "First title")
+        let secondTitle = indexedTitle(serverID: secondServerID, name: "Second title")
+        try JellyfinLibraryIndex.shared.replace(titles: [firstTitle], forServerID: firstServerID)
+        try JellyfinLibraryIndex.shared.replace(titles: [secondTitle], forServerID: secondServerID)
+
+        let firstMeta = try XCTUnwrap(JellyfinLibraryIndex.shared.meta(for: firstTitle))
+        let secondMeta = try XCTUnwrap(JellyfinLibraryIndex.shared.meta(for: secondTitle))
+        XCTAssertEqual(firstMeta.name, "First title")
+        XCTAssertEqual(secondMeta.name, "Second title")
+        XCTAssertEqual(firstMeta.videos?.first?.id, "\(firstTitle.contentId):1:1")
+        XCTAssertEqual(secondMeta.videos?.first?.id, "\(secondTitle.contentId):1:1")
+
+        let rawIDMeta = try XCTUnwrap(JellyfinLibraryIndex.shared.meta(forContentId: "shared-item"))
+        XCTAssertEqual(rawIDMeta.name, "First title")
+        XCTAssertEqual(rawIDMeta.videos?.first?.id, "shared-item:1:1")
+        XCTAssertEqual(JellyfinLibraryIndex.shared.meta(forContentId: secondTitle.contentId)?.name, "Second title")
+
+        let duplicateContentIDTitle = indexedTitle(
+            serverID: secondServerID,
+            name: "Duplicate content ID",
+            contentId: firstTitle.contentId
+        )
+        let firstTitleByID = TVHomeView.jellyfinFirstTitleByID([firstTitle, secondTitle, duplicateContentIDTitle])
+        XCTAssertEqual(firstTitleByID[firstTitle.contentId]?.name, "First title")
+        XCTAssertEqual(firstTitleByID["shared-item"]?.name, "First title")
+    }
+
+    @MainActor
+    func testJellyfinStreamGroupResolvesWhenPlayUsesImdbStreamId() async throws {
+        let previousCredentialStorage = JellyfinCredentialStore.storage
+        JellyfinCredentialStore.storage = MemoryJellyfinCredentialStorage()
+        defer { JellyfinCredentialStore.storage = previousCredentialStorage }
+
+        let suiteName = "NuvioTVTests.JellyfinPlay.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let previousProfileID = ProfileSettings.activeProfileID
+        let previousProfileIsPrimary = ProfileSettings.isPrimaryProfileStore(ProfileSettings.current)
+        let testProfileID = "jellyfin-play-\(UUID().uuidString)"
+        ProfileSettings.setActiveProfile(testProfileID, isPrimary: false)
+        let credentialProfileScope = ProfileSettings.activeProfileScope
+        defer {
+            if let previousProfileID {
+                ProfileSettings.setActiveProfile(previousProfileID, isPrimary: previousProfileIsPrimary)
+            }
+        }
+
+        // Configure Jellyfin server
+        let serverID = "srv-\(UUID().uuidString)"
+        let server = JellyfinServerConfig(
+            id: serverID,
+            displayName: "Home Jellyfin",
+            baseURLString: "http://127.0.0.1:8096",
+            authKind: .apiKey,
+            username: "user",
+            userId: "uid-1",
+            selectedLibraryIDs: ["lib-1"],
+            lastSyncDate: Date(),
+            lastSyncTitleCount: 1,
+            syncAutomatically: false
+        )
+        JellyfinServerStore.shared.upsert(server)
+        let testToken = "test-token-123"
+        XCTAssertTrue(JellyfinCredentialStore.save(
+            testToken,
+            forServerID: serverID,
+            profileScope: credentialProfileScope
+        ), "Jellyfin API key should be saved for the active profile")
+        XCTAssertEqual(
+            JellyfinCredentialStore.token(forServerID: serverID, profileScope: credentialProfileScope),
+            testToken,
+            "Jellyfin API key should be readable from the active profile scope"
+        )
+        defer {
+            JellyfinCredentialStore.remove(forServerID: serverID, profileScope: credentialProfileScope)
+            JellyfinServerStore.shared.remove(serverID)
+        }
+
+        // Index Blade Runner 2049 with IMDb id tt1856101
+        let title = JellyfinIndexedTitle(
+            contentId: "jellyfin-\(serverID)-item42",
+            serverID: serverID,
+            libraryID: "lib-1",
+            libraryName: "Movies",
+            itemId: "item42",
+            type: "movie",
+            name: "Blade Runner 2049",
+            overview: "A young blade runner...",
+            year: 2017,
+            genres: ["Sci-Fi"],
+            communityRating: 8.0,
+            officialRating: "R",
+            premiereDate: "2017-10-06",
+            runTimeTicks: 164 * 60 * 10_000_000,
+            imdbId: "tt1856101",
+            tmdbId: 335984,
+            primaryImageTag: "tag1",
+            backdropImageTag: "tag2",
+            cast: ["Ryan Gosling"],
+            directors: ["Denis Villeneuve"],
+            items: [
+                JellyfinIndexedItem(
+                    itemId: "item42",
+                    container: "mkv",
+                    size: 15_000_000_000,
+                    season: nil,
+                    episode: nil,
+                    episodeName: nil,
+                    episodeOverview: nil,
+                    episodePremiereDate: nil,
+                    episodeImageTag: nil
+                )
+            ]
+        )
+        try JellyfinLibraryIndex.shared.replace(titles: [title], forServerID: serverID)
+
+        // Clear any external add-ons so only local sources are evaluated (matching #401 reproduction)
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences([], in: ProfileSettings.current)
+
+        // When user plays, NuvioMeta.streamId substitutes IMDb ID "tt1856101"
+        let streams = await StreamsRepository.shared.collectStreams(type: "movie", videoId: "tt1856101", forceRefresh: true)
+
+        XCTAssertFalse(streams.isEmpty, "Jellyfin stream should be resolved for IMDb ID tt1856101")
+        XCTAssertEqual(streams.first?.addonName, "Jellyfin")
+        XCTAssertEqual(streams.first?.name, "Home Jellyfin")
+        let streamURL = try XCTUnwrap(streams.first?.url)
+        let streamURLComponents = try XCTUnwrap(URLComponents(string: streamURL))
+        XCTAssertTrue(streamURLComponents.path.contains("Videos/item42/stream"))
+        XCTAssertEqual(
+            streamURLComponents.queryItems?.first(where: { $0.name == "api_key" })?.value,
+            testToken
+        )
+
+        // Verify discovery state does not report "No compatible add-ons"
+        let state = StreamsRepository.shared.state
+        XCTAssertNil(state.emptyStateReason, "Empty state reason should be nil when Jellyfin stream is present")
+        let jellyfinGroup = state.groups.first(where: { $0.addonId == "local.jellyfin" })
+        XCTAssertNotNil(jellyfinGroup)
+        XCTAssertEqual(jellyfinGroup?.streams.count, 1)
+    }
+
+    @MainActor
+    func testJellyfinStreamGroupResolvesSeriesEpisodeWhenUsingCanonicalEpisodeStreamId() async throws {
+        let previousCredentialStorage = JellyfinCredentialStore.storage
+        JellyfinCredentialStore.storage = MemoryJellyfinCredentialStorage()
+        defer { JellyfinCredentialStore.storage = previousCredentialStorage }
+
+        let previousProfileID = ProfileSettings.activeProfileID
+        let previousProfileIsPrimary = ProfileSettings.isPrimaryProfileStore(ProfileSettings.current)
+        let testProfileID = "jellyfin-series-\(UUID().uuidString)"
+        ProfileSettings.setActiveProfile(testProfileID, isPrimary: false)
+        defer {
+            if let previousProfileID {
+                ProfileSettings.setActiveProfile(previousProfileID, isPrimary: previousProfileIsPrimary)
+            }
+        }
+
+        let serverID = "srv-\(UUID().uuidString)"
+        let server = JellyfinServerConfig(
+            id: serverID,
+            displayName: "Home Jellyfin",
+            baseURLString: "http://127.0.0.1:8096",
+            authKind: .apiKey,
+            username: "user",
+            userId: "uid-1",
+            selectedLibraryIDs: ["lib-shows"],
+            lastSyncDate: Date(),
+            lastSyncTitleCount: 1,
+            syncAutomatically: false
+        )
+        JellyfinServerStore.shared.upsert(server)
+        let testToken = "test-token-series"
+        XCTAssertTrue(JellyfinCredentialStore.save(testToken, forServerID: serverID))
+        defer {
+            JellyfinCredentialStore.remove(forServerID: serverID)
+            JellyfinServerStore.shared.remove(serverID)
+        }
+
+        let seriesTitle = JellyfinIndexedTitle(
+            contentId: "jellyfin-\(serverID)-series100",
+            serverID: serverID,
+            libraryID: "lib-shows",
+            libraryName: "TV Shows",
+            itemId: "series100",
+            type: "series",
+            name: "Breaking Bad",
+            overview: "Chemistry teacher...",
+            year: 2008,
+            genres: ["Drama"],
+            communityRating: 9.5,
+            officialRating: "TV-MA",
+            premiereDate: "2008-01-20",
+            runTimeTicks: 48 * 60 * 10_000_000,
+            imdbId: "tt0903747",
+            tmdbId: 1396,
+            primaryImageTag: "tag1",
+            backdropImageTag: "tag2",
+            cast: ["Bryan Cranston"],
+            directors: ["Vince Gilligan"],
+            items: [
+                JellyfinIndexedItem(
+                    itemId: "ep-s1e1",
+                    container: "mp4",
+                    size: 2_000_000_000,
+                    season: 1,
+                    episode: 1,
+                    episodeName: "Pilot",
+                    episodeOverview: nil,
+                    episodePremiereDate: nil,
+                    episodeImageTag: nil
+                ),
+                JellyfinIndexedItem(
+                    itemId: "ep-s1e2",
+                    container: "mp4",
+                    size: 2_100_000_000,
+                    season: 1,
+                    episode: 2,
+                    episodeName: "Cat's in the Bag...",
+                    episodeOverview: nil,
+                    episodePremiereDate: nil,
+                    episodeImageTag: nil
+                )
+            ]
+        )
+        try JellyfinLibraryIndex.shared.replace(titles: [seriesTitle], forServerID: serverID)
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences([], in: ProfileSettings.current)
+
+        // Episode play uses canonicalEpisodeStreamId e.g. "tt0903747:1:2"
+        let streams = await StreamsRepository.shared.collectStreams(type: "series", videoId: "tt0903747:1:2", forceRefresh: true)
+
+        XCTAssertEqual(streams.count, 1)
+        XCTAssertEqual(streams.first?.addonName, "Jellyfin")
+        let streamURL = try XCTUnwrap(streams.first?.url)
+        let streamURLComponents = try XCTUnwrap(URLComponents(string: streamURL))
+        XCTAssertTrue(streamURLComponents.path.contains("Videos/ep-s1e2/stream"))
+        XCTAssertEqual(
+            streamURLComponents.queryItems?.first(where: { $0.name == "api_key" })?.value,
+            testToken
+        )
+    }
+}
+
+private final class MemoryJellyfinCredentialStorage: JellyfinCredentialStorage {
+    private struct Key: Hashable {
+        let serverID: String
+        let profileScope: String
+    }
+
+    private var tokens: [Key: String] = [:]
+
+    func token(forServerID serverID: String, profileScope: String) -> String? {
+        tokens[Key(serverID: serverID, profileScope: profileScope)]
+    }
+
+    func save(_ token: String, forServerID serverID: String, profileScope: String) -> Bool {
+        tokens[Key(serverID: serverID, profileScope: profileScope)] = token
+        return true
+    }
+
+    func remove(forServerID serverID: String, profileScope: String) -> Bool {
+        tokens.removeValue(forKey: Key(serverID: serverID, profileScope: profileScope))
+        return true
     }
 }
 
