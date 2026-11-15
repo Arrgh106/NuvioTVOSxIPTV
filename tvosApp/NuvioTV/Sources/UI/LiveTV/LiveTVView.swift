@@ -44,11 +44,13 @@ struct LiveTVView: View {
     /// The app's film player. Not used since step 3 (Live TV plays in its
     /// own player, see LiveTVPlayer); kept so the app's call site stays as is.
     let onPlayChannel: (URL, NuvioMeta, [String: String]) -> Void
+    /// No source yet: to Settings → Live TV / VOD → Sources.
+    var onOpenSources: () -> Void = {}
 
     var body: some View {
         Group {
             if !store.hasAccount {
-                XtreamLoginForm(store: store)
+                LiveTVNoSourceView(onOpenSources: onOpenSources)
             } else if isManagingGroups {
                 LiveTVGroupManager(store: store, onDone: { isManagingGroups = false })
             } else {
@@ -536,117 +538,29 @@ struct LiveTVLogo: View {
 
 /// The first login, while there's no source (more in Settings → Live TV /
 /// VOD → Sources, step 13a).
-private struct XtreamLoginForm: View {
-    @ObservedObject var store: LiveTVStore
-
-    @State private var server = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var format: XtreamStreamFormat = .auto
-    /// Asked right away: the provider's movies and series too.
-    @State private var importVOD = true
-    @State private var isSigningIn = false
-    @State private var errorMessage: String?
-    /// Step 13b: a playlist instead of a login.
-    @State private var addingPlaylist: LiveTVSourceEditor.Target?
+/// No source yet: where to set one up (Settings → Live TV / VOD →
+/// Sources), as Nuvio's other services are set up in Settings.
+private struct LiveTVNoSourceView: View {
+    let onOpenSources: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            Text(L10n.string("livetv_xtream_title", fallback: "Xtream Codes login"))
+        VStack(spacing: 28) {
+            Image(systemName: "tv")
+                .font(.system(size: 80, weight: .light))
+                .foregroundColor(.white.opacity(0.5))
+            Text(L10n.string("livetv_no_source_title", fallback: "No Live TV source yet"))
                 .font(.system(size: 44, weight: .bold))
             Text(L10n.string(
-                "livetv_xtream_hint",
-                fallback: "Enter the server address, username and password from your IPTV provider."
+                "livetv_no_source_hint",
+                fallback: "Add an Xtream Codes login or an M3U playlist from your provider in Settings → Live TV / VOD → Sources."
             ))
             .font(.system(size: 24))
             .foregroundColor(.white.opacity(0.6))
-
-            VStack(alignment: .leading, spacing: 18) {
-                TextField(L10n.string("livetv_server", fallback: "Server (e.g. http://example.com:8080)"), text: $server)
-                    .textContentType(.URL)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                TextField(L10n.string("livetv_username", fallback: "Username"), text: $username)
-                    .textContentType(.username)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                SecureField(L10n.string("livetv_password", fallback: "Password"), text: $password)
-                    .textContentType(.password)
-            }
+            .multilineTextAlignment(.center)
             .frame(maxWidth: 1100)
-
-            HStack(spacing: 16) {
-                Text(L10n.string("livetv_stream_format", fallback: "Stream format"))
-                    .font(.system(size: 24))
-                ForEach(XtreamStreamFormat.allCases) { option in
-                    Button {
-                        format = option
-                    } label: {
-                        HStack(spacing: 8) {
-                            if format == option { Image(systemName: "checkmark") }
-                            Text(option.title)
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusSection()
-
-            Button {
-                importVOD.toggle()
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: importVOD ? "checkmark.square.fill" : "square")
-                    Text(L10n.string("livetv_source_import_vod", fallback: "Include Movies & Series (VOD)"))
-                }
-            }
-            // Full-width focus sections: otherwise moving down from a format
-            // button finds nothing below it (Sign in sits further left).
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusSection()
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 24))
-                    .foregroundColor(.red)
-            }
-
-            HStack(spacing: 24) {
-                Button {
-                    signIn()
-                } label: {
-                    HStack(spacing: 12) {
-                        if isSigningIn { ProgressView() }
-                        Text(L10n.string("livetv_sign_in", fallback: "Sign in"))
-                    }
-                }
-                .disabled(isSigningIn || server.isEmpty || username.isEmpty || password.isEmpty)
-
-                Button(L10n.string("livetv_sources_add_m3u_instead", fallback: "Add an M3U Playlist Instead")) {
-                    addingPlaylist = .init(source: LiveTVSourceStore.shared.newPlaylist(), isNew: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusSection()
+            Button(L10n.string("livetv_no_source_open", fallback: "Set Up Sources"), action: onOpenSources)
         }
         .padding(80)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .sheet(item: $addingPlaylist) { target in
-            LiveTVSettingsRows.clearSheetBackground(LiveTVPlaylistEditor(target: target, accentColor: LiveTVTheme.accent))
-        }
-    }
-
-    private func signIn() {
-        errorMessage = nil
-        isSigningIn = true
-        Task {
-            defer { isSigningIn = false }
-            do {
-                try await store.signIn(server: server, username: username, password: password, format: format, importVOD: importVOD)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

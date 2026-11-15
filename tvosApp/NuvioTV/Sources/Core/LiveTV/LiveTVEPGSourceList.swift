@@ -47,13 +47,54 @@ enum LiveTVEPGSourceRules {
     /// guides put their source in front, so equal ids don't mix.
     static func key(sourceID: String, guideID: String) -> String {
         let id = guideID.lowercased()
-        return sourceID.isEmpty ? id : sourceID + "|" + id
+        // All lower case: the guide is looked up in lower case.
+        return sourceID.isEmpty ? id : sourceID.lowercased() + "|" + id
     }
 
-    /// The guide id without its source ("x1a2b3c4d|das.erste.de" → "das.erste.de").
+    /// The guide id without its source ("x1a2b3c4d|das.erste.de" → "das.erste.de",
+    /// also a source's own guide's "builtin:…|das.erste.de").
     static func guideID(fromKey key: String) -> String {
-        guard key.hasPrefix("x"), let bar = key.firstIndex(of: "|") else { return key }
+        guard let bar = sourceBar(key) else { return key }
         return String(key[key.index(after: bar)...])
+    }
+
+    /// The guide a stored key comes from, in lower case ("" the first
+    /// source's own guide).
+    static func sourceID(ofKey key: String) -> String {
+        guard let bar = sourceBar(key) else { return "" }
+        return String(key[..<bar]).lowercased()
+    }
+
+    private static func sourceBar(_ key: String) -> String.Index? {
+        let lower = key.lowercased()
+        guard lower.hasPrefix("x") || lower.hasPrefix("builtin:") else { return nil }
+        return key.firstIndex(of: "|")
+    }
+
+    /// A source's own guide ("" or "builtin:…"), not an added one.
+    static func isBuiltIn(sourceID: String) -> Bool {
+        sourceID.isEmpty || sourceID.lowercased().hasPrefix("builtin:")
+    }
+
+    /// What changed between the guides read last time and now, when only
+    /// sources' own guides came or went (a source added, turned on or off,
+    /// its guide switched): their ids (lower case), removed and added. A
+    /// guide whose link changed is in both. Nil when the added guides
+    /// changed (they match every channel): then everything is read.
+    static func change(from old: String, to new: String) -> (removed: Set<String>, added: Set<String>)? {
+        func entries(_ text: String) -> [String] { text.split(separator: ",").map(String.init) }
+        func sourceID(_ entry: String) -> String {
+            // "sourceID:hash:shift"; a source's own id has a ":" too.
+            let parts = entry.split(separator: ":", omittingEmptySubsequences: false)
+            return parts.dropLast(2).joined(separator: ":").lowercased()
+        }
+        let before = entries(old)
+        let now = entries(new)
+        let added = { (list: [String]) in list.filter { !isBuiltIn(sourceID: sourceID($0)) } }
+        guard added(before) == added(now) else { return nil }
+        let oldSet = Set(before)
+        let newSet = Set(now)
+        return (Set(oldSet.subtracting(newSet).map(sourceID)), Set(newSet.subtracting(oldSet).map(sourceID)))
     }
 
     /// The host shown under a guide in Settings ("epgshare01.online").

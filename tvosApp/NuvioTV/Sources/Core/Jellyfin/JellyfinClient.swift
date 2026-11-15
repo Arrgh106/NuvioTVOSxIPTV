@@ -42,6 +42,49 @@ struct JellyfinMediaItem: Equatable {
     let indexNumber: Int?
     let container: String?
     let sizeBytes: Int64?
+    /// Fork: the picture of the first video stream, so the stream list
+    /// can rank the file by its resolution (none: sorted last).
+    var videoWidth: Int? = nil
+    var videoHeight: Int? = nil
+    /// "HDR", "SDR"; and "DOVI", "HDR10", "HDR10Plus", "HLG" …
+    var videoRange: String? = nil
+    var videoRangeType: String? = nil
+
+    /// "2160p · DV" for the stream list (by the width too: a wide film
+    /// in 4K is 3840 × 1600).
+    var qualityLabel: String? {
+        let width = videoWidth ?? 0
+        let height = videoHeight ?? 0
+        let resolution: String?
+        if width >= 3200 || height >= 2000 {
+            resolution = "2160p"
+        } else if width >= 1800 || height >= 1000 {
+            resolution = "1080p"
+        } else if width >= 1200 || height >= 700 {
+            resolution = "720p"
+        } else if height >= 400 {
+            resolution = "480p"
+        } else {
+            resolution = nil
+        }
+        let type = (videoRangeType ?? "").uppercased()
+        let range: String?
+        if type.contains("DOVI") {
+            range = "DV"
+        } else if type.contains("HDR10PLUS") {
+            range = "HDR10+"
+        } else if type.contains("HDR10") {
+            range = "HDR10"
+        } else if type.contains("HLG") {
+            range = "HLG"
+        } else if (videoRange ?? "").uppercased() == "HDR" {
+            range = "HDR"
+        } else {
+            range = nil
+        }
+        let parts = [resolution, range].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
 /// Thin REST client for one Jellyfin server. Stateless beyond the
@@ -342,9 +385,28 @@ struct JellyfinClient {
                 let Imdb: String?
                 let Tmdb: String?
             }
+            struct MediaStream: Decodable {
+                let `Type`: String?
+                let Width: Int?
+                let Height: Int?
+                let VideoRange: String?
+                let VideoRangeType: String?
+            }
             struct MediaSource: Decodable {
                 let Container: String?
                 let Size: Int64?
+                let MediaStreams: [MediaStream]?
+
+                enum CodingKeys: String, CodingKey { case Container, Size, MediaStreams }
+
+                // An odd stream entry leaves the streams out, not the file.
+                init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    Container = try? c.decodeIfPresent(String.self, forKey: .Container)
+                    Size = try? c.decodeIfPresent(Int64.self, forKey: .Size)
+                    MediaStreams = (try? c.decodeIfPresent([LossyDecodable<MediaStream>].self, forKey: .MediaStreams))?
+                        .compactMap(\.value)
+                }
             }
             struct Person: Decodable {
                 let Name: String
@@ -417,7 +479,8 @@ struct JellyfinClient {
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
         return (payload.Items.compactMap(\.value).map { item in
-            JellyfinMediaItem(
+            let video = item.MediaSources?.first?.MediaStreams?.first { $0.`Type` == "Video" }
+            return JellyfinMediaItem(
                 id: item.Id,
                 name: item.Name,
                 type: item.ItemType,
@@ -438,7 +501,11 @@ struct JellyfinClient {
                 parentIndexNumber: item.ParentIndexNumber,
                 indexNumber: item.IndexNumber,
                 container: item.MediaSources?.first?.Container,
-                sizeBytes: item.MediaSources?.first?.Size
+                sizeBytes: item.MediaSources?.first?.Size,
+                videoWidth: video?.Width,
+                videoHeight: video?.Height,
+                videoRange: video?.VideoRange,
+                videoRangeType: video?.VideoRangeType
             )
         }, payload.TotalRecordCount)
     }

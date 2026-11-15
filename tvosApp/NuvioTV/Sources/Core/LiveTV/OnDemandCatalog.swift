@@ -27,6 +27,20 @@ struct OnDemandItem: Sendable, Equatable {
     var rating: String? = nil
     /// ISO 639-1 code from the name's or the category's tag (step 12c).
     var language: String? = nil
+
+    /// The same title with the app's ids for a login's slot (step 13c,
+    /// `LiveTVSourceIDs`); slot 0 keeps the provider's.
+    func inSource(slot: Int) -> OnDemandItem {
+        guard slot != 0 else { return self }
+        var copy = OnDemandItem(
+            kind: kind, id: LiveTVSourceIDs.channel(slot: slot, raw: id), name: name, key: key,
+            categoryID: LiveTVSourceIDs.group(slot: slot, category: categoryID), ext: ext, tmdb: tmdb, year: year)
+        copy.icon = icon
+        copy.added = added
+        copy.rating = rating
+        copy.language = language
+        return copy
+    }
 }
 
 /// Ids of the provider's titles in Nuvio (step 12b): `ondemand:movie:5`,

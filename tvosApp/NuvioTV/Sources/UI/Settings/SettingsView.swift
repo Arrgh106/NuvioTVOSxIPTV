@@ -17614,6 +17614,8 @@ enum LiveTVSettingsRows {
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
         status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
     ) -> some View {
+        // The system's field: tvOS goes on to the next one by itself when
+        // a field is confirmed (also typing on the iPhone).
         SettingsNativeTextFieldRow(
             title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
             fieldWidth: fieldWidth, status: status, statusColor: statusColor)
@@ -17891,6 +17893,8 @@ private struct SettingsTextFieldRow: View {
     @Binding var text: String
     var isSecure: Bool = false
     var fieldWidth: CGFloat = 300
+    var status: String? = nil
+    var statusColor: Color = .white.opacity(0.56)
     var centerDisplayText = false
     var onCommit: () -> Void = {}
 
@@ -17906,7 +17910,7 @@ private struct SettingsTextFieldRow: View {
             isEditing = true
         } label: {
             SettingsRowShell(isFocused: isFocused, accentColor: .white) {
-                SettingsRowText(title: title, subtitle: subtitle)
+                SettingsRowText(title: title, subtitle: subtitle, status: status, statusColor: statusColor)
 
                 Spacer(minLength: 24)
 
@@ -17918,6 +17922,7 @@ private struct SettingsTextFieldRow: View {
                     isEditing: $isEditing,
                     fieldWidth: fieldWidth,
                     centerDisplayText: centerDisplayText,
+                    prompt: title,
                     onCommit: onCommit
                 )
             }
@@ -17952,12 +17957,16 @@ private struct SettingsNativeTextFieldRow: View {
 
             ZStack(alignment: .leading) {
                 Group {
+                    // Fork: the title as prompt, so the iPhone's keyboard
+                    // says what the field is for; drawn clear (the field's
+                    // own text shone through the capsule on the TV).
                     if isSecure {
-                        SecureField("", text: $text)
+                        SecureField("", text: $text, prompt: Text(title).foregroundColor(.clear))
                     } else {
-                        TextField("", text: $text)
+                        TextField("", text: $text, prompt: Text(title).foregroundColor(.clear))
                     }
                 }
+                .foregroundColor(.clear)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
                 .focusEffectDisabledIfAvailable()
@@ -18006,6 +18015,8 @@ struct SettingsGlassTextField: View {
     var fieldWidth: CGFloat = 300
     var centerDisplayText = false
     var keyboardType: UIKeyboardType = .default
+    /// What the field is for, in the iPhone's keyboard (default: the placeholder).
+    var prompt: String? = nil
     var onCommit: () -> Void = {}
 
     var body: some View {
@@ -18014,6 +18025,7 @@ struct SettingsGlassTextField: View {
                 text: $text,
                 isEditing: $isEditing,
                 isSecure: isSecure,
+                prompt: prompt ?? placeholder,
                 keyboardType: keyboardType,
                 onCommit: onCommit
             )
@@ -18050,6 +18062,8 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
     var isSecure: Bool = false
+    /// What the field is for: shown in the iPhone's keyboard (Remote app).
+    var prompt: String? = nil
     var keyboardType: UIKeyboardType = .default
     var onCommit: () -> Void = {}
 
@@ -18065,6 +18079,7 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
         textField.autocorrectionType = .no
         textField.autocapitalizationType = .none
         textField.isSecureTextEntry = isSecure
+        textField.placeholder = prompt
         textField.addTarget(
             context.coordinator,
             action: #selector(Coordinator.textDidChange(_:)),
@@ -18076,6 +18091,9 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     func updateUIView(_ uiView: HiddenSettingsUITextField, context: Context) {
         if uiView.text != text {
             uiView.text = text
+        }
+        if uiView.placeholder != prompt {
+            uiView.placeholder = prompt
         }
 
         if isEditing && !uiView.isFirstResponder {

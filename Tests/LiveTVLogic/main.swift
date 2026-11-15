@@ -307,6 +307,31 @@ let feedB = LiveTVGuideFeed(sourceID: "xabc", name: "A", url: URL(string: "http:
 check(LiveTVEPGSourceRules.fingerprint([feedA]) != LiveTVEPGSourceRules.fingerprint([feedB]), "shift changes the fingerprint")
 check(!LiveTVEPGSourceRules.fingerprint([feedA]).contains("a.test"), "no link in the fingerprint")
 
+// Step 13: a source's own guide in lower case, and only the sources' own
+// guides read again when one comes or goes.
+let ownKey = LiveTVEPGSourceRules.key(sourceID: "builtin:AB12-CD", guideID: "ARD.de")
+check(ownKey == "builtin:ab12-cd|ard.de", "own guide key in lower case")
+check(LiveTVEPGSourceRules.guideID(fromKey: ownKey) == "ard.de", "id back from an own guide's key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: ownKey) == "builtin:ab12-cd", "own guide from its key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: "xabc|zdf.de") == "xabc", "added guide from its key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: "zdf.de") == "", "first source's guide from its key")
+check(LiveTVEPGSourceRules.isBuiltIn(sourceID: "") && LiveTVEPGSourceRules.isBuiltIn(sourceID: "builtin:x#2"), "own guides")
+check(!LiveTVEPGSourceRules.isBuiltIn(sourceID: "xabc"), "added guide is not own")
+let own0 = LiveTVGuideFeed(sourceID: "", name: "P", url: URL(string: "http://p.test/xmltv.php")!, shiftMinutes: 0, slot: 0)
+let own1 = LiveTVGuideFeed(sourceID: "builtin:b1", name: "Q", url: URL(string: "http://q.test/xmltv.php")!, shiftMinutes: 0, slot: 1)
+let printBoth = LiveTVEPGSourceRules.fingerprint([feedA, own0, own1])
+let printFirst = LiveTVEPGSourceRules.fingerprint([feedA, own0])
+let added = LiveTVEPGSourceRules.change(from: printFirst, to: printBoth)
+check(added?.added == ["builtin:b1"] && added?.removed.isEmpty == true, "a source added: only its guide")
+let removed = LiveTVEPGSourceRules.change(from: printBoth, to: printFirst)
+check(removed?.removed == ["builtin:b1"] && removed?.added.isEmpty == true, "a source off: only its guide goes")
+let firstOff = LiveTVEPGSourceRules.change(from: printBoth, to: LiveTVEPGSourceRules.fingerprint([feedA, own1]))
+check(firstOff?.removed == [""], "the first source off")
+check(LiveTVEPGSourceRules.change(from: printFirst, to: LiveTVEPGSourceRules.fingerprint([feedB, own0])) == nil,
+      "an added guide changed: everything again")
+check(LiveTVEPGSourceRules.change(from: LiveTVEPGSourceRules.fingerprint([own0]), to: printFirst) == nil,
+      "an added guide new: everything again")
+
 check(LiveTVEPGSourceRules.gzipHeaderLength([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0xaa]) == 10, "plain gzip header")
 let named: [UInt8] = [0x1f, 0x8b, 8, 0x08, 0, 0, 0, 0, 0, 3] + Array("epg.xml".utf8) + [0, 0xaa]
 check(LiveTVEPGSourceRules.gzipHeaderLength(named) == 18, "gzip header with a file name")
@@ -613,6 +638,51 @@ check(own.saw(key: "c|zdf.de", id: "zdf.de", names: ["ZDF"], guide: 2, slot: 5) 
 check(own.saw(key: "phoenix.tv", id: "phoenix.tv", names: ["Phoenix"], guide: 0, slot: 0), "own guide: a choice by hand counts anyway")
 let ownLinks = own.links(listed: ["b2|zdf.de", "phoenix.tv"])
 check(ownLinks[secondSourceChannel] == "b2|zdf.de" && ownLinks[firstSourceChannel] == nil, "own guide: only its channel linked")
+
+// MARK: VOD from every login (step 13c)
+
+let vodFirst = OnDemandItem(kind: .movie, id: 55, name: "Dune", key: "dune", categoryID: "12", ext: "mkv", tmdb: 1, year: 2021)
+check(vodFirst.inSource(slot: 0) == vodFirst, "vod sources: the first login keeps its ids")
+var vodOtherSource = vodFirst
+vodOtherSource.icon = "http://icon"
+let vodMoved = vodOtherSource.inSource(slot: 3)
+check(LiveTVSourceIDs.slot(ofChannel: vodMoved.id) == 3 && LiveTVSourceIDs.raw(ofChannel: vodMoved.id) == 55
+      && vodMoved.categoryID == "s3:12" && vodMoved.icon == "http://icon" && vodMoved.key == "dune",
+      "vod sources: another login's ids, the rest kept")
+
+// MARK: M3U catch-up (step 13d)
+
+let catchupList = LiveTVM3U.parse("""
+#EXTM3U catchup="shift" catchup-days="3"
+#EXTINF:-1 tvg-id="a",Shifted
+http://cdn.example/a/index.m3u8
+#EXTINF:-1 catchup="append" catchup-source="?start={utc}&end={utcend}" catchup-days="7",Appended
+http://cdn.example/b.ts
+#EXTINF:-1 catchup="flussonic",Fluss
+http://fs.example/ch1/index.m3u8?token=x
+""")
+check(catchupList.entries[0].catchup == LiveTVM3UCatchup(type: "shift", source: nil, days: 3), "m3u catch-up: the playlist's for every entry")
+check(catchupList.entries[1].catchup?.type == "append" && catchupList.entries[1].catchup?.days == 7, "m3u catch-up: the entry's own wins")
+check(LiveTVM3UCatchup(attributes: ["tvg-rec": "2"])?.type == "default" && LiveTVM3UCatchup(attributes: [:]) == nil,
+      "m3u catch-up: days alone mean default, nothing means none")
+let cStart = Date(timeIntervalSince1970: 1_800_000_000)
+let cEnd = cStart.addingTimeInterval(3600)
+let cNow = cStart.addingTimeInterval(7200)
+check(LiveTVCatchupM3U.urls(live: "http://cdn.example/a/index.m3u8", catchup: LiveTVM3UCatchup(type: "shift", source: nil, days: 3),
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://cdn.example/a/index.m3u8?utc=1800000000&lutc=1800007200", "m3u catch-up: shift")
+check(LiveTVCatchupM3U.urls(live: "http://cdn.example/b.ts", catchup: catchupList.entries[1].catchup!,
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://cdn.example/b.ts?start=1800000000&end=1800003600", "m3u catch-up: append")
+check(LiveTVCatchupM3U.urls(live: "http://fs.example/ch1/index.m3u8?token=x", catchup: LiveTVM3UCatchup(type: "flussonic", source: nil, days: 1),
+                            start: cStart, end: cEnd, now: cNow).first?.absoluteString
+      == "http://fs.example/ch1/index-1800000000-3600.m3u8?token=x", "m3u catch-up: flussonic")
+let xcLinks = LiveTVCatchupM3U.urls(live: "http://xt.example:8080/user/pass/123.ts", catchup: LiveTVM3UCatchup(type: "xc", source: nil, days: 1),
+                                    start: cStart, end: cEnd, now: cNow, serverTimeZone: TimeZone(identifier: "UTC"))
+check(xcLinks.first?.absoluteString == "http://xt.example:8080/timeshift/user/pass/60/2027-01-15:08-00/123.ts" && xcLinks.count > 1,
+      "m3u catch-up: xc as Xtream's forms")
+check(LiveTVCatchupM3U.fill("{utc:Y-m-d H:M:S}|${duration:60}|{offset}", start: 1_800_000_000, end: 1_800_003_600,
+                            now: 1_800_007_200, duration: 3600) == "2027-01-15 08:00:00|60|7200", "m3u catch-up: templates")
 
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

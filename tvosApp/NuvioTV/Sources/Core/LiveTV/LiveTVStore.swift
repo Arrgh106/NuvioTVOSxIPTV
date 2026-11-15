@@ -922,9 +922,11 @@ final class LiveTVStore: ObservableObject {
                     for (entry, id) in zip(playlist.entries, ids) {
                         var channel = XtreamLiveChannel(
                             streamID: id, number: entry.number, name: entry.name, logoURL: entry.logo,
-                            epgChannelID: entry.tvgID ?? entry.tvgName, categoryID: entry.group, archiveDays: 0)
+                            epgChannelID: entry.tvgID ?? entry.tvgName, categoryID: entry.group,
+                            archiveDays: entry.catchup?.days ?? 0)
                         channel.streamURL = entry.url
                         channel.headers = entry.headers.isEmpty ? nil : entry.headers
+                        channel.catchup = entry.catchup
                         channels.append(channel)
                     }
                     return SourceList(
@@ -1244,6 +1246,16 @@ final class LiveTVStore: ObservableObject {
     /// Replay links for a show on a channel with catch-up, the likeliest
     /// first (`LiveTVCatchup.xtreamURLs`).
     func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String], zone: String)? {
+        // M3U (step 13d): the playlist's catch-up kind, with the live link's
+        // headers.
+        if let link = channel.streamURL {
+            guard let catchup = channel.catchup, let item = playbackItem(for: channel) else { return nil }
+            let urls = LiveTVCatchupM3U.urls(
+                live: link, catchup: catchup, start: programme.start, end: programme.end, now: Date())
+            guard !urls.isEmpty else { return nil }
+            let zone = TimeZone.current.identifier + " (" + L10n.string("livetv_catchup_zone_playlist", fallback: "this Apple TV; playlist: ") + catchup.type + ")"
+            return (urls, item.headers, zone)
+        }
         guard channel.archiveDays > 0, let routed = route(channel) else { return nil }
         let (source, account) = routed
         let client = XtreamClient(account: account, password: XtreamAccountStore.password(for: account))

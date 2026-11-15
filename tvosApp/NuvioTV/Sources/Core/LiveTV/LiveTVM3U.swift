@@ -11,6 +11,8 @@ struct LiveTVM3UEntry: Equatable, Sendable {
     var number: Int?
     /// HTTP headers for the stream (User-Agent, Referer, Origin, …).
     var headers: [String: String] = [:]
+    /// Its archive (step 13d), from its attributes over the playlist's.
+    var catchup: LiveTVM3UCatchup? = nil
 }
 
 struct LiveTVM3UPlaylist: Equatable, Sendable {
@@ -31,11 +33,16 @@ enum LiveTVM3U {
         var pending: LiveTVM3UEntry?
         var pendingGroup: String?
         var pendingHeaders: [String: String] = [:]
+        /// Catch-up attributes of the `#EXTM3U` line: for every entry.
+        var playlistCatchup: [String: String] = [:]
         for rawLine in text.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
             if line.hasPrefix("#EXTM3U") {
                 let attributes = attributes(of: Substring(line.dropFirst(7)))
+                for key in catchupKeys {
+                    if let value = attributes[key], !value.isEmpty { playlistCatchup[key] = value }
+                }
                 for key in ["url-tvg", "x-tvg-url", "tvg-url"] {
                     for link in (attributes[key] ?? "").split(separator: ",") {
                         let trimmed = link.trimmingCharacters(in: .whitespaces)
@@ -45,7 +52,7 @@ enum LiveTVM3U {
                     }
                 }
             } else if line.hasPrefix("#EXTINF:") {
-                pending = entry(fromInfo: Substring(line.dropFirst(8)))
+                pending = entry(fromInfo: Substring(line.dropFirst(8)), playlistCatchup: playlistCatchup)
                 pendingGroup = nil
                 pendingHeaders = [:]
             } else if line.hasPrefix("#EXTGRP:") {
@@ -82,6 +89,8 @@ enum LiveTVM3U {
         return playlist
     }
 
+    static let catchupKeys = ["catchup", "catchup-type", "catchup-source", "catchup-days", "catchup-correction", "tvg-rec", "timeshift"]
+
     private static let vlcHeaders = [
         "http-user-agent": "User-Agent", "http-referrer": "Referer", "http-referer": "Referer",
         "http-origin": "Origin",
@@ -89,7 +98,7 @@ enum LiveTVM3U {
 
     /// `-1 tvg-id="…" group-title="…",Name`: the name is what follows the
     /// first comma outside quotes.
-    static func entry(fromInfo info: Substring) -> LiveTVM3UEntry {
+    static func entry(fromInfo info: Substring, playlistCatchup: [String: String] = [:]) -> LiveTVM3UEntry {
         var inQuotes = false
         var nameStart: Substring.Index?
         for index in info.indices {
@@ -117,6 +126,7 @@ enum LiveTVM3U {
         }
         if let referrer = attributes["http-referrer"].flatMap(nonEmpty) { entry.headers["Referer"] = referrer }
         entry.name = nonEmpty(title) ?? entry.tvgName ?? entry.tvgID ?? "—"
+        entry.catchup = LiveTVM3UCatchup(attributes: playlistCatchup.merging(attributes) { _, own in own })
         return entry
     }
 
