@@ -17922,6 +17922,7 @@ private struct SettingsTextFieldRow: View {
                     isEditing: $isEditing,
                     fieldWidth: fieldWidth,
                     centerDisplayText: centerDisplayText,
+                    prompt: title,
                     onCommit: onCommit
                 )
             }
@@ -18010,6 +18011,8 @@ struct SettingsGlassTextField: View {
     var fieldWidth: CGFloat = 300
     var centerDisplayText = false
     var keyboardType: UIKeyboardType = .default
+    /// What the field is for, in the iPhone's keyboard (default: the placeholder).
+    var prompt: String? = nil
     var onCommit: () -> Void = {}
 
     var body: some View {
@@ -18018,6 +18021,7 @@ struct SettingsGlassTextField: View {
                 text: $text,
                 isEditing: $isEditing,
                 isSecure: isSecure,
+                prompt: prompt ?? placeholder,
                 keyboardType: keyboardType,
                 onCommit: onCommit
             )
@@ -18054,6 +18058,8 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
     var isSecure: Bool = false
+    /// What the field is for: shown in the iPhone's keyboard (Remote app).
+    var prompt: String? = nil
     var keyboardType: UIKeyboardType = .default
     var onCommit: () -> Void = {}
 
@@ -18069,6 +18075,7 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
         textField.autocorrectionType = .no
         textField.autocapitalizationType = .none
         textField.isSecureTextEntry = isSecure
+        textField.placeholder = prompt
         textField.addTarget(
             context.coordinator,
             action: #selector(Coordinator.textDidChange(_:)),
@@ -18080,6 +18087,9 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     func updateUIView(_ uiView: HiddenSettingsUITextField, context: Context) {
         if uiView.text != text {
             uiView.text = text
+        }
+        if uiView.placeholder != prompt {
+            uiView.placeholder = prompt
         }
 
         if isEditing && !uiView.isFirstResponder {
