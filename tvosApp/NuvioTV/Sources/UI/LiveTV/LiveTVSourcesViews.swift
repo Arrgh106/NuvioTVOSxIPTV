@@ -188,6 +188,8 @@ struct LiveTVSourceEditor: View {
     @State private var importVOD: Bool
     @State private var isSaving = false
     @State private var errorMessage: String?
+    /// Return in a field goes on to the next (name, server, user, password).
+    @State private var nextField: Int?
 
     init(target: Target, accentColor: Color) {
         self.target = target
@@ -223,20 +225,23 @@ struct LiveTVSourceEditor: View {
                             title: L10n.string("livetv_source_name", fallback: "Name"),
                             subtitle: L10n.string("livetv_source_name_detail", fallback: "Shown in the group column and here. Empty: the server"),
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
-                            text: $name
+                            text: $name,
+                            chain: $nextField, chainIndex: 0, chainLast: false
                         )
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_server", fallback: "Server"),
                             subtitle: L10n.string("livetv_source_server_detail", fallback: "e.g. http://example.com:8080"),
                             placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
                             text: $server,
-                            fieldWidth: 520
+                            fieldWidth: 520,
+                            chain: $nextField, chainIndex: 1, chainLast: false
                         )
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_username", fallback: "Username"),
                             subtitle: "",
                             placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                            text: $username
+                            text: $username,
+                            chain: $nextField, chainIndex: 2, chainLast: false
                         )
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_password", fallback: "Password"),
@@ -245,7 +250,8 @@ struct LiveTVSourceEditor: View {
                             text: $password,
                             status: errorMessage,
                             statusColor: .orange,
-                            isSecure: true
+                            isSecure: true,
+                            chain: $nextField, chainIndex: 3
                         )
                     }
 
@@ -360,6 +366,8 @@ struct LiveTVPlaylistEditor: View {
     @State private var enabled: Bool
     @State private var builtInGuide: Bool
     @State private var invalid = false
+    /// Return in a field goes on to the next (name, link, user agent).
+    @State private var nextField: Int?
 
     init(target: LiveTVSourceEditor.Target, accentColor: Color) {
         self.target = target
@@ -392,7 +400,8 @@ struct LiveTVPlaylistEditor: View {
                             title: L10n.string("livetv_source_name", fallback: "Name"),
                             subtitle: L10n.string("livetv_source_name_detail_m3u", fallback: "Shown in the group column and here"),
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
-                            text: $name
+                            text: $name,
+                            chain: $nextField, chainIndex: 0, chainLast: false
                         )
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_link", fallback: "Playlist Link"),
@@ -403,14 +412,16 @@ struct LiveTVPlaylistEditor: View {
                             status: invalid
                                 ? L10n.string("livetv_epg_source_invalid", fallback: "Enter a link starting with http:// or https://")
                                 : nil,
-                            statusColor: .orange
+                            statusColor: .orange,
+                            chain: $nextField, chainIndex: 1, chainLast: false
                         )
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_user_agent", fallback: "User Agent"),
                             subtitle: L10n.string("livetv_source_user_agent_detail", fallback: "Optional. Empty: the app's (VLC). Some providers need their own"),
                             placeholder: L10n.string("livetv_source_user_agent_default", fallback: "Default"),
                             text: $userAgent,
-                            fieldWidth: 520
+                            fieldWidth: 520,
+                            chain: $nextField, chainIndex: 2
                         )
                     }
 
