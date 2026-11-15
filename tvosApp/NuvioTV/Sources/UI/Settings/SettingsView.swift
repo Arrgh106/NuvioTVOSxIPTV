@@ -2020,9 +2020,11 @@ struct SettingsView: View {
                 .foregroundColor(.white)
                 .padding(.leading, 10)
 
-            // Fork: 10 apart (14 upstream) and 84 high pills, so the ninth
-            // category (Live TV / VOD) still fits above the screen's edge.
-            VStack(alignment: .leading, spacing: 10) {
+            // Fork: the pills scroll; with the ninth category (Live TV / VOD)
+            // About ran past the bottom of the screen. tvOS scrolls to the
+            // focused pill by itself.
+            ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
                 ForEach(SettingsCategory.allCases) { category in
                     let isSelectedCategory = selectedCategory == category
                     let isFocusedCategory = focusedCategory == category
@@ -2050,6 +2052,13 @@ struct SettingsView: View {
                     .disabled(!isFocusable)
                 }
             }
+            // Room for the focused pill's larger size (the list is clipped,
+            // so scrolled pills don't run over the title) and the screen's edge.
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .padding(.bottom, 48)
+            }
+            .padding(.horizontal, -16)
         }
         .padding(.leading, 58)
         .padding(.trailing, 22)
@@ -2153,7 +2162,7 @@ private struct SettingsCategoryPill: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 26)
-            .frame(width: 430, height: 84, alignment: .leading)
+            .frame(width: 430, height: 92, alignment: .leading)
             .modifier(SettingsCategoryPillBackground(isSelected: isSelected, isFocused: isFocused))
             .overlay(
                 Capsule()
