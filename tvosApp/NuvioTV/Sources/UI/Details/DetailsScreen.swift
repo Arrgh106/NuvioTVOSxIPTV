@@ -11959,6 +11959,22 @@ struct StreamListPreview: View {
             videoSize: 350_000_000),
     ]
 
+    /// Fork: the card id built in steps (Xcode 26 gave up type-checking
+    /// the one interpolated string in reasonable time).
+    private static func previewCardID(
+        _ stream: NuvioStream, badges: StreamBadgeSettingsSnapshot, showAddonLogo: Bool, revision: Int, style: StreamListStyle
+    ) -> String {
+        let source: String = badges.rules.activeImport?.sourceUrl ?? "none"
+        var parts: [String] = [stream.id, source, badges.badgePlacement.rawValue]
+        parts.append(String(badges.showFileSizeBadges))
+        parts.append(String(showAddonLogo))
+        parts.append(String(revision))
+        parts.append(String(style.hideFileSize))
+        parts.append(String(style.hideAddonName))
+        parts.append(String(style.hideDescription))
+        return parts.joined(separator: "-")
+    }
+
     var body: some View {
         let _ = badgeRevision
         let scale = width / Self.canvas.width
@@ -12001,7 +12017,7 @@ struct StreamListPreview: View {
                             externalFocus: $focus,
                             action: {}
                         )
-                        .id("\(stream.id)-\(badges.rules.activeImport?.sourceUrl ?? "none")-\(badges.badgePlacement.rawValue)-\(badges.showFileSizeBadges)-\(showAddonLogo)-\(badgeRevision)-\(style.hideFileSize)-\(style.hideAddonName)-\(style.hideDescription)")
+                        .id(Self.previewCardID(stream, badges: badges, showAddonLogo: showAddonLogo, revision: badgeRevision, style: style))
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)

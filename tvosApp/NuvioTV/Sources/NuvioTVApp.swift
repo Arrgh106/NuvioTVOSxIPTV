@@ -3346,20 +3346,6 @@ struct ContentView: View {
             },
             onOpenCalendarEntry: { entry in
                 openCalendarEntry(entry)
-            },
-            onPlayLiveChannel: { url, meta, headers in
-                playbackEpisodes = []
-                playbackCurrentEpisode = nil
-                presentPlayback(
-                    url: url,
-                    meta: meta,
-                    subtitle: "",
-                    externalSubtitles: [],
-                    resumeFrom: nil,
-                    httpHeaders: headers,
-                    origin: .main,
-                    filename: meta.name
-                )
             }
         )
     }
@@ -4794,7 +4780,6 @@ private struct TVMainTabView: View {
     let onPlayCloudFile: (URL, NuvioMeta) -> Void
     let onPlayLiveChannel: (URL, NuvioMeta, [String: String]) -> Void
     var onOpenCalendarEntry: ((CalendarEntry) -> Void)? = nil
-    var onPlayLiveChannel: ((URL, NuvioMeta, [String: String]) -> Void)? = nil
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -5001,7 +4986,7 @@ private struct TVMainTabView: View {
 
     private var liveTVTabContent: some View {
         LiveTVView(onPlayChannel: { url, meta, headers in
-            onPlayLiveChannel?(url, meta, headers)
+            onPlayLiveChannel(url, meta, headers)
         }, onOpenSources: {
             // Fork: no source yet, set up in Settings (as Jellyfin).
             selectedSettingsCategory = .liveTV
