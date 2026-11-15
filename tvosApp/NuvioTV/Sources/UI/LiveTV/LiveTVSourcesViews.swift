@@ -43,10 +43,19 @@ struct LiveTVSourcesGroup: View {
                 accentColor: accentColor,
                 action: { editing = .init(source: sources.newXtream(), isNew: true) }
             )
+            LiveTVSettingsRows.action(
+                title: L10n.string("livetv_sources_add_stalker", fallback: "Add Stalker Portal"),
+                subtitle: L10n.string("livetv_sources_add_stalker_detail", fallback: "A Stalker / Ministra portal with the MAC address your provider registered. Its TV guide comes with it."),
+                value: "",
+                accentColor: accentColor,
+                action: { editing = .init(source: sources.newStalker(), isNew: true) }
+            )
         }
         .sheet(item: $editing) { target in
             if target.source.kind == .m3u {
                 LiveTVSettingsRows.clearSheetBackground(LiveTVPlaylistEditor(target: target, accentColor: accentColor))
+            } else if target.source.kind == .stalker {
+                LiveTVSettingsRows.clearSheetBackground(LiveTVStalkerEditor(target: target, accentColor: accentColor))
             } else {
                 LiveTVSettingsRows.clearSheetBackground(LiveTVSourceEditor(target: target, accentColor: accentColor))
             }
@@ -80,9 +89,7 @@ private struct LiveTVSourceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             LiveTVSettingsRows.action(
-                title: source.displayName + "  \u{00B7}  " + (source.kind == .m3u
-                    ? L10n.string("livetv_source_kind_m3u", fallback: "M3U")
-                    : L10n.string("livetv_source_kind_xtream", fallback: "Xtream")),
+                title: source.displayName + "  \u{00B7}  " + kindLabel,
                 subtitle: statusText,
                 value: source.enabled
                     ? L10n.string("livetv_source_on", fallback: "On")
@@ -127,11 +134,19 @@ private struct LiveTVSourceRow: View {
         .padding(.bottom, 4)
     }
 
+    private var kindLabel: String {
+        switch source.kind {
+        case .m3u: return L10n.string("livetv_source_kind_m3u", fallback: "M3U")
+        case .stalker: return L10n.string("livetv_source_kind_stalker", fallback: "Stalker")
+        case .xtream: return L10n.string("livetv_source_kind_xtream", fallback: "Xtream")
+        }
+    }
+
     /// As Android's: "1,234 channels · Updated …", the error, not read yet,
     /// or off; with the login's end.
     private var statusText: String {
         var parts: [String] = []
-        if let server = source.xtream?.server { parts.append(URL(string: server)?.host ?? server) }
+        if let server = source.xtream?.server ?? source.portal { parts.append(URL(string: server)?.host ?? server) }
         if !source.enabled {
             parts.append(L10n.string("livetv_source_disabled", fallback: "Disabled"))
             return parts.joined(separator: "  \u{00B7}  ")
@@ -469,6 +484,221 @@ struct LiveTVPlaylistEditor: View {
         let changed = target.isNew || LiveTVSourceStore.shared.password(for: target.source) != cleaned
         LiveTVSourceStore.shared.save(source, password: changed ? cleaned : nil)
         dismiss()
+    }
+}
+
+/// Adding or changing a Stalker / Ministra portal (step 13e), as Android's
+/// "Add Stalker portal": the portal, the MAC address the provider
+/// registered, a login where the portal asks for one, and the device ids
+/// a few portals check. Save signs in first, so a wrong MAC shows here.
+struct LiveTVStalkerEditor: View {
+    let target: LiveTVSourceEditor.Target
+    let accentColor: Color
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @State private var name: String
+    @State private var config: LiveTVStalkerConfig
+    @State private var enabled: Bool
+    @State private var builtInGuide: Bool
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    init(target: LiveTVSourceEditor.Target, accentColor: Color) {
+        self.target = target
+        self.accentColor = accentColor
+        let source = target.source
+        _name = State(initialValue: source.name)
+        _config = State(initialValue: (target.isNew ? nil : LiveTVStalker.config(for: source.id))
+            ?? LiveTVStalkerConfig(portal: "", mac: "", timezone: TimeZone.current.identifier))
+        _enabled = State(initialValue: source.enabled)
+        _builtInGuide = State(initialValue: source.builtInGuide)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(target.isNew
+                         ? L10n.string("livetv_source_new_stalker", fallback: "Add Stalker Portal")
+                         : L10n.string("livetv_source_edit_stalker", fallback: "Edit Stalker Portal"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_stalker_portal_group", fallback: "Portal"),
+                        subtitle: L10n.string("livetv_stalker_portal_group_detail", fallback: "From your provider. Kept in the Keychain of this Apple TV.")
+                    ) {
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_source_name", fallback: "Name"),
+                            subtitle: L10n.string("livetv_source_name_detail", fallback: "Shown in the group column and here. Empty: the server"),
+                            placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
+                            text: $name
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_portal", fallback: "Portal Address"),
+                            subtitle: L10n.string("livetv_stalker_portal_detail", fallback: "e.g. http://example.com:8080/c/"),
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.portal,
+                            fieldWidth: 520
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_mac", fallback: "MAC Address"),
+                            subtitle: L10n.string("livetv_stalker_mac_detail", fallback: "The one your provider registered, e.g. 00:1A:79:12:34:56"),
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.mac,
+                            status: errorMessage,
+                            statusColor: .orange
+                        )
+                    }
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_stalker_login_group", fallback: "Login (only if your provider gave you one)"),
+                        subtitle: L10n.string("livetv_stalker_login_group_detail", fallback: "Most portals sign in with the MAC address alone")
+                    ) {
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_username", fallback: "Username"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.username
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_password", fallback: "Password"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.password,
+                            isSecure: true
+                        )
+                    }
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_stalker_device_group", fallback: "Device (only if your provider asks)"),
+                        subtitle: L10n.string("livetv_stalker_device_group_detail", fallback: "A few portals also check the box's serial number, device ids or signature")
+                    ) {
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_serial", fallback: "Serial Number"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.serialNumber
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_device_id", fallback: "Device ID"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.deviceID,
+                            fieldWidth: 520
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_device_id2", fallback: "Device ID 2"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.deviceID2,
+                            fieldWidth: 520
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_signature", fallback: "Signature"),
+                            subtitle: "",
+                            placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                            text: $config.signature,
+                            fieldWidth: 520
+                        )
+                        LiveTVSettingsRows.textField(
+                            title: L10n.string("livetv_stalker_timezone", fallback: "Time Zone"),
+                            subtitle: L10n.string("livetv_stalker_timezone_detail", fallback: "The portal's guide times, e.g. Europe/Berlin"),
+                            placeholder: TimeZone.current.identifier,
+                            text: $config.timezone
+                        )
+                    }
+
+                    LiveTVSettingsRows.group(
+                        title: L10n.string("livetv_epg_source_options", fallback: "Options"),
+                        subtitle: ""
+                    ) {
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_use", fallback: "Use This Source"),
+                            subtitle: L10n.string("livetv_source_use_detail", fallback: "Off: kept here, its channels leave the guide"),
+                            isOn: $enabled,
+                            accentColor: accentColor
+                        )
+                        LiveTVSettingsRows.toggle(
+                            title: L10n.string("livetv_source_builtin_guide", fallback: "Load Built-in Guide"),
+                            subtitle: L10n.string("livetv_source_builtin_guide_detail", fallback: "The provider's own TV guide, for these channels only (guides you add go for all)"),
+                            isOn: $builtInGuide,
+                            accentColor: accentColor
+                        )
+                    }
+
+                    HStack(spacing: 24) {
+                        LiveTVSettingsRows.dialogButton(
+                            title: L10n.string("action_cancel", fallback: "Cancel"), isPrimary: false
+                        ) {
+                            dismiss()
+                        }
+                        Spacer()
+                        LiveTVSettingsRows.dialogButton(
+                            title: isSaving
+                                ? L10n.string("livetv_source_checking", fallback: "Checking…")
+                                : L10n.string("action_save", fallback: "Save"),
+                            isPrimary: true,
+                            enabled: !isSaving && !config.portal.trimmed.isEmpty && !config.mac.trimmed.isEmpty,
+                            action: save
+                        )
+                    }
+                    .focusSection()
+                }
+                .padding(40)
+            }
+        }
+    }
+
+    /// A new or changed portal is signed in to first; the rest is saved
+    /// as it is.
+    private func save() {
+        var cleaned = config
+        cleaned.portal = config.portal.trimmed
+        cleaned.username = config.username.trimmed
+        cleaned.serialNumber = config.serialNumber.trimmed
+        cleaned.deviceID = config.deviceID.trimmed
+        cleaned.deviceID2 = config.deviceID2.trimmed
+        cleaned.signature = config.signature.trimmed
+        cleaned.timezone = TimeZone(identifier: config.timezone.trimmed) == nil
+            ? TimeZone.current.identifier : config.timezone.trimmed
+        guard let url = URL(string: cleaned.portal), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false else {
+            errorMessage = LiveTVStalkerError.invalidPortal.localizedDescription
+            return
+        }
+        guard let mac = LiveTVStalkerConfig.normalisedMAC(config.mac) else {
+            errorMessage = LiveTVStalkerError.invalidMAC.localizedDescription
+            return
+        }
+        cleaned.mac = mac
+        var source = target.source
+        source.name = name.trimmed
+        source.enabled = enabled
+        source.builtInGuide = builtInGuide
+        source.portal = cleaned.portal
+        let changed = target.isNew || LiveTVStalker.config(for: source.id) != cleaned
+        let secret = LiveTVStalker.encoded(cleaned)
+        guard changed, enabled else {
+            LiveTVSourceStore.shared.save(source, password: changed ? secret : nil)
+            dismiss()
+            return
+        }
+        errorMessage = nil
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await LiveTVStalkerClient(config: cleaned).authenticate()
+                LiveTVSourceStore.shared.save(source, password: secret)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 

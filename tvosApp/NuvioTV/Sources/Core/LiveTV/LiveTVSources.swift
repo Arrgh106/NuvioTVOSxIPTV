@@ -31,12 +31,16 @@ struct LiveTVSource: Codable, Identifiable, Equatable, Sendable {
     /// M3U: the user agent the playlist and its streams are asked with
     /// (empty: the app's). The link itself is in the Keychain.
     var userAgent: String?
+    /// Stalker (step 13e): the portal's address, to show; the portal, MAC
+    /// and login themselves are in the Keychain.
+    var portal: String?
 
     /// The name shown: yours, or the server's.
     var displayName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
         if let server = xtream?.server { return URL(string: server)?.host ?? server }
+        if let portal { return URL(string: portal)?.host ?? portal }
         return kind == .m3u ? "Playlist" : "Source"
     }
 }
@@ -124,6 +128,11 @@ final class LiveTVSourceStore: ObservableObject {
     /// A new M3U playlist (step 13b).
     func newPlaylist() -> LiveTVSource {
         LiveTVSource(id: UUID().uuidString, slot: nextSlot(), kind: .m3u, name: "")
+    }
+
+    /// A new Stalker portal (step 13e).
+    func newStalker() -> LiveTVSource {
+        LiveTVSource(id: UUID().uuidString, slot: nextSlot(), kind: .stalker, name: "")
     }
 
     private func nextSlot() -> Int {

@@ -284,6 +284,12 @@ final class LiveTVGuide: ObservableObject {
     /// Downloads a guide to the file kept for it (unpacked).
     private func fetch(_ feed: LiveTVGuideFeed, to kept: URL, part: String?) async throws {
         status = .downloading(fraction: nil, part: part)
+        // A Stalker portal's guide (step 13e): asked from the portal,
+        // written as XMLTV.
+        if LiveTVStalker.isGuideLink(feed.url) {
+            try await LiveTVStalker.writeGuide(feed.url, to: kept)
+            return
+        }
         let file = try await GuideDownloader.download(feed.url) { [weak self] fraction in
             Task { @MainActor in self?.status = .downloading(fraction: fraction, part: part) }
         }
@@ -548,6 +554,11 @@ final class LiveTVGuide: ObservableObject {
                 : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
             if let account = source.xtream {
                 guard let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return [] }
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
+            }
+            // Stalker (step 13e): the portal's guide.
+            if source.kind == .stalker {
+                guard let url = LiveTVStalker.guideLink(sourceID: source.id) else { return [] }
                 return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
             }
             // M3U (step 13b): every guide linked in the playlist.

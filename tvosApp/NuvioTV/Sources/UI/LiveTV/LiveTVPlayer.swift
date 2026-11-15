@@ -144,6 +144,26 @@ final class LiveTVPlayer: ObservableObject {
         triedFallback = !live
         resolving?.cancel()
         resolving = nil
+        // Stalker (step 13e): the portal gives the link to play now.
+        if url.scheme == LiveTVStalker.scheme,
+           let source = LiveTVSourceStore.shared.source(slot: LiveTVSourceIDs.slot(ofChannel: channel.streamID)) {
+            resolving = Task { [weak self] in
+                do {
+                    let (target, portalHeaders) = try await LiveTVStalker.resolve(url, sourceID: source.id)
+                    guard !Task.isCancelled, let self, self.currentURL == url else { return }
+                    self.resolving = nil
+                    self.loadStarted = Date()
+                    self.load(channel, url: target, headers: portalHeaders, live: live)
+                } catch is CancellationError {
+                } catch {
+                    guard !Task.isCancelled, let self, self.currentURL == url else { return }
+                    self.resolving = nil
+                    self.status = .failed(error.localizedDescription)
+                }
+            }
+            startWatching()
+            return
+        }
         guard live else {
             // Replays: many panels send them on to another server; the
             // player got lost there (no picture, "unrecognized file

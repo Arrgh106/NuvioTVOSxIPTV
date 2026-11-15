@@ -629,7 +629,7 @@ final class LiveTVStore: ObservableObject {
     /// Picks up the sources of the active profile (profiles can switch while
     /// the app runs, sources change in Settings).
     func reloadAccount() {
-        let stored = LiveTVSourceStore.shared.enabled.filter { $0.kind == .xtream || $0.kind == .m3u }
+        let stored = LiveTVSourceStore.shared.enabled
         guard stored != sources || needsReload else {
             refreshIfStale()
             return
@@ -824,6 +824,10 @@ final class LiveTVStore: ObservableObject {
             runPlaylist(source)
             return
         }
+        if source.kind == .stalker {
+            runStalker(source)
+            return
+        }
         guard let account = source.xtream else {
             queue.removeFirst()
             runQueue()
@@ -950,6 +954,48 @@ final class LiveTVStore: ObservableObject {
                 let cache = LiveTVCache(
                     accountID: LiveTVCache.key(source), savedAt: list.savedAt, userInfoAllowedFormats: [],
                     categories: list.categories, channels: list.channels, guideURLs: list.guideURLs)
+                Task.detached(priority: .utility) { cache.save(to: scopeURL) }
+                self.combine()
+            case .failure(let error):
+                var status = self.sourceStatus[source.id] ?? LiveTVSourceStatus()
+                status.loading = false
+                status.error = error.localizedDescription
+                self.sourceStatus[source.id] = status
+                if self.queue.isEmpty, !self.channels.isEmpty { self.refreshGuide(force: false) }
+            }
+            self.updateState()
+            self.runQueue()
+        }
+    }
+
+    /// A Stalker portal (step 13e): genres and channels through the
+    /// portal's session; links are asked for when a channel plays.
+    private func runStalker(_ source: LiveTVSource) {
+        let scopeURL = LiveTVCache.fileURL(scope: ProfileSettings.activeProfileScope, source: source)
+        let shown = sources
+        let label = L10n.string("livetv_loading_label", fallback: "Loading channels") + " \u{00B7} " + source.displayName
+        ActivityCenter.shared.update("livetv.channels", label: label)
+        queueTask = Task { [weak self] in
+            let outcome: Result<SourceList, Error>
+            do {
+                guard let client = LiveTVStalker.client(sourceID: source.id) else { throw LiveTVStalkerError.invalidPortal }
+                let (categories, channels) = try await Self.withRetry { try await client.liveList() }
+                outcome = .success(SourceList(categories: categories, channels: channels, allowedFormats: [], savedAt: Date()))
+            } catch {
+                outcome = .failure(error)
+            }
+            guard !Task.isCancelled, let self, self.sources == shown, !self.needsReload else { return }
+            self.queueTask = nil
+            if !self.queue.isEmpty { self.queue.removeFirst() }
+            switch outcome {
+            case .success(let list):
+                self.lists[source.id] = list
+                self.listKeys[source.id] = LiveTVCache.key(source)
+                self.sourceStatus[source.id] = self.status(list: list, info: nil)
+                self.lastUpdated = self.lists.values.map(\.savedAt).min()
+                let cache = LiveTVCache(
+                    accountID: LiveTVCache.key(source), savedAt: list.savedAt, userInfoAllowedFormats: [],
+                    categories: list.categories, channels: list.channels, guideURLs: nil)
                 Task.detached(priority: .utility) { cache.save(to: scopeURL) }
                 self.combine()
             case .failure(let error):

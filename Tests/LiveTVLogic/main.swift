@@ -684,5 +684,67 @@ check(xcLinks.first?.absoluteString == "http://xt.example:8080/timeshift/user/pa
 check(LiveTVCatchupM3U.fill("{utc:Y-m-d H:M:S}|${duration:60}|{offset}", start: 1_800_000_000, end: 1_800_003_600,
                             now: 1_800_007_200, duration: 3600) == "2027-01-15 08:00:00|60|7200", "m3u catch-up: templates")
 
+// Step 13e: Stalker portals.
+check(LiveTVStalkerConfig.normalisedMAC("00-1a-79-ab-cd-ef") == "00:1A:79:AB:CD:EF", "stalker: MAC normalised")
+check(LiveTVStalkerConfig.normalisedMAC("00:1A:79:AB:CD") == nil, "stalker: short MAC refused")
+check(LiveTVStalkerWire.endpoints(portal: "http://portal.example:8080/c/")
+      == ["http://portal.example:8080/portal.php", "http://portal.example:8080/server/load.php",
+          "http://portal.example:8080/stalker_portal/server/load.php"], "stalker: /c/ portal")
+check(LiveTVStalkerWire.endpoints(portal: "http://portal.example/stalker_portal/server/load.php")
+      == ["http://portal.example/stalker_portal/server/load.php", "http://portal.example/stalker_portal/portal.php"],
+      "stalker: load.php as given first")
+check(LiveTVStalkerWire.endpoints(portal: "ftp://portal.example/c/").isEmpty, "stalker: not http")
+check(LiveTVStalkerWire.installationBase("http://portal.example/stalker_portal/server/load.php")
+      == "http://portal.example/stalker_portal/", "stalker: installation folder")
+check(LiveTVStalkerWire.requestURL(endpoint: "http://portal.example/portal.php",
+                                   parameters: [("type", "stb"), ("action", "handshake"), ("token", "")])?.absoluteString
+      == "http://portal.example/portal.php?type=stb&action=handshake&token=&JsHttpRequest=1-xml", "stalker: request link")
+check(LiveTVStalkerWire.requestURL(endpoint: "http://portal.example/portal.php",
+                                   parameters: [("password", "a+b")])?.absoluteString.contains("a%2Bb") == true,
+      "stalker: + escaped")
+if case .value(let js) = LiveTVStalkerWire.unwrap(Data(#"{"js":{"token":"abc","random":"r"}}"#.utf8)),
+   let object = js as? [String: Any] {
+    check(LiveTVStalkerWire.text(object, "token") == "abc", "stalker: js envelope")
+} else {
+    check(false, "stalker: js envelope")
+}
+if case .unauthorised = LiveTVStalkerWire.unwrap(Data("Authorization failed.".utf8)) {
+    check(true, "stalker: auth message")
+} else {
+    check(false, "stalker: auth message")
+}
+if case .invalid = LiveTVStalkerWire.unwrap(Data("<html>".utf8)) { check(true, "stalker: html refused") } else { check(false, "stalker: html refused") }
+let stalkerRows = LiveTVStalkerWire.rows(["total_items": 2, "data": [["id": "1"], ["id": 2]]] as [String: Any])
+check(stalkerRows?.count == 2 && LiveTVStalkerWire.text(stalkerRows![1], "id") == "2", "stalker: rows, number ids")
+check(LiveTVStalkerWire.flag(["a": "1", "b": 0] as [String: Any], "a") == true
+      && LiveTVStalkerWire.flag(["b": 0] as [String: Any], "b") == false, "stalker: flags")
+check(LiveTVStalkerWire.direct("ffmpeg http://cdn.example/live/1.ts")?.absoluteString == "http://cdn.example/live/1.ts",
+      "stalker: direct link without wrapper")
+check(LiveTVStalkerWire.direct("ffmpeg http://localhost/ch/1_") == nil, "stalker: placeholder host needs create_link")
+let loadPHP = "http://portal.example/stalker_portal/server/load.php"
+check(LiveTVStalkerWire.resolved("ffrt http://cdn.example/a.m3u8?t=1", endpoint: loadPHP)?.absoluteString
+      == "http://cdn.example/a.m3u8?t=1", "stalker: resolved absolute")
+check(LiveTVStalkerWire.resolved("/media/42.mpg", endpoint: loadPHP)?.absoluteString
+      == "http://portal.example/stalker_portal/media/42.mpg", "stalker: resolved path under the installation")
+check(LiveTVStalkerWire.resolved("//cdn.example/b.ts", endpoint: loadPHP)?.absoluteString == "http://cdn.example/b.ts",
+      "stalker: resolved protocol-relative")
+check(LiveTVStalkerWire.image("/logos/1.png", endpoint: loadPHP) == "http://portal.example/logos/1.png", "stalker: logo path")
+let utc = TimeZone(identifier: "UTC")!
+check(LiveTVStalkerWire.timestamp("1731700000", zone: utc)?.timeIntervalSince1970 == 1_731_700_000, "stalker: unix time")
+check(LiveTVStalkerWire.timestamp("1731700000000", zone: utc)?.timeIntervalSince1970 == 1_731_700_000, "stalker: ms time")
+check(LiveTVStalkerWire.timestamp("2027-01-15 08:00:00", zone: utc)?.timeIntervalSince1970 == 1_800_000_000, "stalker: date time")
+let keyedGuide: [String: Any] = ["data": ["12": [
+    ["name": "News", "start_timestamp": "1800000000", "stop_timestamp": "1800003600", "descr": "Today"],
+    ["name": "Broken", "start_timestamp": "1800003600", "stop_timestamp": "1800003600"],
+]]]
+let keyedProgrammes = LiveTVStalkerWire.programmes(keyedGuide, zone: utc)
+check(keyedProgrammes.count == 1 && keyedProgrammes[0].channel == "12" && keyedProgrammes[0].description == "Today",
+      "stalker: guide keyed by channel, empty show left out")
+let listGuide: [Any] = [["ch_id": 7, "title": "Film", "start": "2027-01-15 08:00:00", "stop": "2027-01-15 09:30:00"]]
+check(LiveTVStalkerWire.programmes(listGuide, zone: utc).first?.stop.timeIntervalSince1970 == 1_800_005_400,
+      "stalker: guide list with ch_id")
+check(LiveTVStalkerWire.xmltvTime(Date(timeIntervalSince1970: 1_800_000_000)) == "20270115080000 +0000", "stalker: XMLTV time")
+check(LiveTVStalkerWire.xmlEscaped("A & B <\"C\">\u{01}") == "A &amp; B &lt;&quot;C&quot;&gt;", "stalker: XML escaped")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
