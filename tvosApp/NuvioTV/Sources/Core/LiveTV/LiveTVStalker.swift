@@ -11,6 +11,7 @@ enum LiveTVStalkerError: LocalizedError, Equatable {
     case blocked
     case rejected
     case noLink
+    case notArchived
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +34,8 @@ enum LiveTVStalkerError: LocalizedError, Equatable {
             return L10n.string("livetv_stalker_error_rejected", fallback: "The portal rejected this MAC address or login.")
         case .noLink:
             return L10n.string("livetv_stalker_error_link", fallback: "The portal gave no link to play.")
+        case .notArchived:
+            return L10n.string("livetv_stalker_error_archive", fallback: "The portal's archive has no recording of this show.")
         }
     }
 }
@@ -109,7 +112,8 @@ actor LiveTVStalkerClient {
                 logoURL: LiveTVStalkerWire.image(LiveTVStalkerWire.text(row, "logo", "screenshot_uri"), endpoint: active.endpoint),
                 epgChannelID: id,
                 categoryID: LiveTVStalkerWire.text(row, "tv_genre_id", "genre_id"),
-                archiveDays: 0)
+                // Catch-up (step 13f): the portal's archive.
+                archiveDays: LiveTVStalkerWire.archiveDays(row))
             channel.streamURL = LiveTVStalker.playLink(command: command, fixed: fixed)
             channels.append(channel)
         }
@@ -147,6 +151,145 @@ actor LiveTVStalkerClient {
         }
         let all = LiveTVStalkerWire.headers(config: config, endpoint: session.endpoint, token: session.token)
         return all.filter { ["Cookie", "Authorization", "SN", "User-Agent", "X-User-Agent", "Referer"].contains($0.key) }
+    }
+
+    // MARK: Movies and series (step 13f)
+
+    /// Everything VOD reads from the portal, as Android's: the movie list
+    /// (`type=vod`) and the series, from the portal's own series list
+    /// (`type=series`, where there is one) and the series inside the movie
+    /// list (`is_series`), with their categories. Series categories are
+    /// "c:…" (own list) and "v:…" (movie list): the ids overlap.
+    func vodCatalog(
+        progress: @escaping @Sendable (Int) -> Void
+    ) async throws -> (movies: [LiveTVStalkerWire.VODEntry], movieCategories: [XtreamCategory],
+                       series: [LiveTVStalkerWire.VODEntry], seriesCategories: [XtreamCategory]) {
+        let active = try await acquire()
+        let zone = TimeZone(identifier: config.timezone) ?? .current
+        let vodGenres = try await categories(type: "vod")
+        let seriesGenres = (try? await categories(type: "series")) ?? []
+        let rows = try await pages(type: "vod", extra: [], progress: progress)
+        var movies: [LiveTVStalkerWire.VODEntry] = []
+        var series: [LiveTVStalkerWire.VODEntry] = []
+        for row in rows {
+            guard var entry = LiveTVStalkerWire.vodEntry(row, endpoint: active.endpoint, zone: zone) else { continue }
+            if entry.isSeries {
+                entry.categoryID = "v:" + entry.categoryID
+                series.append(entry)
+            } else {
+                movies.append(entry)
+            }
+        }
+        // A portal without its own series list answers with an error.
+        let read = rows.count
+        let ownSeries = (try? await pages(type: "series", extra: [], progress: { count in progress(read + count) })) ?? []
+        for row in ownSeries {
+            guard var entry = LiveTVStalkerWire.vodEntry(row, endpoint: active.endpoint, zone: zone, variant: "c") else { continue }
+            entry.categoryID = "c:" + entry.categoryID
+            series.append(entry)
+        }
+        let seriesCategories = seriesGenres.map { XtreamCategory(id: "c:" + $0.id, name: $0.name) }
+            + vodGenres.map { XtreamCategory(id: "v:" + $0.id, name: $0.name) }
+        return (movies, Self.withOther(vodGenres, for: movies), series, Self.withOther(seriesCategories, for: series))
+    }
+
+    /// The categories, and "Other" for titles in none of them.
+    private static func withOther(_ categories: [XtreamCategory], for entries: [LiveTVStalkerWire.VODEntry]) -> [XtreamCategory] {
+        let known = Set(categories.map(\.id))
+        var result = categories
+        var added = Set<String>()
+        for entry in entries where !known.contains(entry.categoryID) && added.insert(entry.categoryID).inserted {
+            result.append(XtreamCategory(id: entry.categoryID, name: L10n.string("livetv_ondemand_other", fallback: "Other")))
+        }
+        return result
+    }
+
+    private func categories(type: String) async throws -> [XtreamCategory] {
+        let value = try await authenticated([("type", type), ("action", "get_categories")])
+        return (LiveTVStalkerWire.rows(value) ?? []).compactMap { row in
+            guard let id = LiveTVStalkerWire.text(row, "id"), id != "*" else { return nil }
+            return XtreamCategory(id: id, name: LiveTVStalkerWire.text(row, "title", "name") ?? id)
+        }
+    }
+
+    /// A movie or episode: its file (a movie the portal keeps as files is
+    /// looked up first), then a link from the portal unless it plays as it is.
+    func vodPlayback(_ ref: LiveTVStalkerWire.VODRef) async throws -> (URL, [String: String]) {
+        let active = try await acquire()
+        var command = ref.cmd
+        if ref.seasonID == nil, command.isEmpty || (ref.hasFiles == true && LiveTVStalkerWire.direct(command) == nil) {
+            let files = try await pages(type: "vod", extra: [("movie_id", ref.movieID ?? ref.id)])
+            // Several files for one movie: which one is unclear (Android
+            // refuses too).
+            guard files.count == 1, let file = LiveTVStalkerWire.text(files[0], "cmd") else { throw LiveTVStalkerError.noLink }
+            command = file
+        }
+        if ref.fixed == true, let direct = LiveTVStalkerWire.direct(command) {
+            return (direct, headers(for: direct, session: active))
+        }
+        let value = try await authenticated(LiveTVStalkerWire.vodLinkParameters(ref, command: command))
+        guard let object = value as? [String: Any],
+              (LiveTVStalkerWire.text(object, "error") ?? "0") == "0",
+              let link = LiveTVStalkerWire.text(object, "cmd", "url"),
+              let url = LiveTVStalkerWire.resolved(link, endpoint: (session ?? active).endpoint) else {
+            throw LiveTVStalkerError.noLink
+        }
+        return (url, headers(for: url, session: session ?? active))
+    }
+
+    /// Every episode of a series, with its season and episode number.
+    func episodes(
+        of series: LiveTVStalkerWire.VODRef, title: String
+    ) async throws -> [(season: Int, episode: Int, item: LiveTVStalkerWire.Episode)] {
+        let active = try await acquire()
+        var seasons: [LiveTVStalkerWire.Season]
+        if let single = LiveTVStalkerWire.singleSeason(series, title: title) {
+            seasons = [single]
+        } else {
+            let rows = try await pages(type: series.variant == "v" ? "vod" : "series", extra: [("movie_id", series.id)])
+            seasons = LiveTVStalkerWire.seasons(rows, of: series)
+        }
+        var result: [(season: Int, episode: Int, item: LiveTVStalkerWire.Episode)] = []
+        for (seasonIndex, season) in seasons.enumerated() {
+            try Task.checkCancellation()
+            let list: [LiveTVStalkerWire.Episode]
+            if season.variant == "c" {
+                list = LiveTVStalkerWire.classicEpisodes(season)
+            } else {
+                let rows = try await pages(type: "vod", extra: [("movie_id", season.movieID), ("season_id", season.id)])
+                list = LiveTVStalkerWire.episodes(rows, of: season, endpoint: active.endpoint)
+            }
+            for (episodeIndex, episode) in list.enumerated() {
+                result.append((season.number ?? seasonIndex + 1, episode.number ?? episodeIndex + 1, episode))
+            }
+        }
+        return result
+    }
+
+    // MARK: Catch-up (step 13f)
+
+    /// A past show of a channel: its recording in the portal's archive
+    /// (that day's archive guide, the show starting then), as Android's.
+    func archivePlayback(channelID: String, start: Date) async throws -> (URL, [String: String]) {
+        let active = try await acquire()
+        let zone = TimeZone(identifier: config.timezone) ?? .current
+        let rows = try await pages(
+            type: "epg", extra: [("ch_id", channelID), ("date", LiveTVStalkerWire.day(start, zone: zone))],
+            action: "get_simple_data_table")
+        guard let id = LiveTVStalkerWire.archivedShow(LiveTVStalkerWire.archivedShows(rows, zone: zone), start: start) else {
+            throw LiveTVStalkerError.notArchived
+        }
+        let value = try await authenticated([
+            ("type", "tv_archive"), ("action", "create_link"), ("cmd", LiveTVStalkerWire.archiveCommand(id)),
+            ("series", ""), ("forced_storage", ""), ("disable_ad", "0"), ("download", "0"),
+        ])
+        guard let object = value as? [String: Any],
+              (LiveTVStalkerWire.text(object, "error") ?? "0") == "0",
+              let link = LiveTVStalkerWire.text(object, "cmd", "url"),
+              let url = LiveTVStalkerWire.resolved(link, endpoint: (session ?? active).endpoint) else {
+            throw LiveTVStalkerError.noLink
+        }
+        return (url, headers(for: url, session: session ?? active))
     }
 
     // MARK: Guide
@@ -269,14 +412,17 @@ actor LiveTVStalkerClient {
 
     /// Every page of a list (`get_ordered_list`), as Android's: until the
     /// total is in or a short page.
-    private func pages(type: String, extra: [(String, String)]) async throws -> [[String: Any]] {
+    private func pages(
+        type: String, extra: [(String, String)], action: String = "get_ordered_list",
+        progress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> [[String: Any]] {
         var result: [[String: Any]] = []
         var seen = Set<String>()
         var total: Int?
         var pageSize: Int?
         for page in 1...2_000 {
             try Task.checkCancellation()
-            let value = try await authenticated([("type", type), ("action", "get_ordered_list"), ("p", String(page))] + extra)
+            let value = try await authenticated([("type", type), ("action", action), ("p", String(page))] + extra)
             let envelope = value as? [String: Any]
             guard let rows = LiveTVStalkerWire.rows(value) else { throw LiveTVStalkerError.invalidResponse }
             if let reported = envelope.flatMap({ LiveTVStalkerWire.text($0, "total_items") }).flatMap(Int.init) { total = reported }
@@ -294,6 +440,7 @@ actor LiveTVStalkerClient {
             }
             // A portal that sends the same page again: done.
             if added == 0 { break }
+            progress?(result.count)
             if let total, result.count >= total { break }
             if value is [Any] { break }
             if let pageSize, rows.count < pageSize { break }
@@ -390,13 +537,33 @@ enum LiveTVStalker {
         return components.string ?? ""
     }
 
-    /// The real link and headers for a channel's play link. The source is
-    /// the channel's (its slot).
+    /// A past show of a channel (catch-up, step 13f): found in the
+    /// portal's archive when it plays.
+    static func archiveLink(channelID: String, start: Date) -> URL? {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = "archive"
+        components.queryItems = [
+            URLQueryItem(name: "ch", value: channelID),
+            URLQueryItem(name: "start", value: String(Int(start.timeIntervalSince1970))),
+        ]
+        return components.url
+    }
+
+    /// The real link and headers for a channel's play or archive link. The
+    /// source is the channel's (its slot).
     static func resolve(_ link: URL, sourceID: String) async throws -> (URL, [String: String]) {
         guard link.scheme == scheme,
               let items = URLComponents(url: link, resolvingAgainstBaseURL: false)?.queryItems,
-              let command = items.first(where: { $0.name == "cmd" })?.value,
               let client = client(sourceID: sourceID) else { throw LiveTVStalkerError.noLink }
+        if link.host == "archive" {
+            guard let channel = items.first(where: { $0.name == "ch" })?.value,
+                  let start = items.first(where: { $0.name == "start" })?.value.flatMap(Double.init) else {
+                throw LiveTVStalkerError.noLink
+            }
+            return try await client.archivePlayback(channelID: channel, start: Date(timeIntervalSince1970: start))
+        }
+        guard let command = items.first(where: { $0.name == "cmd" })?.value else { throw LiveTVStalkerError.noLink }
         let fixed = items.first(where: { $0.name == "fixed" })?.value == "1"
         return try await client.playback(command: command, fixed: fixed)
     }
@@ -449,5 +616,16 @@ enum LiveTVStalker {
             buffer += "</tv>\n"
             flush(true)
         }.value
+    }
+}
+
+extension OnDemandStalker {
+    /// What one read of a portal gave (`LiveTVStalkerClient.vodCatalog`,
+    /// step 13f).
+    struct Catalog: Sendable {
+        var movies: [LiveTVStalkerWire.VODEntry]
+        var movieCategories: [XtreamCategory]
+        var series: [LiveTVStalkerWire.VODEntry]
+        var seriesCategories: [XtreamCategory]
     }
 }

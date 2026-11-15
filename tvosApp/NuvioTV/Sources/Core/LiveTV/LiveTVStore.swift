@@ -1292,6 +1292,15 @@ final class LiveTVStore: ObservableObject {
     /// Replay links for a show on a channel with catch-up, the likeliest
     /// first (`LiveTVCatchup.xtreamURLs`).
     func catchupLinks(for channel: XtreamLiveChannel, programme: XtreamProgram) -> (urls: [URL], headers: [String: String], zone: String)? {
+        // Stalker (step 13f): the show is found in the portal's archive when
+        // it plays (`LiveTVStalker.resolve`).
+        if let link = channel.streamURL, link.hasPrefix(LiveTVStalker.scheme + ":") {
+            guard channel.archiveDays > 0, let id = channel.epgChannelID,
+                  let archive = LiveTVStalker.archiveLink(channelID: id, start: programme.start) else { return nil }
+            let slot = LiveTVSourceIDs.slot(ofChannel: channel.streamID)
+            let zone = sources.first { $0.slot == slot }.flatMap { LiveTVStalker.config(for: $0.id)?.timezone } ?? "UTC"
+            return ([archive], [:], zone + " (" + L10n.string("livetv_catchup_zone_portal", fallback: "portal") + ")")
+        }
         // M3U (step 13d): the playlist's catch-up kind, with the live link's
         // headers.
         if let link = channel.streamURL {

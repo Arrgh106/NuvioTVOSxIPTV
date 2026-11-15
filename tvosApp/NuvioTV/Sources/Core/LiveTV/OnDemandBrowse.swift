@@ -83,7 +83,7 @@ final class OnDemandHomeRowModel: ObservableObject {
 
     func reload() {
         let enabled = ProfileSettings.current.object(forKey: SettingsKey.onDemandHomeRow) as? Bool ?? true
-        guard enabled, XtreamAccountStore.load() != nil, let database = OnDemandLibrary.shared.database else {
+        guard enabled, OnDemandSources.hasAny, let database = OnDemandLibrary.shared.database else {
             if !metas.isEmpty { metas = [] }
             return
         }

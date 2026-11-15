@@ -746,5 +746,66 @@ check(LiveTVStalkerWire.programmes(listGuide, zone: stalkerUTC).first?.stop.time
 check(LiveTVStalkerWire.xmltvTime(Date(timeIntervalSince1970: 1_800_000_000)) == "20270115080000 +0000", "stalker: XMLTV time")
 check(LiveTVStalkerWire.xmlEscaped("A & B <\"C\">\u{01}") == "A &amp; B &lt;&quot;C&quot;&gt;", "stalker: XML escaped")
 
+// Step 13f: Stalker movies, series and catch-up.
+let movieRow: [String: Any] = [
+    "id": "42", "name": "The Film (2019)", "cmd": "/media/file_42.mpg", "category_id": "7",
+    "screenshot_uri": "/posters/42.jpg", "added": "2026-01-02 03:04:05", "rating_imdb": "7.1",
+    "description": "A plot.", "use_http_tmp_link": "0", "has_files": 1,
+]
+let movieEntry = LiveTVStalkerWire.vodEntry(movieRow, endpoint: loadPHP, zone: stalkerUTC)
+check(movieEntry?.isSeries == false && movieEntry?.ref.cmd == "/media/file_42.mpg" && movieEntry?.ref.fixed == true
+      && movieEntry?.ref.hasFiles == true && movieEntry?.ref.plot == "A plot.", "stalker vod: movie row")
+check(movieEntry?.poster == "http://portal.example/posters/42.jpg" && movieEntry?.rating == "7.1"
+      && movieEntry?.added == 1_767_323_045, "stalker vod: poster, rating, added")
+let vodSeriesRow: [String: Any] = ["id": "42", "name": "A Show", "is_series": "1", "cmd": "", "category_id": "3"]
+check(LiveTVStalkerWire.vodEntry(vodSeriesRow, endpoint: loadPHP, zone: stalkerUTC)?.ref.variant == "v",
+      "stalker vod: series in the movie list")
+let ownSeriesRow: [String: Any] = ["id": "9", "name": "Old Show", "cmd": "/media/9.mpg", "series": [1, 2, "3", 0]]
+let ownSeries = LiveTVStalkerWire.vodEntry(ownSeriesRow, endpoint: loadPHP, zone: stalkerUTC, variant: "c")
+check(ownSeries?.ref.variant == "c" && ownSeries?.ref.selectors == "1,2,3", "stalker vod: own series with episode numbers")
+let decodedRef = LiveTVStalkerWire.VODRef.decode(movieEntry?.ref.encoded())
+check(decodedRef == movieEntry?.ref, "stalker vod: play ref round trip")
+check(LiveTVStalkerWire.number(for: "42") == 42, "stalker vod: small id kept")
+check(LiveTVStalkerWire.number(for: "42", salt: "v") != 42 && LiveTVStalkerWire.number(for: "42", salt: "v") > 0,
+      "stalker vod: salted id apart")
+check(LiveTVStalkerWire.number(for: "abc") == LiveTVStalkerWire.number(for: "abc"), "stalker vod: text id stable")
+let stalkerItems = OnDemandStalker.items(
+    [movieEntry!, LiveTVStalkerWire.vodEntry(["id": "42", "name": "Copy"], endpoint: loadPHP, zone: stalkerUTC)!],
+    kind: .movie)
+check(stalkerItems.items.count == 2 && stalkerItems.items[0].id == 42 && stalkerItems.items[1].id == 43
+      && stalkerItems.items[0].year == 2019 && LiveTVStalkerWire.VODRef.decode(stalkerItems.items[0].play)?.id == "42",
+      "stalker vod: items with unique ids, year and play ref")
+let single = LiveTVStalkerWire.singleSeason(ownSeries!.ref, title: "Old Show")
+check(single?.selectors == ["1", "2", "3"], "stalker vod: older portal's one season")
+let classic = LiveTVStalkerWire.classicEpisodes(single!)
+check(classic.count == 3 && classic[1].ref.selectors == "2" && classic[1].ref.cmd == "/media/9.mpg"
+      && classic[1].number == 2, "stalker vod: classic episodes")
+let seasonRows: [[String: Any]] = [["id": "s1", "name": "Season 1", "video_id": "77", "season_number": "1", "is_season": true],
+                                   ["id": "x", "is_season": false]]
+let vodSeasons = LiveTVStalkerWire.seasons(seasonRows, of: LiveTVStalkerWire.VODRef(id: "42", variant: "v"))
+check(vodSeasons.count == 1 && vodSeasons[0].movieID == "77" && vodSeasons[0].number == 1, "stalker vod: seasons")
+let episodeRows: [[String: Any]] = [["id": "e5", "name": "Pilot", "series_number": "1", "cmd": "/media/e5.mpg"]]
+let vodEpisodes = LiveTVStalkerWire.episodes(episodeRows, of: vodSeasons[0], endpoint: loadPHP)
+check(vodEpisodes.first?.ref.selectors == "1" && vodEpisodes.first?.ref.seasonID == "s1"
+      && vodEpisodes.first?.ref.movieID == "77", "stalker vod: episodes")
+let linkParameters = LiveTVStalkerWire.vodLinkParameters(vodEpisodes[0].ref, command: "/media/e5.mpg")
+check(linkParameters.contains { $0 == ("series", "1") } && linkParameters.contains { $0 == ("season_id", "s1") }
+      && linkParameters.contains { $0 == ("movie_id", "77") }, "stalker vod: create_link parameters")
+check(LiveTVStalkerWire.archiveDays(["tv_archive": "1", "tv_archive_duration": "3"]) == 3
+      && LiveTVStalkerWire.archiveDays(["tv_archive": 0, "tv_archive_duration": 3]) == 0, "stalker catch-up: archive days")
+let archiveRows: [[String: Any]] = [
+    ["id": "100", "start_timestamp": "1800000000", "mark_archive": "1"],
+    ["id": "101", "start_timestamp": "1800000120", "mark_archive": "0"],
+    ["id": "bad id", "start_timestamp": "1800000060", "mark_archive": "1"],
+]
+let shows = LiveTVStalkerWire.archivedShows(archiveRows, zone: stalkerUTC)
+check(LiveTVStalkerWire.archivedShow(shows, start: Date(timeIntervalSince1970: 1_800_000_100)) == "100",
+      "stalker catch-up: archived show nearest the start")
+check(LiveTVStalkerWire.archivedShow(shows, start: Date(timeIntervalSince1970: 1_800_001_000)) == nil,
+      "stalker catch-up: nothing within five minutes")
+check(LiveTVStalkerWire.archiveCommand("100") == "auto /media/100.mpg", "stalker catch-up: command")
+check(LiveTVStalkerWire.day(Date(timeIntervalSince1970: 1_800_000_000), zone: stalkerUTC) == "2027-01-15",
+      "stalker catch-up: day in the portal's zone")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

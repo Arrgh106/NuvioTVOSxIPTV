@@ -116,7 +116,9 @@ final class LiveTVHomeRowModel: ObservableObject {
     private func rebuild() {
         let settings = LiveTVSettings.shared
         let list: [XtreamLiveChannel]
-        if !settings.homeRow || XtreamAccountStore.load() == nil {
+        // Any source that is on (M3U and Stalker too, not only an Xtream
+        // login with VOD).
+        if !settings.homeRow || !LiveTVSourceStore.read().contains(where: \.enabled) {
             list = []
         } else if settings.homeRowSource == .favorites, !saved.favorites.isEmpty {
             list = saved.favorites

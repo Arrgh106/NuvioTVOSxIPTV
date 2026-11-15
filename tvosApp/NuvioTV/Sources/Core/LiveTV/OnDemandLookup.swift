@@ -15,7 +15,7 @@ enum OnDemandLookup {
     static var isAvailable: Bool {
         let library = OnDemandLibrary.shared
         library.refreshIfNeeded()
-        return library.inStreams && library.database != nil && XtreamAccountStore.load() != nil
+        return library.inStreams && library.database != nil && OnDemandSources.hasAny
     }
 
     static func streams(videoId: String) async -> [NuvioStream] {
@@ -52,22 +52,14 @@ enum OnDemandLookup {
             let copies = OnDemandMatch.copies(of: allowed, name: hint.name, year: hint.year, tmdb: tmdb)
             var streams: [NuvioStream] = []
             for copy in copies {
-                guard let route = OnDemandSources.route(copy.id, in: routes) else { continue }
-                let client = route.client
-                let raw = OnDemandSources.raw(copy.id)
+                guard let route = OnDemandSources.route(copy.id, in: routes),
+                      let found = await file(copy, route: route, season: episode.season, episode: episode.episode)
+                else { continue }
                 let source = routes.count > 1 ? route.source.displayName : nil
-                let category = categories[copy.categoryID]
-                if let season = episode.season, let number = episode.episode {
-                    guard let data = try? await client.seriesInfo(seriesID: raw),
-                          let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: number),
-                          let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { continue }
-                    streams.append(stream(url: url, copy: copy, ext: found.ext, category: category, client: client,
-                                          title: hint.name, year: nil, season: season, episode: number, source: source))
-                } else {
-                    guard let url = client.movieURL(streamID: raw, ext: copy.ext) else { continue }
-                    streams.append(stream(url: url, copy: copy, ext: copy.ext ?? "mp4", category: category, client: client,
-                                          title: hint.name, year: copy.year ?? hint.year, season: nil, episode: nil, source: source))
-                }
+                streams.append(stream(
+                    url: found.url, copy: copy, ext: found.ext, category: categories[copy.categoryID], headers: found.headers,
+                    title: hint.name, year: episode.season == nil ? copy.year ?? hint.year : nil,
+                    season: episode.season, episode: episode.episode, source: source))
             }
             return streams
         }.value
@@ -95,22 +87,14 @@ enum OnDemandLookup {
         return await Task.detached(priority: .userInitiated) { () -> [NuvioStream] in
             var streams: [NuvioStream] = []
             for copy in versions {
-                guard let route = OnDemandSources.route(copy.id, in: routes) else { continue }
-                let client = route.client
-                let raw = OnDemandSources.raw(copy.id)
+                guard let route = OnDemandSources.route(copy.id, in: routes),
+                      let found = await file(copy, route: route, season: own.season, episode: own.episode)
+                else { continue }
                 let source = routes.count > 1 ? route.source.displayName : nil
-                let copyCategory = names[copy.categoryID]
-                if let season = own.season, let number = own.episode {
-                    guard let data = try? await client.seriesInfo(seriesID: raw),
-                          let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: number),
-                          let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { continue }
-                    streams.append(stream(url: url, copy: copy, ext: found.ext, category: copyCategory, client: client,
-                                          title: title, year: nil, season: season, episode: number, source: source))
-                } else {
-                    guard let url = client.movieURL(streamID: raw, ext: copy.ext) else { continue }
-                    streams.append(stream(url: url, copy: copy, ext: copy.ext ?? "mp4", category: copyCategory, client: client,
-                                          title: title, year: copy.year ?? item.year, season: nil, episode: nil, source: source))
-                }
+                streams.append(stream(
+                    url: found.url, copy: copy, ext: found.ext, category: names[copy.categoryID], headers: found.headers,
+                    title: title, year: own.season == nil ? copy.year ?? item.year : nil,
+                    season: own.season, episode: own.episode, source: source))
             }
             return streams
         }.value
@@ -121,8 +105,38 @@ enum OnDemandLookup {
         "vod:\(kind.rawValue):\(category)"
     }
 
+    /// A copy's file (a movie, or the episode `season` / `episode`): from
+    /// the Xtream login, or (step 13f) asked of the Stalker portal, whose
+    /// link holds for a while.
+    nonisolated private static func file(
+        _ copy: OnDemandItem, route: OnDemandSources.Route, season: Int?, episode: Int?
+    ) async -> (url: URL, ext: String, headers: [String: String])? {
+        if let stalker = route.stalker {
+            guard let ref = LiveTVStalkerWire.VODRef.decode(copy.play) else { return nil }
+            var target = ref
+            if let season, let episode {
+                guard let list = try? await stalker.episodes(of: ref, title: copy.name),
+                      let found = list.first(where: { $0.season == season && $0.episode == episode }) else { return nil }
+                target = found.item.ref
+            }
+            guard let played = try? await stalker.vodPlayback(target) else { return nil }
+            let ext = played.0.pathExtension.isEmpty ? "mp4" : played.0.pathExtension.lowercased()
+            return (played.0, ext, played.1)
+        }
+        guard let client = route.xtream else { return nil }
+        let raw = OnDemandSources.raw(copy.id)
+        if let season, let episode {
+            guard let data = try? await client.seriesInfo(seriesID: raw),
+                  let found = OnDemandMatch.episode(OnDemandParse.episodes(data), season: season, episode: episode),
+                  let url = client.episodeURL(episodeID: found.id, ext: found.ext) else { return nil }
+            return (url, found.ext, client.httpHeaders)
+        }
+        guard let url = client.movieURL(streamID: raw, ext: copy.ext) else { return nil }
+        return (url, copy.ext ?? "mp4", client.httpHeaders)
+    }
+
     nonisolated private static func stream(
-        url: URL, copy: OnDemandItem, ext: String, category: String?, client: XtreamClient,
+        url: URL, copy: OnDemandItem, ext: String, category: String?, headers: [String: String],
         title: String, year: Int?, season: Int?, episode: Int?, source: String? = nil
     ) -> NuvioStream {
         let quality = OnDemandTitle.quality(copy.name)
@@ -141,7 +155,7 @@ enum OnDemandLookup {
             addonName: groupName,
             filename: file,
             bingeGroup: bingeGroup,
-            httpHeaders: client.httpHeaders
+            httpHeaders: headers
         )
     }
 }

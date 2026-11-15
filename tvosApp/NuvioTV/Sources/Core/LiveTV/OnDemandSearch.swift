@@ -19,7 +19,7 @@ enum OnDemandSearch {
     private static func results(for query: String, known: [NuvioMeta]) async -> [NuvioMeta] {
         let words = OnDemandTitle.searchWords(query)
         guard OnDemandPreferences.shared.inSearch, !words.isEmpty, words.joined().count >= 2,
-              XtreamAccountStore.load() != nil, let database = OnDemandLibrary.shared.database else { return [] }
+              OnDemandSources.hasAny, let database = OnDemandLibrary.shared.database else { return [] }
         let found = await Task.detached(priority: .userInitiated) {
             (movies: database.search(kind: .movie, words: words, limit: 150),
              series: database.search(kind: .series, words: words, limit: 150),
