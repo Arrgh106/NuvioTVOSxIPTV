@@ -154,7 +154,12 @@ enum JellyfinLiveLookup {
             return NuvioStream(
                 url: url.absoluteString,
                 name: serverName,
-                description: item.sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                // The resolution first: without it the list sorts the
+                // file last, behind every other copy ("All").
+                description: [
+                    item.qualityLabel,
+                    item.sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                ].compactMap { $0 }.joined(separator: " · "),
                 addonName: "Jellyfin",
                 videoSize: item.sizeBytes
             )
