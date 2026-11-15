@@ -4709,6 +4709,10 @@ private struct TVMainTabView: View {
     private var liveTVTabContent: some View {
         LiveTVView(onPlayChannel: { url, meta, headers in
             onPlayLiveChannel?(url, meta, headers)
+        }, onOpenSources: {
+            // Fork: no source yet, set up in Settings (as Jellyfin).
+            selectedSettingsCategory = .liveTV
+            selectedTab = .settings
         })
             .id(activeProfile?.id ?? "none")
     }
