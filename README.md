@@ -69,7 +69,7 @@ No release has been published yet. Grab the IPA from the latest [IPA build](http
 
 The password is stored in the Apple TV Keychain. Each Nuvio profile has its own Live TV sources. The channel list is cached on the device and refreshes every 12 hours, or when you press **Refresh**.
 
-**More sources** (Settings → Live TV / VOD → *Sources*, or *Sources* in Live TV's header): add more Xtream logins and M3U playlists (*Add M3U Playlist*: a link, optionally your provider's user agent; the guide linked in the playlist is read too). All sources show in one guide; the group column has a heading per source that folds with OK. Each source can be updated, turned off, moved or deleted on its own; one that fails leaves the others. On Live TV's first screen, *Add an M3U Playlist Instead* starts with a playlist.
+**More sources** (Settings → Live TV / VOD → *Sources*, or *Sources* in Live TV's header): add more Xtream logins and M3U playlists (*Add M3U Playlist*: a link, optionally your provider's user agent; the guide linked in the playlist is read too). All sources show in one guide; the group column has a heading per source that folds with OK. Each source can be updated, turned off, moved or deleted on its own; one that fails leaves the others. Adding or turning off a source reads only its own guide; unchanged guides and VOD lists aren't read or saved again. On Live TV's first screen, *Add an M3U Playlist Instead* starts with a playlist.
 
 ### Using Live TV
 

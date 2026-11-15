@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SQLite3
 
@@ -157,6 +158,10 @@ final class OnDemandLibrary: ObservableObject {
                         }
                     }
                     let slot = login.slot
+                    // The same list as last time: nothing to save again.
+                    let hashKey = "hash.s\(slot).\(kind.rawValue)"
+                    let hash = Self.digest(data, categories: categories, position: position)
+                    if database.meta(hashKey) == hash { continue }
                     let saved = await Task.detached(priority: .utility) { () -> Int? in
                         guard let list = OnDemandParse.list(data, kind: kind) else { return nil }
                         let total = list.items.count
@@ -176,6 +181,8 @@ final class OnDemandLibrary: ObservableObject {
                     if saved == nil {
                         errors.append((kind == .movie ? "movies" : "series") + named)
                         loginFailed = true
+                    } else {
+                        database.setMeta(hashKey, hash)
                     }
                 } catch {
                     errors.append(error.localizedDescription + named)
@@ -201,6 +208,16 @@ final class OnDemandLibrary: ObservableObject {
                 self.publishCounts()
             }
         }
+    }
+
+    /// What a list was: the provider's answer, its categories and the
+    /// login's place (the same again needs no saving).
+    nonisolated static func digest(_ data: Data, categories: [XtreamCategory], position: Int) -> String {
+        var hasher = SHA256()
+        hasher.update(data: data)
+        let rest = categories.map { $0.id + "\t" + $0.name }.joined(separator: "\n") + "\n\(position)"
+        hasher.update(data: Data(rest.utf8))
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// "Loading movies · 12,500".
@@ -395,7 +412,7 @@ final class OnDemandDatabase: @unchecked Sendable {
         }
         sqlite3_exec(db, "DELETE FROM categories WHERE id GLOB 's[0-9]*:*' AND CAST(substr(id, 2, instr(id, ':') - 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
         // A login turned on again is read again.
-        sqlite3_exec(db, "DELETE FROM meta WHERE (k GLOB 'login.s*' OR k GLOB 'updated.s*') AND CAST(substr(k, instr(k, '.s') + 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
+        sqlite3_exec(db, "DELETE FROM meta WHERE (k GLOB 'login.s*' OR k GLOB 'updated.s*' OR k GLOB 'hash.s*') AND CAST(substr(k, instr(k, '.s') + 2) AS INTEGER) NOT IN (\(list.isEmpty ? "-1" : list))", nil, nil, nil)
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 

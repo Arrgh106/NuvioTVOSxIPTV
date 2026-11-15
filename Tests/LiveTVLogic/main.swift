@@ -307,6 +307,31 @@ let feedB = LiveTVGuideFeed(sourceID: "xabc", name: "A", url: URL(string: "http:
 check(LiveTVEPGSourceRules.fingerprint([feedA]) != LiveTVEPGSourceRules.fingerprint([feedB]), "shift changes the fingerprint")
 check(!LiveTVEPGSourceRules.fingerprint([feedA]).contains("a.test"), "no link in the fingerprint")
 
+// Step 13: a source's own guide in lower case, and only the sources' own
+// guides read again when one comes or goes.
+let ownKey = LiveTVEPGSourceRules.key(sourceID: "builtin:AB12-CD", guideID: "ARD.de")
+check(ownKey == "builtin:ab12-cd|ard.de", "own guide key in lower case")
+check(LiveTVEPGSourceRules.guideID(fromKey: ownKey) == "ard.de", "id back from an own guide's key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: ownKey) == "builtin:ab12-cd", "own guide from its key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: "xabc|zdf.de") == "xabc", "added guide from its key")
+check(LiveTVEPGSourceRules.sourceID(ofKey: "zdf.de") == "", "first source's guide from its key")
+check(LiveTVEPGSourceRules.isBuiltIn(sourceID: "") && LiveTVEPGSourceRules.isBuiltIn(sourceID: "builtin:x#2"), "own guides")
+check(!LiveTVEPGSourceRules.isBuiltIn(sourceID: "xabc"), "added guide is not own")
+let own0 = LiveTVGuideFeed(sourceID: "", name: "P", url: URL(string: "http://p.test/xmltv.php")!, shiftMinutes: 0, slot: 0)
+let own1 = LiveTVGuideFeed(sourceID: "builtin:b1", name: "Q", url: URL(string: "http://q.test/xmltv.php")!, shiftMinutes: 0, slot: 1)
+let printBoth = LiveTVEPGSourceRules.fingerprint([feedA, own0, own1])
+let printFirst = LiveTVEPGSourceRules.fingerprint([feedA, own0])
+let added = LiveTVEPGSourceRules.change(from: printFirst, to: printBoth)
+check(added?.added == ["builtin:b1"] && added?.removed.isEmpty == true, "a source added: only its guide")
+let removed = LiveTVEPGSourceRules.change(from: printBoth, to: printFirst)
+check(removed?.removed == ["builtin:b1"] && removed?.added.isEmpty == true, "a source off: only its guide goes")
+let firstOff = LiveTVEPGSourceRules.change(from: printBoth, to: LiveTVEPGSourceRules.fingerprint([feedA, own1]))
+check(firstOff?.removed == [""], "the first source off")
+check(LiveTVEPGSourceRules.change(from: printFirst, to: LiveTVEPGSourceRules.fingerprint([feedB, own0])) == nil,
+      "an added guide changed: everything again")
+check(LiveTVEPGSourceRules.change(from: LiveTVEPGSourceRules.fingerprint([own0]), to: printFirst) == nil,
+      "an added guide new: everything again")
+
 check(LiveTVEPGSourceRules.gzipHeaderLength([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0xaa]) == 10, "plain gzip header")
 let named: [UInt8] = [0x1f, 0x8b, 8, 0x08, 0, 0, 0, 0, 0, 3] + Array("epg.xml".utf8) + [0, 0xaa]
 check(LiveTVEPGSourceRules.gzipHeaderLength(named) == 18, "gzip header with a file name")
