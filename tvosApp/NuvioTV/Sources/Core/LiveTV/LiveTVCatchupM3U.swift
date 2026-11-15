@@ -18,9 +18,12 @@ struct LiveTVM3UCatchup: Codable, Hashable, Sendable {
         guard type?.isEmpty == false || (days ?? 0) > 0 else { return nil }
         self.type = (type?.isEmpty == false ? type! : "default").lowercased()
         self.source = attributes["catchup-source"].flatMap { $0.isEmpty ? nil : $0 }
-        self.days = max(1, days ?? 1)
-        self.correctionHours = attributes["catchup-correction"]
+        // The playlist's word only: kept within sane bounds (a huge or
+        // infinite value would trap when turned into seconds).
+        self.days = min(365, max(1, days ?? 1))
+        let correction = attributes["catchup-correction"]
             .flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) } ?? 0
+        self.correctionHours = correction.isFinite && abs(correction) <= 48 ? correction : 0
     }
 
     init(type: String, source: String?, days: Int, correctionHours: Double = 0) {
@@ -40,7 +43,8 @@ enum LiveTVCatchupM3U {
         live: String, catchup: LiveTVM3UCatchup, start: Date, end: Date, now: Date,
         fileExtension: String = "ts", serverTimeZone: TimeZone? = nil
     ) -> [URL] {
-        let correction = catchup.correctionHours * 3600
+        let hours = catchup.correctionHours
+        let correction = (hours.isFinite && abs(hours) <= 48 ? hours : 0) * 3600
         let startC = start.addingTimeInterval(correction)
         let endC = end.addingTimeInterval(correction)
         let startS = Int64(startC.timeIntervalSince1970)
