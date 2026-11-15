@@ -190,8 +190,16 @@ struct PosterCard: View {
     /// for a genuinely fresh drop) and the progress bar is hidden, since there's
     /// no real playback position yet.
     var continueIsUpNext: Bool = false
+    /// Set only when this Up Next item is the one eligible successor in the
+    /// watched series guide; Calendar cards never receive this evidence.
+    var continueEpisodeSpoilerRevealable: Bool = false
     var continueUpNextBadgeText: String? = nil
     var collectionOrigin: CollectionOriginPresentation? = nil
+    /// Continue Watching: AniList's mark on an AniList title (as in Search) when no collection
+    /// mark is shown.
+    var showsAniListOrigin: Bool = false
+    /// The mark of the service a row comes from (AniList, MyAnimeList).
+    var sourceBadge: CollectionOriginPresentation? = nil
     var showsWatchedBadge: Bool = true
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
@@ -226,13 +234,38 @@ struct PosterCard: View {
     /// Optional upward-focus fallback for Home's lazy vertical rows. The
     /// handler deliberately stays off the default path for other directions.
     var onMove: ((MoveCommandDirection) -> Void)? = nil
+    /// An off-screen row being built a few cards at a time (see `TVCatalogRow.stagesCardBuild`):
+    /// until its turn, the card is empty space of its own size.
+    var buildsLater: Bool = false
     var isWatched: Bool? = nil
     let onClick: () -> Void
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
+    @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
     @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
+    @AppStorage(SettingsKey.continueWatchingLabels) private var continueWatchingLabels = CardLabelVisibility.always.rawValue
+
+    private var showsContinueWatchingLabels: Bool {
+        (CardLabelVisibility(rawValue: continueWatchingLabels) ?? .always)
+            .isVisible(isFocused: showsFocusedAppearance)
+    }
+
+    @AppStorage(SettingsKey.continueWatchingBlurNextUp) private var continueWatchingBlurNextUp = false
+    @AppStorage(SettingsKey.blurUnwatchedEpisodes) private var blurUnwatchedEpisodes = false
+    @AppStorage(SettingsKey.hideUnwatchedEpisodeTitles) private var hideUnwatchedEpisodeTitles = false
+    @AppStorage(SettingsKey.revealNextEpisodeSpoilers) private var revealNextEpisodeSpoilers = false
     @State private var loadedCustomLandscapeArtworkURL: String?
+
+    private var shouldBlurNextUpArtwork: Bool {
+        (continueWatchingBlurNextUp
+            || (blurUnwatchedEpisodes
+                && !(revealNextEpisodeSpoilers && continueEpisodeSpoilerRevealable)))
+            && continueIsUpNext
+            && continueEpisodeArtworkURL != nil
+            && effectiveLandscape
+            && imageUrl == continueEpisodeArtworkURL
+    }
 
     #if os(tvOS)
     @FocusState private var isFocused: Bool
@@ -240,6 +273,7 @@ struct PosterCard: View {
     @State private var landscapeArtworkPrepared = false
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
+    @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
     @State private var isTrailerPreviewActive = false
@@ -256,6 +290,33 @@ struct PosterCard: View {
 
     var body: some View {
         #if os(tvOS)
+        if buildsLater {
+            Color.clear
+                .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
+        } else {
+            focusableCard
+        }
+        #else
+        Button(action: onClick) {
+            posterContent
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .titleActionsContextMenu(
+            meta: meta,
+            onOpenDetails: onOpenDetails ?? onClick,
+            continueProgress: continueProgress,
+            continueIsUpNext: continueIsUpNext,
+            onPlayManually: onPlayManually,
+            onStartFromBeginning: onStartFromBeginning,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onRefreshCatalog: onRefreshCatalog
+        )
+        .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
+        #endif
+    }
+
+    #if os(tvOS)
+    private var focusableCard: some View {
         // Keep directional input in tvOS's focus engine. Per-card move
         // handlers bypass the clickpad dead zone and can turn a light touch
         // into an immediate focus change.
@@ -357,24 +418,8 @@ struct PosterCard: View {
                 : nil,
             value: effectiveLandscape
         )
-        #else
-        Button(action: onClick) {
-            posterContent
-        }
-        .buttonStyle(PosterCardButtonStyle())
-        .titleActionsContextMenu(
-            meta: meta,
-            onOpenDetails: onOpenDetails ?? onClick,
-            continueProgress: continueProgress,
-            continueIsUpNext: continueIsUpNext,
-            onPlayManually: onPlayManually,
-            onStartFromBeginning: onStartFromBeginning,
-            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onRefreshCatalog: onRefreshCatalog
-        )
-        .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
-        #endif
     }
+    #endif
 
     private var posterContent: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -404,6 +449,9 @@ struct PosterCard: View {
                 placeholderView
             }
             .frame(width: cardWidth, height: cardHeight)
+            .scaleEffect(shouldBlurNextUpArtwork ? 1.08 : 1.0)
+            .blur(radius: shouldBlurNextUpArtwork ? 16 : 0)
+            .clipped()
             #if os(tvOS)
             // Cross-fade the landscape artwork away only once the resolved
             // trailer is ready to draw, avoiding a black frame on slow links.
@@ -416,6 +464,7 @@ struct PosterCard: View {
                     TrailerPreviewPlayer(
                         meta: meta,
                         isActive: isTrailerPreviewActive,
+                        soundEnabled: $trailerPreviewSound,
                         onPlaybackReady: {
                             guard isTrailerPreviewActive else { return }
                             isTrailerPreviewReady = true
@@ -438,13 +487,14 @@ struct PosterCard: View {
             }
             .overlay(alignment: .bottomLeading) {
                 continueProgressOverlay
+                continueShuffleBadge
             }
             .overlay(alignment: effectiveLandscape ? .topTrailing : .top) {
                 continueBadge
             }
             .overlay(alignment: .bottomTrailing) {
-                if let collectionOrigin, !continueIsUpNext {
-                    CollectionOriginBadge(origin: collectionOrigin)
+                if let origin = shownOrigin {
+                    CollectionOriginBadge(origin: origin)
                         .padding(.trailing, 22)
                         // The progress bar occupies the bottom 16...24 points.
                         // Leave a 10-point gap above it, or use the bottom inset
@@ -475,11 +525,13 @@ struct PosterCard: View {
             .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius)
 
             if showsPosterTitle {
-                Text(meta.name)
-                    .font(.system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium))
-                    .foregroundColor(titleColor)
-                    .lineLimit(1)
-                    .frame(width: cardWidth, alignment: .leading)
+                MarqueeText(
+                    meta.name,
+                    size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium,
+                    color: titleColor,
+                    isActive: showsFocusedAppearance && (!expandsToBackdrop || effectiveLandscape)
+                )
+                .frame(width: cardWidth, alignment: .leading)
             }
         }
         .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
@@ -522,11 +574,8 @@ struct PosterCard: View {
                 if continueEpisodeText != nil {
                     continueLandscapeSummary
                 } else if continueProgress != nil || continueRemainingText != nil {
-                    Text(meta.name)
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
+                    MarqueeText(meta.name, size: 28, weight: .semibold, color: .white,
+                                isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
                         .frame(maxWidth: cardWidth * 0.82, alignment: .leading)
                         .padding(EdgeInsets(top: 22, leading: 22, bottom: 54, trailing: 22))
                 } else if let logoURL = landscapeLogoURL {
@@ -552,25 +601,21 @@ struct PosterCard: View {
 
     private var continueLandscapeSummary: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if let continueEpisodeText {
-                Text(continueEpisodeText)
-                    .font(.system(size: 25, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+            if showsContinueWatchingLabels, let continueEpisodeText {
+                MarqueeText(continueEpisodeText, size: 25, weight: .medium, color: .white,
+                            isActive: showsFocusedAppearance)
             }
 
-            Text(meta.name)
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
+            MarqueeText(meta.name, size: 28, weight: .semibold, color: .white,
+                        isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
 
-            if let continueEpisodeTitleText, !continueEpisodeTitleText.isEmpty {
-                Text(continueEpisodeTitleText)
-                    .font(.system(size: 23, weight: .medium))
-                    .foregroundColor(.white.opacity(0.66))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+            if showsContinueWatchingLabels, let continueEpisodeTitleText, !continueEpisodeTitleText.isEmpty {
+                if !(hideUnwatchedEpisodeTitles
+                    && continueIsUpNext
+                    && !(revealNextEpisodeSpoilers && continueEpisodeSpoilerRevealable)) {
+                    MarqueeText(continueEpisodeTitleText, size: 23, weight: .medium, color: .white.opacity(0.66),
+                                isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
+                }
             }
         }
         .frame(maxWidth: cardWidth * 0.70, alignment: .leading)
@@ -596,9 +641,18 @@ struct PosterCard: View {
         return URL(string: raw)
     }
 
+    /// The mark in the bottom corner: the collection a title was started from (not on Up Next),
+    /// else AniList's on an AniList title where asked.
+    private var shownOrigin: CollectionOriginPresentation? {
+        if let collectionOrigin, !continueIsUpNext { return collectionOrigin }
+        if let sourceBadge { return sourceBadge }
+        if showsAniListOrigin, AniListMetaBuilder.isAniListID(meta.id) { return AniListService.searchBadge }
+        return nil
+    }
+
     @ViewBuilder
     private var continueBadge: some View {
-        if let continueBadgeDisplayText {
+        if showsContinueWatchingLabels, let continueBadgeDisplayText {
             let badgeRadius = AppCardStyle.badgeCornerRadius(for: cardCornerRadiusSetting, base: 10)
             Text(continueBadgeDisplayText)
                 .font(.system(size: 22, weight: .semibold))
@@ -636,7 +690,9 @@ struct PosterCard: View {
             return Color(red: 0xB4 / 255, green: 0x53 / 255, blue: 0x09 / 255)
         } else if badge == "NEW EPISODE" {
             return Color(red: 0x1D / 255, green: 0x4E / 255, blue: 0xD8 / 255)
-        } else if badge == "AIRING TODAY" {
+        } else if badge == "AIRING TODAY"
+            || badge == "DIFFUSION AUJOURD'HUI"
+            || badge == L10n.string("calendar_home_today_badge", fallback: "AIRING TODAY").uppercased() {
             return Color(red: 0x05 / 255, green: 0x96 / 255, blue: 0x69 / 255)
         } else if badge.hasPrefix("AIRS IN") || badge == "COMING SOON" {
             return Color(red: 0x47 / 255, green: 0x55 / 255, blue: 0x69 / 255)
@@ -652,6 +708,26 @@ struct PosterCard: View {
             return "\(continueEpisodeText) • \(continueRemainingText)"
         }
         return continueRemainingText
+    }
+
+    /// Continue Watching: the series is playing in shuffle, and resuming it
+    /// keeps going in shuffle. Bottom right, above the progress bar.
+    @ViewBuilder
+    private var continueShuffleBadge: some View {
+        if continueProgress != nil || continueIsUpNext,
+           meta.isSeries,
+           EpisodeShuffle.shared.isActive(seriesID: meta.id) {
+            Image(systemName: "shuffle")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(.white)
+                .padding(9)
+                .background(Circle().fill(Color.black.opacity(0.62)))
+                .padding(.trailing, 22)
+                .padding(.bottom, continueProgress != nil && !continueIsUpNext ? 32 : 16)
+                .frame(width: cardWidth, height: cardHeight, alignment: .bottomTrailing)
+                .allowsHitTesting(false)
+                .accessibilityLabel(L10n.string("details_shuffle_on", fallback: "Shuffle On"))
+        }
     }
 
     @ViewBuilder
@@ -683,6 +759,13 @@ struct PosterCard: View {
     #if os(tvOS)
     private var effectiveHomeLayout: String {
         layoutMode
+    }
+
+    /// The focused poster turns into its backdrop after a moment (Settings → Layout → Expand
+    /// Focused Poster to Backdrop, Modern layout): its title waits for the wider card and scrolls
+    /// only if it doesn't fit even there.
+    private var expandsToBackdrop: Bool {
+        focusedPosterBackdropEnabled && effectiveHomeLayout == "Modern" && !isEffectivelyAlwaysLandscape
     }
 
     private var effectivePosterLabels: Bool {
@@ -914,11 +997,11 @@ struct PosterCard: View {
     }
 
     private var shadowOpacity: Double {
-        showsFocusedAppearance ? 0.24 : 0.12
+        showsFocusedAppearance ? 0.24 : 0
     }
 
     private var shadowRadius: CGFloat {
-        showsFocusedAppearance ? 10 : 4
+        showsFocusedAppearance ? 10 : 0
     }
 
     private var titleColor: Color {
@@ -1026,7 +1109,7 @@ struct PosterCard: View {
     }
 
     private var shadowOpacity: Double {
-        0.2
+        !AppleTVCapability.current.supportsLiquidGlass ? 0 : 0.2
     }
 
     private var shadowRadius: CGFloat {
@@ -1074,6 +1157,8 @@ extension PosterCard: Equatable {
             && lhs.continueEpisodeTitleText == rhs.continueEpisodeTitleText
             && lhs.continueEpisodeArtworkURL == rhs.continueEpisodeArtworkURL
             && lhs.continueIsUpNext == rhs.continueIsUpNext
+            && lhs.continueEpisodeSpoilerRevealable == rhs.continueEpisodeSpoilerRevealable
+            && lhs.revealNextEpisodeSpoilers == rhs.revealNextEpisodeSpoilers
             && lhs.continueUpNextBadgeText == rhs.continueUpNextBadgeText
             && lhs.showsWatchedBadge == rhs.showsWatchedBadge
             && lhs.shouldRequestInitialFocus == rhs.shouldRequestInitialFocus
@@ -1091,6 +1176,7 @@ extension PosterCard: Equatable {
             && lhs.retainFocusAppearance == rhs.retainFocusAppearance
             && lhs.allowsFocus == rhs.allowsFocus
             && lhs.focusCallbackContext == rhs.focusCallbackContext
+            && lhs.buildsLater == rhs.buildsLater
             && lhs.isWatched == rhs.isWatched
     }
 }
@@ -1250,6 +1336,7 @@ struct TrailerPreviewPlayer: View {
     /// Prepare while the caller's delay runs; playback and visibility remain
     /// gated by its activation state.
     let isActive: Bool
+    @Binding var soundEnabled: Bool
     let onPlaybackReady: () -> Void
     let onPlaybackFinished: () -> Void
     var onPlaybackProgress: ((Double, Double) -> Void)? = nil
@@ -1264,7 +1351,6 @@ struct TrailerPreviewPlayer: View {
     @State private var didReportUnavailable = false
     @State private var isPlaybackUnavailable = false
     @State private var playbackActiveOverride: Bool?
-    @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     private let resolver = YouTubeTrailerResolver.shared
 
     var body: some View {
@@ -1291,14 +1377,14 @@ struct TrailerPreviewPlayer: View {
                     reportPlaybackUnavailable()
                     return
                 }
-                applySoundPreference(trailerPreviewSound)
+                applySoundPreference(soundEnabled)
                 player.play()
                 if isRenderReady { onPlaybackReady() }
             } else {
                 player.pause()
             }
         }
-        .onChange(of: trailerPreviewSound) { _, soundEnabled in
+        .onChange(of: soundEnabled) { _, soundEnabled in
             applySoundPreference(soundEnabled)
         }
         .onReceive(
@@ -1364,7 +1450,7 @@ struct TrailerPreviewPlayer: View {
 
         player.replaceCurrentItem(with: item)
         observePlaybackFailure(for: item)
-        applySoundPreference(trailerPreviewSound)
+        applySoundPreference(soundEnabled)
         setupTimeObserver()
         if wantsPlayback {
             player.play()
@@ -1476,6 +1562,8 @@ struct TrailerPreviewPlayer: View {
 struct PosterGridCard: View {
     let meta: NuvioMeta
     var customPosterScreen: CustomPosterScreen = .search
+    /// The mark of the service the row comes from (AniList, MyAnimeList).
+    var sourceBadge: CollectionOriginPresentation? = nil
     var width: CGFloat = 210
     var height: CGFloat = 315
     var externalFocus: FocusState<String?>.Binding? = nil
@@ -1555,6 +1643,15 @@ struct PosterGridCard: View {
             .overlay(alignment: .topTrailing) {
                 WatchedCheckmarkBadge(meta: meta)
             }
+            .overlay(alignment: .bottomTrailing) {
+                // Settings → Integrations → AniList: tells AniList's results from the add-ons'
+                // copies of the same anime in Search.
+                if let badge = sourceBadge
+                    ?? (customPosterScreen == .search && AniListMetaBuilder.isAniListID(meta.id) ? AniListService.searchBadge : nil) {
+                    CollectionOriginBadge(origin: badge)
+                        .padding(10)
+                }
+            }
             .overlay(
                 shape.stroke(
                     showsFocusedAppearance ? AppFocusOutline.color : .clear,
@@ -1562,16 +1659,15 @@ struct PosterGridCard: View {
                 )
             )
             .shadow(
-                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2),
-                radius: showsFocusedAppearance ? 16 : 6
+                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0),
+                radius: showsFocusedAppearance ? 16 : 0
             )
 
             if posterLabels || forceShowLabels {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(meta.name)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(showsFocusedAppearance ? .white : .white.opacity(0.78))
-                        .lineLimit(1)
+                    MarqueeText(meta.name, size: 20, weight: .semibold,
+                                color: showsFocusedAppearance ? .white : .white.opacity(0.78),
+                                isActive: showsFocusedAppearance)
                     Text(subtitle)
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.white.opacity(0.45))
@@ -1613,7 +1709,11 @@ struct PosterGridCard: View {
             }
         }
         .animation(
-            smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil,
+            smoothFocus
+                ? (AppleTVCapability.current.supportsLiquidGlass
+                    ? .spring(response: 0.28, dampingFraction: 0.75)
+                    : .easeOut(duration: 0.14))
+                : nil,
             value: showsFocusedAppearance
         )
     }
@@ -1681,7 +1781,7 @@ struct LiquidGlassSurface: ViewModifier {
                 )
         } else {
             #if os(tvOS)
-            if #available(tvOS 26.0, *) {
+            if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
                 content
                     .background(
                         Color.white.opacity(prominent ? 0.16 : 0.08),
@@ -1736,7 +1836,7 @@ struct LiquidGlassCardModifier: ViewModifier {
                 .background {
                     #if os(tvOS)
                     if isFocused {
-                        if #available(tvOS 26.0, *) {
+                        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
                             shape
                                 .fill(Color.white.opacity(0.16))
                                 .glassEffect(.regular, in: shape)
@@ -1794,7 +1894,7 @@ struct LiquidGlassBadgeModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isFocused {
             #if os(tvOS)
-            if #available(tvOS 26.0, *) {
+            if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
                 content
                     .glassEffect(.regular, in: shape)
                     .overlay(
@@ -2200,11 +2300,14 @@ actor PosterArtworkCache {
     static let shared = PosterArtworkCache()
     private static let tracker = NSCacheMemoryTracker(
         maxCost: {
+            if !AppleTVCapability.current.supportsLiquidGlass {
+                return 80 * 1024 * 1024 // 80 MB (Apple TV 4K Gen 1 / HD)
+            }
             let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
             if gib > 3.5 {
                 return 140 * 1024 * 1024 // 140 MB (Apple TV 4K Gen 2/3)
             } else if gib > 2.5 {
-                return 100 * 1024 * 1024 // 100 MB (Apple TV 4K Gen 1)
+                return 100 * 1024 * 1024 // 100 MB
             } else {
                 return 60 * 1024 * 1024  // 60 MB (Apple TV HD)
             }
@@ -2220,7 +2323,10 @@ actor PosterArtworkCache {
 
     init() {
         let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
-        if gib > 3.5 {
+        if !AppleTVCapability.current.supportsLiquidGlass {
+            cache.countLimit = 120
+            cache.totalCostLimit = Self.tracker.maxCost
+        } else if gib > 3.5 {
             cache.countLimit = 220
             cache.totalCostLimit = Self.tracker.maxCost
         } else if gib > 2.5 {
@@ -2476,7 +2582,7 @@ private let posterURLSession: URLSession = {
     config.timeoutIntervalForResource = 20
     config.httpMaximumConnectionsPerHost = 10
     let totalRam = ProcessInfo.processInfo.physicalMemory
-    let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
+    let isLegacyDevice = totalRam <= 2_500_000_000 || !AppleTVCapability.current.supportsLiquidGlass
     config.urlCache = URLCache(
         memoryCapacity: isLegacyDevice ? (8 * 1024 * 1024) : (20 * 1024 * 1024),
         diskCapacity: isLegacyDevice ? (50 * 1024 * 1024) : (100 * 1024 * 1024),
@@ -3523,7 +3629,7 @@ struct TitleActionsMenuContent: View {
                 }
             }
         } else {
-            let inLibrary = LibraryStore.contains(metaId: meta.id, type: meta.type)
+            let inLibrary = SelectedLibraryService.isInLibrary(meta: meta)
             let isItemWatched = libraryWatchedContext == nil
                 ? WatchedStore.contains(meta: meta)
                 : isLibraryWatched
@@ -3578,13 +3684,15 @@ struct TitleActionsMenuContent: View {
 
     private func toggleLibrary(currentlyInLibrary: Bool) {
         guard TraktSettingsStore.librarySourceMode != .local else {
-            _ = LibraryStore.toggle(meta: meta)
+            let isInLibrary = LibraryStore.toggle(meta: meta)
+            TrackingAddonService.sendLibraryMembership(isInLibrary, meta: meta)
             return
         }
 
         guard SelectedLibraryService.isSelectedAndAuthenticated else { return }
 
         let desiredMembership = !currentlyInLibrary
+        TrackingAddonService.sendLibraryMembership(desiredMembership, meta: meta)
         Task {
             _ = await SelectedLibraryService.setWatchlist(
                 meta,
@@ -3594,6 +3702,7 @@ struct TitleActionsMenuContent: View {
     }
 
     private func scheduleWatchedToggle(desiredIsWatched: Bool) {
+        TrackingAddonService.sendWatched(desiredIsWatched, meta: meta)
         let capturedContext = libraryWatchedContext?.recaptureForCurrentAction()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
             guard libraryWatchedContext != nil else {

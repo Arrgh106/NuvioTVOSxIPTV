@@ -1405,7 +1405,9 @@ enum EpisodeReleasePolicy {
         }
 
         let parsed: Date?
-        if !raw.contains("T"), let day = isoDay(raw) {
+        if let date = fastUTCDate(raw) {
+            parsed = date
+        } else if !raw.contains("T"), let day = isoDay(raw) {
             let parts = day.split(separator: "-").compactMap { Int($0) }
             if parts.count == 3 {
                 var calendar = Calendar(identifier: .gregorian)
@@ -1442,6 +1444,58 @@ enum EpisodeReleasePolicy {
 
         cacheReleaseDate(parsed, for: raw)
         return parsed
+    }
+
+    /// "2008-01-20", "2008-01-20T19:00:00Z" and "2008-01-20T19:00:00.000Z", the shapes addons
+    /// send, read by hand (a day alone is midnight UTC, as below). Through the system's date
+    /// formatters, a long series' episodes, each looked at for the first time, held the main
+    /// thread for 400 ms as Details opened. Any other shape (an offset, a space instead of "T")
+    /// is nil here and left to the formatters.
+    static func fastUTCDate(_ raw: String) -> Date? {
+        let bytes = Array(raw.utf8)
+        func number(_ start: Int, _ count: Int) -> Int? {
+            guard start + count <= bytes.count else { return nil }
+            var value = 0
+            for index in start..<(start + count) {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                value = value * 10 + Int(byte - 48)
+            }
+            return value
+        }
+        guard bytes.count >= 10, bytes[4] == 45, bytes[7] == 45,
+              let year = number(0, 4), let month = number(5, 2), let day = number(8, 2),
+              (1...12).contains(month), (1...31).contains(day) else { return nil }
+        var seconds = 0
+        var fraction = 0.0
+        if bytes.count > 10 {
+            // "T", ":" twice, then the seconds, an optional fraction, and "Z".
+            guard bytes.count >= 20, bytes[10] == 84, bytes[13] == 58, bytes[16] == 58,
+                  let hour = number(11, 2), let minute = number(14, 2), let second = number(17, 2),
+                  hour < 24, minute < 60, second < 60 else { return nil }
+            var index = 19
+            if bytes[index] == 46 {
+                index += 1
+                let digitsStart = index
+                var scale = 0.1
+                while index < bytes.count, bytes[index] >= 48, bytes[index] <= 57 {
+                    fraction += Double(bytes[index] - 48) * scale
+                    scale /= 10
+                    index += 1
+                }
+                guard index > digitsStart else { return nil }
+            }
+            guard index == bytes.count - 1, bytes[index] == 90 else { return nil }
+            seconds = hour * 3_600 + minute * 60 + second
+        }
+        // Days since 1970-01-01 (Howard Hinnant's days_from_civil).
+        let shiftedYear = month <= 2 ? year - 1 : year
+        let era = (shiftedYear >= 0 ? shiftedYear : shiftedYear - 399) / 400
+        let yearOfEra = shiftedYear - era * 400
+        let dayOfYear = (153 * ((month + 9) % 12) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+        return Date(timeIntervalSince1970: Double(days * 86_400 + seconds) + fraction)
     }
 
     private static func cacheReleaseDate(_ value: Date?, for raw: String) {
@@ -1671,6 +1725,24 @@ enum ContentReleasePolicy {
     }
 }
 
+/// Titles without the unreleased ones, worked out once per list: filtered in a computed
+/// property, every title's release date was checked several times on every redraw, which
+/// Search and Discover do on every focus move.
+final class ReleasedTitlesMemo {
+    private var revision = -1
+    private var hidesUnreleased = false
+    private(set) var titles: [NuvioMeta] = []
+    private(set) var ids: [String] = []
+
+    func update(_ source: [NuvioMeta], revision: Int, hideUnreleased: Bool) {
+        guard revision != self.revision || hideUnreleased != hidesUnreleased else { return }
+        self.revision = revision
+        hidesUnreleased = hideUnreleased
+        titles = hideUnreleased ? source.filter { !ContentReleasePolicy.isUnreleased($0) } : source
+        ids = titles.map(\.id)
+    }
+}
+
 /// Video stream information
 struct NuvioSubtitle: Identifiable, Codable, Equatable, Sendable {
     var id: String { url }
@@ -1735,6 +1807,9 @@ struct NuvioStream: Identifiable, Codable, Equatable, Sendable {
     let trickplayURL: URL?
     /// Stremio `behaviorHints.notPlayable` or `behaviorHints.action` for non-media helper/action items.
     let notPlayable: Bool?
+    /// True when a Debrid cache check could not determine this torrent's status.
+    /// The stream remains playable on demand; this only adds a picker label.
+    let debridCacheStatusUnavailable: Bool?
 
     var isNotPlayable: Bool {
         notPlayable == true
@@ -1757,7 +1832,8 @@ struct NuvioStream: Identifiable, Codable, Equatable, Sendable {
         isCached: Bool? = nil,
         httpHeaders: [String: String]? = nil,
         trickplayURL: URL? = nil,
-        notPlayable: Bool? = nil
+        notPlayable: Bool? = nil,
+        debridCacheStatusUnavailable: Bool? = nil
     ) {
         let parsed = TorrentSourceParser.parse(
             url: url,
@@ -1781,6 +1857,7 @@ struct NuvioStream: Identifiable, Codable, Equatable, Sendable {
         self.httpHeaders = httpHeaders
         self.trickplayURL = trickplayURL
         self.notPlayable = notPlayable
+        self.debridCacheStatusUnavailable = debridCacheStatusUnavailable
     }
 
     /// Explicit availability notice from a source add-on. Ordinary titles, filenames, and add-on names
@@ -1952,7 +2029,19 @@ struct NuvioStream: Identifiable, Codable, Equatable, Sendable {
             subtitles: subtitles, addonLogoURL: logo, infoHash: infoHash,
             fileIdx: fileIdx, sources: sources, filename: filename, videoSize: videoSize,
             videoHash: videoHash, bingeGroup: bingeGroup, isCached: isCached,
-            httpHeaders: httpHeaders, trickplayURL: trickplayURL, notPlayable: notPlayable
+            httpHeaders: httpHeaders, trickplayURL: trickplayURL, notPlayable: notPlayable,
+            debridCacheStatusUnavailable: debridCacheStatusUnavailable
+        )
+    }
+
+    func withDebridCacheStatusUnavailable(_ unavailable: Bool) -> NuvioStream {
+        NuvioStream(
+            url: url, name: name, description: description, addonName: addonName,
+            subtitles: subtitles, addonLogoURL: addonLogoURL, infoHash: infoHash,
+            fileIdx: fileIdx, sources: sources, filename: filename, videoSize: videoSize,
+            videoHash: videoHash, bingeGroup: bingeGroup, isCached: isCached,
+            httpHeaders: httpHeaders, trickplayURL: trickplayURL, notPlayable: notPlayable,
+            debridCacheStatusUnavailable: unavailable
         )
     }
 
@@ -1982,7 +2071,8 @@ struct NuvioStream: Identifiable, Codable, Equatable, Sendable {
             isCached: isCached,
             httpHeaders: httpHeaders,
             trickplayURL: trickplayURL,
-            notPlayable: notPlayable
+            notPlayable: notPlayable,
+            debridCacheStatusUnavailable: debridCacheStatusUnavailable
         )
     }
 }
@@ -2116,6 +2206,189 @@ enum ContinueWatchingFeatureFlags {
     /// Next Up remains enabled in normal builds. Set this false only when
     /// isolating the cost of the Next Up metadata path.
     static let nextUpCardsEnabled = true
+}
+
+/// The one unwatched episode that may be revealed by the episode spoiler
+/// setting. Selection follows the full guide order and the furthest watched
+/// episode, so out-of-order watch history never reveals several later cards.
+enum EpisodeSpoilerPolicy {
+    static func completedLedgerEpisodeKeysByContentID() -> [String: Set<String>] {
+        completedLedgerEpisodeKeysByContentID(from: WatchProgressLedger.records())
+    }
+
+    static func completedLedgerEpisodeKeysByContentID(
+        from records: [WatchProgressRecord]
+    ) -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for record in records {
+            guard record.isSeries,
+                  record.isEpisode,
+                  WatchProgressLedger.isComplete(record),
+                  let season = record.season, season > 0,
+                  let episode = record.episode, episode > 0 else {
+                continue
+            }
+            let contentID = record.contentId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !contentID.isEmpty else { continue }
+            result[contentID, default: []].insert("\(season):\(episode)")
+        }
+        return result
+    }
+
+    static func completedLedgerEpisodeKeys(
+        for meta: NuvioMeta,
+        from records: [WatchProgressRecord]
+    ) -> Set<String> {
+        let contentIDs = exactProgressContentIDs(for: meta)
+        return records.reduce(into: Set<String>()) { result, record in
+            guard contentIDs.contains(record.contentId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+                  record.isSeries,
+                  record.isEpisode,
+                  WatchProgressLedger.isComplete(record),
+                  let season = record.season, season > 0,
+                  let episode = record.episode, episode > 0 else {
+                return
+            }
+            result.insert("\(season):\(episode)")
+        }
+    }
+
+    /// Watch evidence for spoiler decisions uses stable IDs and completed
+    /// playback records. The catalog title/year fallback is intentionally
+    /// excluded because two different series can share a title.
+    static func watchedEpisodeKeys(
+        for meta: NuvioMeta,
+        in episodes: [NuvioVideo]?,
+        snapshot: WatchedSnapshot? = nil,
+        completedLedgerKeysByContentID: [String: Set<String>]? = nil,
+        includeAniList: Bool = true
+    ) -> Set<String> {
+        guard let episodes, !episodes.isEmpty else { return [] }
+        let snapshot = snapshot ?? WatchedStore.currentSnapshot()
+        var result = snapshot.watchedEpisodeKeys(meta: meta)
+        for episode in episodes where snapshot.episodeWatchCount(
+            meta: meta,
+            season: episode.season,
+            episode: episode.episode
+        ) > 0 {
+            result.insert(episodeKey(for: episode))
+        }
+        if includeAniList {
+            result.formUnion(AniListAccount.watchedEpisodeKeys(meta: meta))
+        }
+        result.formUnion(PlexWatched.watchedEpisodeKeys(meta: meta))
+
+        let ledgerKeys = completedLedgerKeysByContentID ?? completedLedgerEpisodeKeysByContentID()
+        return trustedWatchedEpisodeKeys(
+            for: meta,
+            exactEpisodeKeys: result,
+            completedLedgerKeysByContentID: ledgerKeys
+        )
+    }
+
+    static func trustedWatchedEpisodeKeys(
+        for meta: NuvioMeta,
+        exactEpisodeKeys: Set<String>,
+        completedLedgerKeysByContentID: [String: Set<String>]
+    ) -> Set<String> {
+        var result = exactEpisodeKeys
+        for contentID in exactProgressContentIDs(for: meta) {
+            result.formUnion(completedLedgerKeysByContentID[contentID] ?? [])
+        }
+        return result
+    }
+
+    static func revealableNextEpisodeKey(
+        in episodes: [NuvioVideo]?,
+        watchedEpisodeKeys: Set<String>,
+        guideIsOrdered: Bool = false
+    ) -> String? {
+        guard let episodes, !watchedEpisodeKeys.isEmpty else { return nil }
+
+        // Specials (season 0 or invalid numbering) are not part of the regular
+        // next-up sequence and must remain protected without explicit evidence.
+        let regularEpisodes = episodes.enumerated()
+            .filter { $0.element.season > 0 && $0.element.episode > 0 }
+        let ordered: [NuvioVideo]
+        if guideIsOrdered {
+            ordered = regularEpisodes.map(\.element)
+        } else {
+            ordered = regularEpisodes
+            .sorted { lhs, rhs in
+                if lhs.element.season != rhs.element.season {
+                    return lhs.element.season < rhs.element.season
+                }
+                if lhs.element.episode != rhs.element.episode {
+                    return lhs.element.episode < rhs.element.episode
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+        }
+        guard ordered.count > 1 else { return nil }
+
+        guard let furthestWatchedIndex = ordered.indices.last(where: {
+            watchedEpisodeKeys.contains(episodeKey(for: ordered[$0]))
+        }) else {
+            return nil
+        }
+
+        let nextIndex = furthestWatchedIndex + 1
+        guard ordered.indices.contains(nextIndex) else { return nil }
+        let predecessor = ordered[furthestWatchedIndex]
+        let nextEpisode = ordered[nextIndex]
+        let predecessorKey = episodeKey(for: predecessor)
+        let nextEpisodeKey = episodeKey(for: ordered[nextIndex])
+        guard watchedEpisodeKeys.contains(predecessorKey),
+              predecessorKey != nextEpisodeKey,
+              !watchedEpisodeKeys.contains(nextEpisodeKey),
+              isConsecutiveGuideSuccessor(nextEpisode, after: predecessor, in: ordered) else {
+            return nil
+        }
+        return nextEpisodeKey
+    }
+
+    static func isRevealableNextEpisode(
+        _ episode: NuvioVideo,
+        in episodes: [NuvioVideo]?,
+        watchedEpisodeKeys: Set<String>
+    ) -> Bool {
+        revealableNextEpisodeKey(in: episodes, watchedEpisodeKeys: watchedEpisodeKeys)
+            == episodeKey(for: episode)
+    }
+
+    static func episodeKey(for episode: NuvioVideo) -> String {
+        "\(episode.season):\(episode.episode)"
+    }
+
+    private static func exactProgressContentIDs(for meta: NuvioMeta) -> Set<String> {
+        var result = Set<String>()
+        for rawValue in [meta.id, meta.imdbId].compactMap({ $0 }) {
+            let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !normalized.isEmpty { result.insert(normalized) }
+        }
+        if let tmdbID = meta.tmdbId {
+            result.insert(String(tmdbID))
+            result.insert("tmdb:\(tmdbID)")
+        }
+        return result
+    }
+
+    private static func isConsecutiveGuideSuccessor(
+        _ next: NuvioVideo,
+        after previous: NuvioVideo,
+        in ordered: [NuvioVideo]
+    ) -> Bool {
+        if next.season == previous.season {
+            return next.episode == previous.episode + 1
+        }
+        guard next.season == previous.season + 1, next.episode == 1 else { return false }
+        let previousSeasonEpisodes = ordered.filter { $0.season == previous.season }
+        guard previousSeasonEpisodes.last?.id == previous.id else { return false }
+        return previousSeasonEpisodes.enumerated().allSatisfy { index, episode in
+            episode.episode == index + 1
+        }
+    }
 }
 
 struct ContinueWatchingItem: Identifiable, Codable, Equatable, Sendable {
@@ -2372,7 +2645,7 @@ struct ContinueWatchingItem: Identifiable, Codable, Equatable, Sendable {
     /// "S1 E3" label for the episode in progress; nil when unknown.
     var episodeLabel: String? {
         guard let numbers = resolvedNumbers else { return nil }
-        return "S\(numbers.season) E\(numbers.episode)"
+        return AniListMetaBuilder.episodeCode(id: meta.id, season: numbers.season, episode: numbers.episode)
     }
 
     /// The full episode entry from the stored series meta, carrying the
@@ -2709,6 +2982,8 @@ enum ContinueWatchingStore {
         // reading progress during this switch sees the new profile's rows.
         WatchProgressLedger.setActiveProfile(profileId)
         ContinueWatchingDismissStore.setActiveProfile(profileId)
+        // Plex cards Home merged belong to the previous profile.
+        PlexContinueWatchingMerge.reset()
         migrateLegacyHistoryIfNeeded()
         // Carry a pre-ledger install's history across, so upgrading users keep
         // their row and it becomes syncable.
@@ -2814,17 +3089,35 @@ enum ContinueWatchingStore {
         guard let data = data(for: storageKey) else {
             return "stored file missing (rebuilds from ledger on next Home load)"
         }
+        return rowDiagnostic(decoding: data, persistence: persistenceDiagnostic)
+    }
+
+    /// `rowDiagnostic()` with the decoding (every entry, with its title's episodes) away from
+    /// the main thread: Settings showing it read it in its body, and it took 30-170 ms on each
+    /// redraw as Settings opened. (The file is read where the rest of the store runs.)
+    @MainActor
+    static func rowDiagnosticInBackground() async -> String {
+        guard let data = data(for: storageKey) else {
+            return "stored file missing (rebuilds from ledger on next Home load)"
+        }
+        let persistence = persistenceDiagnostic
+        return await Task.detached(priority: .utility) {
+            ContinueWatchingStore.rowDiagnostic(decoding: data, persistence: persistence)
+        }.value
+    }
+
+    private static func rowDiagnostic(decoding data: Data, persistence: String) -> String {
         let decoded: [ContinueWatchingItem]
         do {
             decoded = try makeDecoder().decode([ContinueWatchingItem].self, from: data)
         } catch {
-            return "stored file unreadable: \(diagnosticText(for: error))"
+            return "stored file unreadable: \(diagnosticText(for: error)); \(persistence)"
         }
         let kept = decoded.filter { shouldKeep(position: $0.position, duration: $0.duration) }
         let upNext = kept.filter(\.isUpNextEntry).count
         let unaired = kept.filter { $0.isUpNextEntry && !$0.hasAired }.count
         return "cap \(maxItems); stored \(decoded.count), passing filter \(kept.count), "
-            + "of those up-next \(upNext) (unaired \(unaired)); \(persistenceDiagnostic)"
+            + "of those up-next \(upNext) (unaired \(unaired)); \(persistence)"
     }
 
     /// Exact per-episode resume lookup. A series request never falls back to
@@ -3587,17 +3880,36 @@ enum ContinueWatchingStore {
         }
     }
 
-    /// Mirrors the active profile's Continue Watching list into the App Group so
-    /// the Top Shelf extension can render the Apple TV home rows: in-progress
-    /// titles, and aired next-episode suggestions as their own Up Next row.
-    /// No-op when the shared container isn't available.
+    /// Mirrors Nuvio Sync's local Continue Watching list into the App Group.
+    /// Remote-provider snapshots are written by Home after their fetch completes.
     static func writeTopShelfFeed() {
         guard TopShelfFeedStore.isAvailable else { return }
         topShelfSnapshotLock.lock()
         defer { topShelfSnapshotLock.unlock() }
+        guard TraktSettingsStore.watchProgressSource == .nuvioSync else { return }
+        writeTopShelfFeedLocked(from: items())
+    }
+
+    /// Mirrors the visible provider snapshot after Home finishes fetching it.
+    static func writeTopShelfFeed(from selectedItems: [ContinueWatchingItem]) {
+        guard TopShelfFeedStore.isAvailable else { return }
+        topShelfSnapshotLock.lock()
+        defer { topShelfSnapshotLock.unlock() }
+        writeTopShelfFeedLocked(from: selectedItems)
+    }
+
+    private static func writeTopShelfFeedLocked(from selectedItems: [ContinueWatchingItem]) {
+        // Plex's titles in progress join the shelf as they join Home's row,
+        // and take the place Home's sort gives them.
+        var selectedItems = selectedItems
+        let withPlex = PlexContinueWatchingMerge.mergedWithLatest(into: selectedItems)
+        if !withPlex.elementsEqual(selectedItems, by: { $0.isContentEqual(to: $1) }) {
+            let preference = ProfileSettings.current.string(forKey: SettingsKey.continueWatchingSort) ?? "Default"
+            selectedItems = ContinueWatchingSortPolicy.sorted(withPlex, preference: preference)
+        }
         // Each entry keeps its place on Home's row, so the shelf can show both
         // sections as one row in that order.
-        let allItems = Array(items().enumerated())
+        let allItems = Array(selectedItems.enumerated())
         let inProgress = allItems.filter { !$0.element.isUpNextEntry }.prefix(10)
         // Unaired suggestions can't be played yet, so they stay off the shelf.
         let upNextCandidates = allItems
@@ -3620,7 +3932,7 @@ enum ContinueWatchingStore {
         let fraction = item.duration > 0 ? min(max(item.position / item.duration, 0), 1) : nil
         var subtitleParts: [String] = []
         if let season = item.season, let episode = item.episode {
-            subtitleParts.append("S\(season) · E\(episode)")
+            subtitleParts.append(AniListMetaBuilder.episodeCode(id: item.meta.id, season: season, episode: episode, separator: " · "))
         } else if let year = item.meta.year {
             subtitleParts.append(String(year))
         }
@@ -4406,6 +4718,12 @@ enum LibraryStore {
         return readEnvelopeLocked(forProfileId: activeProfileId).items
     }
 
+    static func items(forProfileId profileId: String?) -> [LibraryStoreItem] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return readEnvelopeLocked(forProfileId: profileId).items
+    }
+
     static func contains(metaId: String, type: String) -> Bool {
         cacheLock.lock()
         defer { cacheLock.unlock() }
@@ -5023,6 +5341,92 @@ struct NuvioCollectionSource: Decodable, Hashable {
     }
 }
 
+enum TmdbDateNormalizer {
+    static func normalize(_ input: String?, isEndDate: Bool = false) -> String? {
+        guard let raw = input?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+
+        // Handle compound range string like "01 January 2000 to 31 December 2010"
+        let lower = raw.lowercased()
+        if lower.contains(" to ") {
+            let parts = raw.components(separatedBy: lower.contains(" to ") ? " to " : " TO ")
+            if parts.count >= 2 {
+                let target = isEndDate ? parts[1] : parts[0]
+                return normalizeSingleDate(target, isEndDate: isEndDate)
+            }
+        }
+        if raw.contains(" – ") || raw.contains(" - ") {
+            let sep = raw.contains(" – ") ? " – " : " - "
+            let parts = raw.components(separatedBy: sep)
+            if parts.count >= 2 {
+                let target = isEndDate ? parts[1] : parts[0]
+                return normalizeSingleDate(target, isEndDate: isEndDate)
+            }
+        }
+
+        return normalizeSingleDate(raw, isEndDate: isEndDate)
+    }
+
+    private static func normalizeSingleDate(_ input: String, isEndDate: Bool) -> String? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // If already ISO YYYY-MM-DD
+        let isoRegex = #"^\d{4}-\d{2}-\d{2}$"#
+        if trimmed.range(of: isoRegex, options: .regularExpression) != nil {
+            return trimmed
+        }
+
+        // If 4-digit year like "2000"
+        if let year = Int(trimmed), year >= 1880, year <= 2100 {
+            return isEndDate ? "\(year)-12-31" : "\(year)-01-01"
+        }
+
+        let formats = [
+            "d MMMM yyyy",      // 01 January 2000, 1 January 2000
+            "d MMM yyyy",       // 01 Jan 2000, 1 Jan 2000
+            "MMMM d, yyyy",     // January 1, 2000
+            "MMMM d yyyy",      // January 1 2000
+            "MMM d, yyyy",      // Jan 1, 2000
+            "MMM d yyyy",       // Jan 1 2000
+            "yyyy/MM/dd",       // 2000/01/01
+            "yyyy.MM.dd",       // 2000.01.01
+            "dd-MM-yyyy",       // 01-01-2000
+            "dd/MM/yyyy",       // 01/01/2000
+            "MM/dd/yyyy"        // 01/01/2000
+        ]
+
+        let outputFormatter = DateFormatter()
+        outputFormatter.locale = Locale(identifier: "en_US_POSIX")
+        outputFormatter.dateFormat = "yyyy-MM-dd"
+        outputFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+
+        let inputFormatter = DateFormatter()
+        inputFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+
+        // Try en_US_POSIX first (English month names like January, December)
+        inputFormatter.locale = Locale(identifier: "en_US_POSIX")
+        for format in formats {
+            inputFormatter.dateFormat = format
+            if let date = inputFormatter.date(from: trimmed) {
+                return outputFormatter.string(from: date)
+            }
+        }
+
+        // Try current user locale
+        inputFormatter.locale = Locale.current
+        for format in formats {
+            inputFormatter.dateFormat = format
+            if let date = inputFormatter.date(from: trimmed) {
+                return outputFormatter.string(from: date)
+            }
+        }
+
+        return trimmed
+    }
+}
+
 struct NuvioTmdbCollectionFilters: Codable, Hashable {
     var withGenres: String?
     var withoutGenres: String?
@@ -5091,8 +5495,8 @@ struct NuvioTmdbCollectionFilters: Codable, Hashable {
     ) {
         self.withGenres = withGenres
         self.withoutGenres = withoutGenres
-        self.releaseDateGte = releaseDateGte
-        self.releaseDateLte = releaseDateLte
+        self.releaseDateGte = TmdbDateNormalizer.normalize(releaseDateGte, isEndDate: false)
+        self.releaseDateLte = TmdbDateNormalizer.normalize(releaseDateLte, isEndDate: true)
         self.voteAverageGte = voteAverageGte
         self.voteAverageLte = voteAverageLte
         self.voteCountGte = voteCountGte
@@ -5165,8 +5569,14 @@ struct NuvioTmdbCollectionFilters: Codable, Hashable {
 
         withGenres = string(for: ["withGenres", "with_genres"])
         withoutGenres = string(for: ["withoutGenres", "without_genres"])
-        releaseDateGte = string(for: ["releaseDateGte", "release_date_gte", "primary_release_date.gte", "release_date.gte"])
-        releaseDateLte = string(for: ["releaseDateLte", "release_date_lte", "primary_release_date.lte", "release_date.lte"])
+        releaseDateGte = TmdbDateNormalizer.normalize(
+            string(for: ["releaseDateGte", "release_date_gte", "primary_release_date.gte", "release_date.gte"]),
+            isEndDate: false
+        )
+        releaseDateLte = TmdbDateNormalizer.normalize(
+            string(for: ["releaseDateLte", "release_date_lte", "primary_release_date.lte", "release_date.lte"]),
+            isEndDate: true
+        )
         voteAverageGte = double(for: ["voteAverageGte", "vote_average_gte", "vote_average.gte"])
         voteAverageLte = double(for: ["voteAverageLte", "vote_average_lte", "vote_average.lte"])
         voteCountGte = int(for: ["voteCountGte", "vote_count_gte", "vote_count.gte"])
@@ -6598,6 +7008,30 @@ enum LargePayloadStore {
 
     static func remove(key: String, directory: String) {
         removeAll(key: key, directory: directory, except: nil)
+    }
+
+    /// Every key stored in `directory`, on either tier.
+    static func keys(directory: String) -> Set<String> {
+        var keys = Set<String>()
+        for base in [applicationSupportBase, cachesBase] {
+            guard let url = base?.appendingPathComponent(directory, isDirectory: true),
+                  let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { continue }
+            for name in names {
+                if let key = key(forFileName: name) { keys.insert(key) }
+            }
+        }
+        return keys
+    }
+
+    /// Reverses `fileName(forKey:)`.
+    private static func key(forFileName name: String) -> String? {
+        guard name.hasSuffix(".json") else { return nil }
+        var encoded = String(name.dropLast(5))
+            .replacingOccurrences(of: "_", with: "/")
+            .replacingOccurrences(of: "-", with: "+")
+        while encoded.count % 4 != 0 { encoded += "=" }
+        guard let data = Data(base64Encoded: encoded) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func removeDirectory(_ directory: String) {
@@ -8966,14 +9400,14 @@ enum WatchedStore {
     /// have only episode rows after a Trakt pull, so the aggregate episode
     /// policy must be considered alongside an explicit title marker.
     static func isWatchedForDisplay(meta: NuvioMeta) -> Bool {
-        contains(meta: meta) || (meta.isSeries && hasSeriesWatchedState(meta))
+        contains(meta: meta) || (meta.isSeries && hasSeriesWatchedState(meta)) || PlexWatched.isWatched(meta: meta)
     }
 
     /// Catalog cards can use a provider-local id while the watched marker was
     /// saved from the canonical Details response. Fall back to the normalized
     /// series title/year in that case so the portrait checkmark still appears.
     static func containsCatalogTitle(meta: NuvioMeta) -> Bool {
-        currentSnapshot().containsCatalogTitle(meta: meta)
+        currentSnapshot().containsCatalogTitle(meta: meta) || PlexWatched.isWatched(meta: meta)
     }
 
     static func containsEpisode(metaId: String, season: Int, episode: Int) -> Bool {
@@ -12175,6 +12609,9 @@ enum ProfileSettings {
     private static let traktIsolationMigrationKey = "nuvio.tv.profile.settings.traktIsolation.v1"
     private static let simklIsolationMigrationKey = "nuvio.tv.profile.settings.simklIsolation.v1"
     private static let mdbListIsolationMigrationKey = "nuvio.tv.profile.settings.mdbListIsolation.v1"
+    private static let previousTrailerSoundMigrationKey = "nuvio.tv.profile.settings.trailerSound.v1"
+    private static let trailerSoundMigrationKey = "nuvio.tv.profile.settings.trailerSound.v2"
+    private static let trailerSoundLegacyFallbackKey = "nuvio.tv.profile.settings.trailerSound.legacyFallback"
     static let settingsChangedNotification = Notification.Name("nuvio.tv.profile.settings.changed")
     /// Fork: posted after another profile's settings became `current` (Live
     /// TV keeps per-profile state in memory and reloads on this).
@@ -12274,6 +12711,7 @@ enum ProfileSettings {
         migrateTraktIsolationIfNeeded(in: suite, isPrimary: primary)
         migrateSimklIsolationIfNeeded(in: suite, profileScope: id, isPrimary: primary)
         migrateMdbListIsolationIfNeeded(in: suite, profileScope: id, isPrimary: primary)
+        migrateTrailerSoundIfNeeded(in: suite)
         AISubtitleKeyStore.migrateLegacyKey(from: suite, profileScope: id)
         if needsSeed {
             AISubtitleKeyStore.migrateLegacyKey(from: .standard, profileScope: id)
@@ -12289,6 +12727,48 @@ enum ProfileSettings {
         let changed = activeProfileID != nil
         activeProfileID = nil
         if changed { NotificationCenter.default.post(name: activeProfileChangedNotification, object: nil) }
+    }
+
+    /// The old sound preference now belongs only to card previews. Copy its
+    /// value once into the new, broader trailer sound setting when a profile
+    /// first loads. Mark even profiles without the old key so a later card
+    /// preference change is never mistaken for upgrade data.
+    static func migrateTrailerSoundIfNeeded(in store: UserDefaults) {
+        guard !store.bool(forKey: trailerSoundMigrationKey) else { return }
+        if store.object(forKey: SettingsKey.trailerSound) == nil {
+            let previousMigrationAlreadyRan = store.bool(forKey: previousTrailerSoundMigrationKey)
+            let legacyValue = store.object(forKey: SettingsKey.trailerPreviewSound) as? Bool
+            if !previousMigrationAlreadyRan, let legacyValue {
+                store.set(legacyValue, forKey: SettingsKey.trailerSound)
+            } else {
+                store.set(false, forKey: SettingsKey.trailerSound)
+            }
+            store.set(true, forKey: trailerSoundLegacyFallbackKey)
+        }
+        store.set(true, forKey: trailerSoundMigrationKey)
+    }
+
+    /// A legacy account payload may arrive after profile activation. Import it
+    /// while the new setting is absent or still holds the local migration
+    /// fallback; subsequent syncs preserve the user's independent value.
+    static func importLegacyTrailerSoundIfNeeded(_ legacyValue: Bool, in store: UserDefaults) {
+        guard store.object(forKey: SettingsKey.trailerSound) == nil
+                || store.bool(forKey: trailerSoundLegacyFallbackKey) else { return }
+        store.set(legacyValue, forKey: SettingsKey.trailerSound)
+        store.removeObject(forKey: trailerSoundLegacyFallbackKey)
+    }
+
+    /// Called when the user changes Trailer Sound or a sync imports its new
+    /// key, so a later legacy import cannot replace the explicit preference.
+    static func markTrailerSoundExplicit(in store: UserDefaults) {
+        store.removeObject(forKey: trailerSoundLegacyFallbackKey)
+    }
+
+    /// Keep the default sound value exportable after Reset Settings removes
+    /// all published keys while the one-time migration marker remains.
+    static func resetTrailerSoundPreference(in store: UserDefaults) {
+        store.set(false, forKey: SettingsKey.trailerSound)
+        markTrailerSoundExplicit(in: store)
     }
 
     /// Returns whether a captured settings store still belongs to the active
@@ -12323,6 +12803,8 @@ enum ProfileSettings {
     static func eraseAll(profileIds: [String]) {
         current = .standard
         activeProfileID = nil
+        do { try IPTVKeychainStorage.removeAll() }
+        catch { print("Failed to clear IPTV sources from Keychain") }
         let simklTokenStorage = SimklKeychainTokenStorage()
         let mdbListTokenStorage = MdbListKeychainTokenStorage()
         for id in Set(profileIds) where !id.isEmpty {
@@ -12336,10 +12818,21 @@ enum ProfileSettings {
             AISubtitleKeyStore.remove(profileScope: id)
             Task { await AISubtitleTranslationCache.shared.removeAll(profileScope: id) }
             StreamBadgeSettingsStore.removeRules(for: id)
+            AniListAccount.storage.remove(for: id)
+            MALKeychain.remove(for: id)
             UserDefaults.standard.removePersistentDomain(forName: "\(suitePrefix).\(id)")
         }
         HomeCatalogPayloadStore.removeAll(in: .standard)
         AISubtitleKeyStore.remove(profileScope: "default")
+        // Keychain logins outlive the removed suites. Profile ids 1-6 and
+        // "guest" are reused by the next account, and Trakt falls back across
+        // "guest", "1" and "default", so the previous user's sessions would be
+        // restored without these.
+        TraktKeychainStorage.shared.clearAll()
+        AniListAccount.storage.remove(for: "default")
+        AniListAccount.clearStates()
+        MALKeychain.remove(for: "default")
+        Task { await MALAccount.lists.forget() }
         Task { await AISubtitleTranslationCache.shared.removeAll(profileScope: "default") }
         StreamBadgeSettingsStore.removeRules(for: "default")
         SimklAuthStore.clearAuth(
@@ -12356,17 +12849,34 @@ enum ProfileSettings {
         // Removing the suites no longer takes the sync caches with them — they
         // are files now, and would otherwise be inherited by the next account.
         SimklSyncCache.eraseAll()
+        // Interrupted Jellyfin syncs keep the server's library listing in checkpoint pages.
+        JellyfinSyncCheckpoints.eraseAll()
         LargePayloadStore.purgeLegacyOversizedPreferences(in: .standard)
         for key in SettingsKey.all {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        // Recent searches were kept in `.standard` for every profile before they moved into
+        // each profile's suite (removed above with the suites).
+        UserDefaults.standard.removeObject(forKey: SearchHistoryStore.storageKey)
     }
 
     /// Clone the current profile's settings into a freshly created profile, then
     /// mark it seeded so the global migration never overwrites the copy.
     static func seedNewProfile(_ profileId: String, copyingFrom source: UserDefaults? = nil) {
         let destination = store(for: profileId)
-        copySettings(from: source ?? current, to: destination, includeProfileLocalIntegrationSettings: false)
+        let sourceStore = source ?? current
+        copySettings(from: sourceStore, to: destination, includeProfileLocalIntegrationSettings: false)
+        if destination.object(forKey: SettingsKey.trailerSound) == nil,
+           sourceStore.bool(forKey: previousTrailerSoundMigrationKey)
+                || sourceStore.bool(forKey: trailerSoundMigrationKey) {
+            // Older migration code could mark a profile initialized before its
+            // card preference changed, leaving Trailer Sound absent. Preserve
+            // the new setting's off default when cloning that profile.
+            destination.set(false, forKey: SettingsKey.trailerSound)
+            destination.set(true, forKey: trailerSoundLegacyFallbackKey)
+        } else if sourceStore.bool(forKey: trailerSoundLegacyFallbackKey) {
+            destination.set(true, forKey: trailerSoundLegacyFallbackKey)
+        }
         clearTraktProfileState(in: destination)
         clearSimklProfileState(in: destination, profileScope: profileId)
         clearMdbListProfileState(in: destination, profileScope: profileId)
@@ -12402,8 +12912,6 @@ enum ProfileSettings {
                 && (includeProfileLocalIntegrationSettings || !profileLocalIntegrationKeys.contains(key)) {
             if let value = source.object(forKey: key) {
                 destination.set(value, forKey: key)
-            } else {
-                destination.removeObject(forKey: key)
             }
         }
     }

@@ -413,6 +413,7 @@ final class CalendarViewModel: ObservableObject {
             TmdbDetailsService.preferredLanguage,
             String(TraktSettingsStore.continueWatchingDaysCap),
             CalendarOptions.tvmazeTimes() ? "tvmaze" : "",
+            CalendarOptions.aniListSignature(),
         ].joined(separator: "|")
     }
 
@@ -563,6 +564,8 @@ struct CalendarView: View {
     @AppStorage(SettingsKey.calendarHideSpoilers) private var hideSpoilers = CalendarOptions.defaultHideSpoilers
     @AppStorage(SettingsKey.calendarCheckAvailability) private var checkAvailability = CalendarOptions.defaultCheckAvailability
     @AppStorage(SettingsKey.calendarTvmazeTimes) private var tvmazeTimes = CalendarOptions.defaultTvmazeTimes
+    @AppStorage(SettingsKey.calendarAniList) private var aniListCalendar = CalendarOptions.defaultAniList
+    @AppStorage(SettingsKey.calendarAniListPlanning) private var aniListPlanning = CalendarOptions.defaultAniListPlanning
 
     private var accent: Color { SettingsAccent.color(for: theme) }
     private var filter: CalendarFilter { CalendarFilter(stored: filterRaw) }
@@ -623,7 +626,6 @@ struct CalendarView: View {
         }
         #if os(tvOS)
         .toolbar(.hidden, for: .navigationBar)
-        .toolbar(.hidden, for: .tabBar)
         #endif
         .onAppear { model.loadIfNeeded() }
         .sheet(isPresented: $showingSkipped) {
@@ -873,6 +875,23 @@ struct CalendarView: View {
         )) {
             tvmazeTimes.toggle()
             model.airTimesChanged(enabled: tvmazeTimes)
+        }
+        // Anime straight from AniList: only with AniList switched on in Settings.
+        if AniListSettings.isEnabled {
+            Button(CalendarFormat.option(
+                L10n.string("calendar_option_anilist", fallback: "Anime from AniList"), isOn: aniListCalendar
+            )) {
+                aniListCalendar.toggle()
+                model.load()
+            }
+            if aniListCalendar && AniListAccount.isLoggedIn {
+                Button(CalendarFormat.option(
+                    L10n.string("calendar_option_anilist_planning", fallback: "Premieres from Planning"), isOn: aniListPlanning
+                )) {
+                    aniListPlanning.toggle()
+                    model.load()
+                }
+            }
         }
         Button(L10n.string("calendar_cancel", fallback: "Cancel"), role: .cancel) {}
     }
@@ -1394,10 +1413,7 @@ private struct CalendarEntryCard: View {
                         }
                     }
                 }
-                Text(entry.title)
-                    .font(.system(size: 26, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+                MarqueeText(entry.title, size: 26, weight: .bold, color: .white, isActive: isFocused)
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 20))
@@ -1583,11 +1599,11 @@ enum CalendarFormat {
         }
     }
 
-    /// "S2E6", or a release label for movies and premieres.
+    /// "S2E6" ("E6" from AniList), or a release label for movies and premieres.
     static func tag(_ entry: CalendarEntry) -> String? {
         var parts: [String] = []
-        if let s = entry.seasonNumber, let e = entry.episodeNumber {
-            parts.append("S\(s)E\(e)")
+        if let code = entry.episodeCode {
+            parts.append(code)
         }
         if let label = releaseLabel(entry.releaseKind) {
             parts.append(label)

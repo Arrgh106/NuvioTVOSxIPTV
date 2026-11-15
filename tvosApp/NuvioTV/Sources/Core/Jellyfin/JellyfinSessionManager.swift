@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// State of a configured server's connection, published for the Settings row
@@ -18,9 +19,23 @@ enum JellyfinConnectionState: Equatable {
 /// progress view and result report.
 enum JellyfinSyncState: Equatable {
     case idle
-    case syncing(found: Int, currentLibrary: String)
+    case syncing(JellyfinSyncProgress)
     case done(JellyfinSyncReport)
     case failed(String)
+}
+
+struct JellyfinSyncProgress: Equatable {
+    enum Stage: Equatable {
+        case items
+        case episodes
+        case resolving
+        case saving
+    }
+
+    var found: Int
+    var total: Int?
+    var currentLibrary: String
+    var stage: Stage
 }
 
 /// Summary of a completed sync, shown in the library-selection sheet.
@@ -28,11 +43,311 @@ struct JellyfinSyncReport: Equatable {
     var matchedTitles: Int
     var matchedEpisodes: Int
     var unmatched: [String]
-    // Fork: what the last run changed (incremental syncs).
-    var added: Int = 0
-    var updated: Int = 0
-    var removed: Int = 0
-    var incremental: Bool = false
+}
+
+struct JellyfinSyncCheckpoint: Codable {
+    struct Identity: Codable, Equatable {
+        var profileID: String
+        var serverID: String
+        var baseURL: String
+        var userID: String
+        var selectedLibraryIDs: [String]
+    }
+
+    var identity: Identity
+    var runID: String
+    var leaseID: String
+    /// How page files are named. Missing in checkpoints written before pages
+    /// carried their profile and server in the name; those are started over.
+    var pageFormat: Int? = JellyfinSyncCheckpoint.currentPageFormat
+    static let currentPageFormat = 2
+    var pageOffsets: [String: [Int]] = [:]
+    var pageCounts: [String: [Int: Int]] = [:]
+    var nextStartIndices: [String: Int] = [:]
+    var knownTotals: [String: Int] = [:]
+    var completedEntities: Set<String> = []
+
+    var fetchedCount: Int {
+        pageCounts.values.reduce(0) { $0 + $1.values.reduce(0, +) }
+    }
+}
+
+/// Writes each page separately and then advances a small manifest. If the
+/// process stops between those writes, the same offset is fetched again and
+/// safely overwrites its unreferenced page file.
+///
+/// Every page's name starts with its profile and server's prefix, so pages
+/// that no checkpoint lists (the process stopped before the manifest was
+/// saved, the manifest is unreadable, or a reset stopped halfway) can still be
+/// found and removed for that profile and server alone.
+final class JellyfinSyncCheckpointStore: @unchecked Sendable {
+    struct PageProgress {
+        var found: Int
+        var total: Int?
+    }
+
+    enum StoreError: LocalizedError {
+        case persistenceFailed
+        case missingPage
+        case staleSync
+
+        var errorDescription: String? {
+            switch self {
+            case .persistenceFailed: return "The Jellyfin sync checkpoint could not be saved."
+            case .missingPage: return "A saved Jellyfin sync page could not be read."
+            case .staleSync: return "This Jellyfin sync was superseded."
+            }
+        }
+    }
+
+    private static let directory = "jellyfinSyncCheckpoints"
+    private static let lock = NSRecursiveLock()
+    private let key: String
+    private var checkpoint: JellyfinSyncCheckpoint
+
+    init(identity: JellyfinSyncCheckpoint.Identity) throws {
+        key = Self.checkpointKey(profileID: identity.profileID, serverID: identity.serverID)
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        Self.removeLegacyPages()
+        if let data = LargePayloadStore.read(key: key, directory: Self.directory),
+           let saved = try? JSONDecoder().decode(JellyfinSyncCheckpoint.self, from: data),
+           saved.identity == identity,
+           saved.pageFormat == JellyfinSyncCheckpoint.currentPageFormat {
+            checkpoint = saved
+            checkpoint.leaseID = UUID().uuidString
+            try persist(checkpoint)
+            // Pages this run wrote but never listed, and any from older runs.
+            Self.removePages(forKey: key, keeping: Self.listedPageKeys(saved, key: key))
+            return
+        }
+
+        // A new run: nothing written for this profile and server is needed.
+        Self.removePages(forKey: key, keeping: [])
+        checkpoint = JellyfinSyncCheckpoint(identity: identity, runID: UUID().uuidString, leaseID: UUID().uuidString)
+        try persist(checkpoint)
+    }
+
+    func nextStartIndex(for entity: String) -> Int {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        return checkpoint.nextStartIndices[entity] ?? 0
+    }
+
+    func isComplete(_ entity: String) -> Bool {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        return checkpoint.completedEntities.contains(entity)
+    }
+
+    func fetchedCount() -> Int {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        return checkpoint.fetchedCount
+    }
+
+    func record(_ page: JellyfinItemsPage, for entity: String) throws -> PageProgress {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        try ensureCurrentLease()
+
+        let pageKey = Self.pageKey(key: key, runID: checkpoint.runID, entity: entity, startIndex: page.startIndex)
+        let pageData = try JSONEncoder().encode(page.items)
+        guard LargePayloadStore.write(pageData, key: pageKey, directory: Self.directory) else {
+            throw StoreError.persistenceFailed
+        }
+
+        var updated = checkpoint
+        var offsets = updated.pageOffsets[entity] ?? []
+        var counts = updated.pageCounts[entity] ?? [:]
+        if !offsets.contains(page.startIndex) {
+            offsets.append(page.startIndex)
+            counts[page.startIndex] = page.items.count
+        }
+        updated.pageOffsets[entity] = offsets.sorted()
+        updated.pageCounts[entity] = counts
+        updated.nextStartIndices[entity] = page.nextStartIndex
+        if let total = page.totalRecordCount {
+            updated.knownTotals[entity] = total
+        }
+        try persist(updated)
+        checkpoint = updated
+
+        let entityCount = counts.values.reduce(0, +)
+        let otherCount = updated.fetchedCount - entityCount
+        return PageProgress(
+            found: updated.fetchedCount,
+            total: updated.knownTotals[entity].map { otherCount + $0 }
+        )
+    }
+
+    func markComplete(_ entity: String) throws {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        try ensureCurrentLease()
+        var updated = checkpoint
+        updated.completedEntities.insert(entity)
+        try persist(updated)
+        checkpoint = updated
+    }
+
+    func reset(_ entity: String) throws {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        try ensureCurrentLease()
+        let offsets = checkpoint.pageOffsets[entity] ?? []
+        var updated = checkpoint
+        updated.pageOffsets.removeValue(forKey: entity)
+        updated.pageCounts.removeValue(forKey: entity)
+        updated.nextStartIndices.removeValue(forKey: entity)
+        updated.knownTotals.removeValue(forKey: entity)
+        updated.completedEntities.remove(entity)
+        try persist(updated)
+        checkpoint = updated
+        for startIndex in offsets {
+            LargePayloadStore.remove(
+                key: Self.pageKey(key: key, runID: checkpoint.runID, entity: entity, startIndex: startIndex),
+                directory: Self.directory
+            )
+        }
+    }
+
+    func items(for entity: String) throws -> [JellyfinMediaItem] {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        try ensureCurrentLease()
+        let offsets = (checkpoint.pageOffsets[entity] ?? []).sorted()
+        let runID = checkpoint.runID
+        let decoded: [JellyfinMediaItem] = try offsets.flatMap { startIndex in
+            let pageKey = Self.pageKey(key: key, runID: runID, entity: entity, startIndex: startIndex)
+            guard let data = LargePayloadStore.read(key: pageKey, directory: Self.directory) else {
+                throw StoreError.missingPage
+            }
+            do {
+                return try JSONDecoder().decode([JellyfinMediaItem].self, from: data)
+            } catch {
+                throw StoreError.missingPage
+            }
+        }
+        var seenIDs = Set<String>()
+        return decoded.filter { seenIDs.insert($0.id).inserted }
+    }
+
+    func remove() {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        guard (try? ensureCurrentLease()) != nil else { return }
+        Self.removePages(forKey: key, keeping: [])
+        LargePayloadStore.remove(key: key, directory: Self.directory)
+    }
+
+    private func persist(_ value: JellyfinSyncCheckpoint) throws {
+        let data = try JSONEncoder().encode(value)
+        guard LargePayloadStore.write(data, key: key, directory: Self.directory) else {
+            throw StoreError.persistenceFailed
+        }
+    }
+
+    private func ensureCurrentLease() throws {
+        guard let data = LargePayloadStore.read(key: key, directory: Self.directory),
+              let current = try? JSONDecoder().decode(JellyfinSyncCheckpoint.self, from: data),
+              current.identity == checkpoint.identity,
+              current.runID == checkpoint.runID,
+              current.leaseID == checkpoint.leaseID else {
+            throw StoreError.staleSync
+        }
+    }
+
+    /// Drops a server's checkpoint and its pages for one profile, whatever run left them.
+    /// The pages hold the server's library listing, so they must not outlive the server.
+    /// Pages are found by their profile and server prefix, so this works even when
+    /// the checkpoint is unreadable or never listed a page, and never touches
+    /// another profile's or server's pages.
+    static func remove(profileID: String, serverID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = checkpointKey(profileID: profileID, serverID: serverID)
+        removePages(forKey: key, keeping: [])
+        LargePayloadStore.remove(key: key, directory: directory)
+        removeLegacyPages()
+    }
+
+    /// Sign-out: every profile's checkpoints and pages.
+    static func eraseAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        LargePayloadStore.removeDirectory(directory)
+    }
+
+    static func checkpointKey(profileID: String, serverID: String) -> String {
+        "jellyfinSyncCheckpoint.v1.\(shortHash("\(profileID)|\(serverID)"))"
+    }
+
+    /// Start of every page name for one profile and server: derived from the
+    /// checkpoint key, so it is unique to that pair.
+    static func pagePrefix(forKey key: String) -> String {
+        "jellyfinSyncPage.v2.\(shortHash(key))."
+    }
+
+    static func pageKey(key: String, runID: String, entity: String, startIndex: Int) -> String {
+        pagePrefix(forKey: key) + shortHash("\(runID)|\(entity)|\(startIndex)")
+    }
+
+    /// Pages named before they carried a profile and server prefix
+    /// (`jellyfinSyncPage.<hash>`). Checkpoints that used them are started over
+    /// when loaded, so nothing reads them any more.
+    static func isLegacyPageKey(_ key: String) -> Bool {
+        key.range(of: #"^jellyfinSyncPage\.[0-9a-f]{64}$"#, options: .regularExpression) != nil
+    }
+
+    private static func shortHash(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func listedPageKeys(_ checkpoint: JellyfinSyncCheckpoint, key: String) -> Set<String> {
+        Set(checkpoint.pageOffsets.flatMap { entity, offsets in
+            offsets.map { pageKey(key: key, runID: checkpoint.runID, entity: entity, startIndex: $0) }
+        })
+    }
+
+    /// Every page of this profile and server except `keeping`. Called with the
+    /// lock held, so no page is between being written and being listed.
+    private static func removePages(forKey key: String, keeping: Set<String>) {
+        let prefix = pagePrefix(forKey: key)
+        for pageKey in LargePayloadStore.keys(directory: directory)
+        where pageKey.hasPrefix(prefix) && !keeping.contains(pageKey) {
+            LargePayloadStore.remove(key: pageKey, directory: directory)
+        }
+    }
+
+    private static func removeLegacyPages() {
+        for pageKey in LargePayloadStore.keys(directory: directory) where isLegacyPageKey(pageKey) {
+            LargePayloadStore.remove(key: pageKey, directory: directory)
+        }
+    }
+}
+
+/// Removal of interrupted Jellyfin sync checkpoints (a finished sync removes its own).
+enum JellyfinSyncCheckpoints {
+    static func remove(profileID: String, serverID: String) {
+        JellyfinSyncCheckpointStore.remove(profileID: profileID, serverID: serverID)
+    }
+
+    static func eraseAll() {
+        JellyfinSyncCheckpointStore.eraseAll()
+    }
+
+    // For tests: how checkpoint and page files are named.
+    static func checkpointKey(profileID: String, serverID: String) -> String {
+        JellyfinSyncCheckpointStore.checkpointKey(profileID: profileID, serverID: serverID)
+    }
+
+    static func pageKey(profileID: String, serverID: String, runID: String, entity: String, startIndex: Int) -> String {
+        JellyfinSyncCheckpointStore.pageKey(
+            key: checkpointKey(profileID: profileID, serverID: serverID),
+            runID: runID, entity: entity, startIndex: startIndex
+        )
+    }
 }
 
 /// Owns the live connection for each configured Jellyfin server and drives
@@ -53,6 +368,9 @@ final class JellyfinSessionManager: ObservableObject {
     private var clients: [String: JellyfinClient] = [:]
     private var syncTasks: [String: Task<Void, Never>] = [:]
     private var connectionGenerations: [String: Int] = [:]
+    private var syncGenerations: [String: Int] = [:]
+    private var syncProfileIDs: [String: String] = [:]
+    private var connectionProfileIDs: [String: String] = [:]
 
     private init() {}
 
@@ -61,7 +379,10 @@ final class JellyfinSessionManager: ObservableObject {
     }
 
     func syncState(for serverID: String) -> JellyfinSyncState {
-        syncStates[serverID] ?? .idle
+        if let syncProfileID = syncProfileIDs[serverID], syncProfileID != (ProfileSettings.activeProfileID ?? "default") {
+            return .idle
+        }
+        return syncStates[serverID] ?? .idle
     }
 
     // MARK: - Connect / Disconnect
@@ -74,6 +395,11 @@ final class JellyfinSessionManager: ObservableObject {
     func connectAll(autoSync: Bool = true) async {
         await withTaskGroup(of: Void.self) { group in
             for server in JellyfinServerStore.shared.servers {
+                let activeProfileID = ProfileSettings.activeProfileID ?? "default"
+                if connectionProfileIDs[server.id] != activeProfileID {
+                    clients[server.id] = nil
+                    connectionStates[server.id] = .disconnected
+                }
                 switch connectionState(for: server.id) {
                 case .connecting, .connected:
                     continue
@@ -117,14 +443,17 @@ final class JellyfinSessionManager: ObservableObject {
                     continue
                 }
             }
-            // Fork: background syncs only fetch what changed.
-            sync(server, full: false)
+            sync(server)
         }
     }
 
     func connect(_ server: JellyfinServerConfig) async {
+        cancelSync(forServerID: server.id)
+        let profileID = ProfileSettings.activeProfileID ?? "default"
         let generation = (connectionGenerations[server.id] ?? 0) &+ 1
         connectionGenerations[server.id] = generation
+        clients[server.id] = nil
+        connectionProfileIDs[server.id] = profileID
         guard let baseURL = server.baseURL else {
             connectionStates[server.id] = .failed(L10n.string("jellyfin_invalid_url", fallback: "Invalid server URL"))
             return
@@ -136,6 +465,7 @@ final class JellyfinSessionManager: ObservableObject {
             if resolvedUserId.isEmpty {
                 resolvedUserId = try await JellyfinClient.currentUserId(baseURL: baseURL, apiKey: token, username: server.username)
                 guard connectionGenerations[server.id] == generation,
+                      (ProfileSettings.activeProfileID ?? "default") == profileID,
                       !Task.isCancelled else { return }
                 var updated = server
                 updated.userId = resolvedUserId
@@ -144,14 +474,19 @@ final class JellyfinSessionManager: ObservableObject {
             let client = JellyfinClient(baseURL: baseURL, accessToken: token)
             try await client.ping()
             guard connectionGenerations[server.id] == generation,
+                  (ProfileSettings.activeProfileID ?? "default") == profileID,
                   !Task.isCancelled else { return }
             let libraries = try await client.libraries(userId: resolvedUserId)
             guard connectionGenerations[server.id] == generation,
+                  (ProfileSettings.activeProfileID ?? "default") == profileID,
                   !Task.isCancelled else { return }
             clients[server.id] = client
+            connectionProfileIDs[server.id] = profileID
             connectionStates[server.id] = .connected(libraries: libraries)
         } catch {
-            if connectionGenerations[server.id] == generation, !Task.isCancelled {
+            if connectionGenerations[server.id] == generation,
+               (ProfileSettings.activeProfileID ?? "default") == profileID,
+               !Task.isCancelled {
                 connectionStates[server.id] = .failed(error.localizedDescription)
             }
         }
@@ -159,9 +494,9 @@ final class JellyfinSessionManager: ObservableObject {
 
     func disconnect(_ server: JellyfinServerConfig) async {
         connectionGenerations[server.id] = (connectionGenerations[server.id] ?? 0) &+ 1
-        syncTasks[server.id]?.cancel()
-        syncTasks[server.id] = nil
+        cancelSync(forServerID: server.id)
         clients[server.id] = nil
+        connectionProfileIDs[server.id] = nil
         connectionStates[server.id] = .disconnected
         syncStates[server.id] = .idle
     }
@@ -172,18 +507,34 @@ final class JellyfinSessionManager: ObservableObject {
     /// all metadata comes from Jellyfin's own response, nothing is looked up
     /// elsewhere. Only meaningful once connected. Cancels a prior in-flight
     /// sync for the same server.
-    /// Fork: `full: false` updates incrementally (`JellyfinIncrementalSync`);
-    /// a sync started by hand reads everything.
-    func sync(_ server: JellyfinServerConfig, full: Bool = true) {
+    func sync(_ server: JellyfinServerConfig) {
         guard !server.selectedLibraryIDs.isEmpty else { return }
+        let profileID = ProfileSettings.activeProfileID ?? "default"
+        guard connectionProfileIDs[server.id] == profileID else {
+            connectionStates[server.id] = .disconnected
+            return
+        }
         guard let client = clients[server.id] else { return }
         syncTasks[server.id]?.cancel()
-        syncStates[server.id] = .syncing(found: 0, currentLibrary: "")
+        let generation = (syncGenerations[server.id] ?? 0) &+ 1
+        syncGenerations[server.id] = generation
+        syncProfileIDs[server.id] = profileID
+        syncStates[server.id] = .syncing(JellyfinSyncProgress(found: 0, total: nil, currentLibrary: "", stage: .items))
 
         syncTasks[server.id] = Task { [weak self] in
             guard let self else { return }
             do {
                 let selectedIDs = Set(server.selectedLibraryIDs)
+                let identity = JellyfinSyncCheckpoint.Identity(
+                    profileID: profileID,
+                    serverID: server.id,
+                    baseURL: server.baseURLString,
+                    userID: server.userId,
+                    selectedLibraryIDs: selectedIDs.sorted()
+                )
+                let checkpoint = try JellyfinSyncCheckpointStore(identity: identity)
+                try Task.checkCancellation()
+                guard self.isCurrentSync(server, generation: generation, profileID: profileID) else { return }
                 let connectedLibraries: [JellyfinLibrary]
                 if let state = self.connectionStates[server.id],
                    case let .connected(libraries) = state {
@@ -201,43 +552,165 @@ final class JellyfinSessionManager: ObservableObject {
                 let selectedLibraries = knownLibraries + missingLibraries
                 var indexedTitles: [JellyfinIndexedTitle] = []
                 var unmatched: [String] = []
-                var fetchedItemCount = 0
-                var added = 0, updated = 0, removed = 0
-                var allIncremental = true
-                let forceFull = full || JellyfinIncrementalSync.needsFullSync(serverID: server.id)
-                let existingByLibrary = Dictionary(
-                    grouping: JellyfinLibraryIndex.shared.titlesByServerID[server.id] ?? [],
-                    by: { $0.libraryID ?? "" }
-                )
                 for library in selectedLibraries {
                     try Task.checkCancellation()
-                    let base = fetchedItemCount
-                    let outcome = try await JellyfinIncrementalSync.syncLibrary(
-                        client: client,
-                        userId: server.userId,
+                    guard self.isCurrentSync(server, generation: generation, profileID: profileID) else { return }
+                    let itemEntity = "items:\(library.id)"
+                    self.publishSyncProgress(
                         serverID: server.id,
-                        library: library,
-                        existing: existingByLibrary[library.id] ?? [],
-                        lastSync: server.lastSyncDate,
-                        forceFull: forceFull
-                    ) { text, count in
-                        await MainActor.run {
-                            self.syncStates[server.id] = .syncing(found: base + count, currentLibrary: text)
-                            ActivityCenter.shared.update("jellyfin.\(server.id)", label: "Jellyfin · " + text)
+                        server: server,
+                        generation: generation,
+                        profileID: profileID,
+                        progress: JellyfinSyncProgress(found: checkpoint.fetchedCount(), total: nil, currentLibrary: library.name, stage: .items)
+                    )
+                    var libraryItems: [JellyfinMediaItem]?
+                    var savedItemIDs = Set<String>()
+                    do {
+                        let savedItems = try await Task.detached(priority: .utility) {
+                            try checkpoint.items(for: itemEntity)
+                        }.value
+                        savedItemIDs = Set(savedItems.map(\.id))
+                        if checkpoint.isComplete(itemEntity) {
+                            libraryItems = savedItems
+                        }
+                    } catch JellyfinSyncCheckpointStore.StoreError.missingPage {
+                        try checkpoint.reset(itemEntity)
+                        savedItemIDs.removeAll()
+                    }
+                    if libraryItems == nil {
+                        _ = try await client.items(
+                            userId: server.userId,
+                            libraryId: library.id,
+                            startingAt: checkpoint.nextStartIndex(for: itemEntity),
+                            seenItemIDs: savedItemIDs
+                        ) { [weak self] page in
+                            try Task.checkCancellation()
+                            let progress = try checkpoint.record(page, for: itemEntity)
+                            Task { @MainActor [weak self] in
+                                self?.publishSyncProgress(
+                                    serverID: server.id,
+                                    server: server,
+                                    generation: generation,
+                                    profileID: profileID,
+                                    progress: JellyfinSyncProgress(found: progress.found, total: progress.total, currentLibrary: library.name, stage: .items)
+                                )
+                            }
+                        }
+                        try Task.checkCancellation()
+                        guard self.isCurrentSync(server, generation: generation, profileID: profileID) else { return }
+                        try checkpoint.markComplete(itemEntity)
+                        libraryItems = try await Task.detached(priority: .utility) {
+                            try checkpoint.items(for: itemEntity)
+                        }.value
+                    }
+                    guard var libraryItems else { throw JellyfinSyncCheckpointStore.StoreError.missingPage }
+
+                    // On Silo or servers where recursive library items omit episodes, fetch episodes separately per series
+                    let existingEpisodeSeriesIds = Set(libraryItems.compactMap { $0.type == "Episode" ? $0.seriesId : nil })
+                    let seriesNeedingEpisodes = libraryItems.filter { $0.type == "Series" && !existingEpisodeSeriesIds.contains($0.id) }
+
+                    if !seriesNeedingEpisodes.isEmpty {
+                        self.publishSyncProgress(
+                            serverID: server.id,
+                            server: server,
+                            generation: generation,
+                            profileID: profileID,
+                            progress: JellyfinSyncProgress(found: checkpoint.fetchedCount(), total: nil, currentLibrary: library.name, stage: .episodes)
+                        )
+                        var savedEpisodeIDsBySeries: [String: Set<String>] = [:]
+                        for series in seriesNeedingEpisodes {
+                            do {
+                                let savedEpisodes = try await Task.detached(priority: .utility) {
+                                    try checkpoint.items(for: "episodes:\(series.id)")
+                                }.value
+                                savedEpisodeIDsBySeries[series.id] = Set(savedEpisodes.map(\.id))
+                            } catch JellyfinSyncCheckpointStore.StoreError.missingPage {
+                                try checkpoint.reset("episodes:\(series.id)")
+                            }
+                        }
+                        let pendingSeries = seriesNeedingEpisodes.filter { !checkpoint.isComplete("episodes:\($0.id)") }
+                        try await withThrowingTaskGroup(of: Void.self) { group in
+                            var nextSeriesIndex = 0
+                            let concurrencyLimit = min(4, pendingSeries.count)
+                            for _ in 0..<concurrencyLimit {
+                                let series = pendingSeries[nextSeriesIndex]
+                                nextSeriesIndex += 1
+                                group.addTask { [weak self] in
+                                    try await Self.fetchEpisodes(
+                                        for: series,
+                                        client: client,
+                                        userID: server.userId,
+                                        checkpoint: checkpoint,
+                                        seenItemIDs: savedEpisodeIDsBySeries[series.id] ?? [],
+                                        onProgress: { progress in
+                                            Task { @MainActor [weak self] in
+                                                self?.publishSyncProgress(
+                                                    serverID: server.id,
+                                                    server: server,
+                                                    generation: generation,
+                                                    profileID: profileID,
+                                                    progress: JellyfinSyncProgress(found: progress.found, total: nil, currentLibrary: library.name, stage: .episodes)
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            while try await group.next() != nil {
+                                if nextSeriesIndex < pendingSeries.count {
+                                    let series = pendingSeries[nextSeriesIndex]
+                                    nextSeriesIndex += 1
+                                    group.addTask { [weak self] in
+                                        try await Self.fetchEpisodes(
+                                            for: series,
+                                            client: client,
+                                            userID: server.userId,
+                                            checkpoint: checkpoint,
+                                            seenItemIDs: savedEpisodeIDsBySeries[series.id] ?? [],
+                                            onProgress: { progress in
+                                                Task { @MainActor [weak self] in
+                                                    self?.publishSyncProgress(
+                                                        serverID: server.id,
+                                                        server: server,
+                                                        generation: generation,
+                                                        profileID: profileID,
+                                                        progress: JellyfinSyncProgress(found: progress.found, total: nil, currentLibrary: library.name, stage: .episodes)
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        for series in seriesNeedingEpisodes {
+                            let episodeItems = try await Task.detached(priority: .utility) {
+                                try checkpoint.items(for: "episodes:\(series.id)")
+                            }.value
+                            libraryItems.append(contentsOf: episodeItems)
                         }
                     }
-                    fetchedItemCount += outcome.titles.count
-                    indexedTitles.append(contentsOf: outcome.titles)
-                    unmatched.append(contentsOf: outcome.unmatched)
-                    added += outcome.added
-                    updated += outcome.updated
-                    removed += outcome.removed
-                    allIncremental = allIncremental && outcome.incremental
-                }
-                if forceFull {
-                    JellyfinIncrementalSync.recordFullSync(serverID: server.id)
+
+                    try checkpoint.markComplete("library:\(library.id)")
+
+                    self.publishSyncProgress(
+                        serverID: server.id,
+                        server: server,
+                        generation: generation,
+                        profileID: profileID,
+                        progress: JellyfinSyncProgress(found: checkpoint.fetchedCount(), total: nil, currentLibrary: library.name, stage: .resolving)
+                    )
+                    let resolution = JellyfinLibraryResolver.resolve(
+                        libraryItems,
+                        serverID: server.id,
+                        libraryID: library.id,
+                        libraryName: library.name
+                    )
+                    indexedTitles.append(contentsOf: resolution.titles)
+                    unmatched.append(contentsOf: resolution.unmatched)
                 }
                 try Task.checkCancellation()
+                guard self.isCurrentSync(server, generation: generation, profileID: profileID) else { return }
 
                 let resolution = JellyfinLibraryResolution(
                     titles: indexedTitles,
@@ -245,42 +718,115 @@ final class JellyfinSessionManager: ObservableObject {
                     completedAt: Date()
                 )
 
-                JellyfinLibraryIndex.shared.replace(titles: resolution.titles, forServerID: server.id)
+                self.syncStates[server.id] = .syncing(
+                    JellyfinSyncProgress(found: checkpoint.fetchedCount(), total: nil, currentLibrary: "", stage: .saving)
+                )
+                try JellyfinLibraryIndex.shared.replace(titles: resolution.titles, forServerID: server.id)
 
                 var updatedServer = JellyfinServerStore.shared.server(id: server.id) ?? server
                 updatedServer.lastSyncDate = resolution.completedAt
                 updatedServer.lastSyncTitleCount = resolution.titles.count
                 JellyfinServerStore.shared.upsert(updatedServer)
 
-                ActivityCenter.shared.finish("jellyfin.\(server.id)")
                 syncStates[server.id] = .done(
                     JellyfinSyncReport(
                         matchedTitles: resolution.titles.count,
-                        matchedEpisodes: resolution.titles.reduce(0) { $0 + $1.items.count },
-                        unmatched: resolution.unmatched,
-                        added: added,
-                        updated: updated,
-                        removed: removed,
-                        incremental: allIncremental
+                        matchedEpisodes: resolution.titles.filter { $0.type == "series" }.reduce(0) { $0 + $1.items.count },
+                        unmatched: resolution.unmatched
                     )
                 )
-            } catch is CancellationError {
+                checkpoint.remove()
                 ActivityCenter.shared.finish("jellyfin.\(server.id)")
+            } catch is CancellationError {
                 // A new sync or a disconnect superseded this one; leave state to them.
+                ActivityCenter.shared.finish("jellyfin.\(server.id)")
             } catch {
-                syncStates[server.id] = .failed(error.localizedDescription)
-                ActivityCenter.shared.fail("jellyfin.\(server.id)", message: "Jellyfin: " + error.localizedDescription)
+                if self.isCurrentSync(server, generation: generation, profileID: profileID) {
+                    syncStates[server.id] = .failed(error.localizedDescription)
+                    ActivityCenter.shared.fail("jellyfin.\(server.id)", message: "Jellyfin: " + error.localizedDescription)
+                }
             }
         }
     }
 
     func cancelSync(forServerID serverID: String) {
+        syncGenerations[serverID] = (syncGenerations[serverID] ?? 0) &+ 1
         syncTasks[serverID]?.cancel()
         syncTasks[serverID] = nil
+        syncProfileIDs.removeValue(forKey: serverID)
+        if case .syncing = syncStates[serverID] {
+            syncStates[serverID] = .idle
+        }
+    }
+
+    private func isCurrentSync(_ server: JellyfinServerConfig, generation: Int, profileID: String) -> Bool {
+        guard syncGenerations[server.id] == generation else { return false }
+        guard (ProfileSettings.activeProfileID ?? "default") == profileID else { return false }
+        guard let current = JellyfinServerStore.shared.server(id: server.id),
+              current.baseURLString == server.baseURLString,
+              current.userId == server.userId,
+              Set(current.selectedLibraryIDs) == Set(server.selectedLibraryIDs) else {
+            syncStates[server.id] = .idle
+            return false
+        }
+        return true
+    }
+
+    private func publishSyncProgress(
+        serverID: String,
+        server: JellyfinServerConfig,
+        generation: Int,
+        profileID: String,
+        progress: JellyfinSyncProgress
+    ) {
+        guard isCurrentSync(server, generation: generation, profileID: profileID) else { return }
+        if case .syncing = syncStates[serverID] {
+            syncStates[serverID] = .syncing(progress)
+            // Fork: the sync in the activity pill too (visible on every screen).
+            ActivityCenter.shared.update("jellyfin.\(serverID)", label: Self.activityLabel(progress))
+        }
+    }
+
+    /// Fork: "Jellyfin · Movies · Reading library 750 / 2,000".
+    private static func activityLabel(_ progress: JellyfinSyncProgress) -> String {
+        let stage: String
+        switch progress.stage {
+        case .items: stage = L10n.string("jellyfin_activity_items", fallback: "Reading library")
+        case .episodes: stage = L10n.string("jellyfin_activity_episodes", fallback: "Reading episodes")
+        case .resolving: stage = L10n.string("jellyfin_activity_resolving", fallback: "Matching titles")
+        case .saving: stage = L10n.string("jellyfin_activity_saving", fallback: "Saving")
+        }
+        let count = progress.total.map { "\(progress.found.formatted()) / \($0.formatted())" } ?? progress.found.formatted()
+        return ["Jellyfin", progress.currentLibrary, stage + " " + count]
+            .filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+    }
+
+    private nonisolated static func fetchEpisodes(
+        for series: JellyfinMediaItem,
+        client: JellyfinClient,
+        userID: String,
+        checkpoint: JellyfinSyncCheckpointStore,
+        seenItemIDs: Set<String>,
+        onProgress: @escaping (JellyfinSyncCheckpointStore.PageProgress) -> Void
+    ) async throws {
+        let entity = "episodes:\(series.id)"
+        _ = try await client.episodes(
+            seriesId: series.id,
+            userId: userID,
+            startingAt: checkpoint.nextStartIndex(for: entity),
+            seenItemIDs: seenItemIDs
+        ) { page in
+            try Task.checkCancellation()
+            let progress = try checkpoint.record(page, for: entity)
+            onProgress(progress)
+        }
+        try Task.checkCancellation()
+        try checkpoint.markComplete(entity)
     }
 
     func setClientForTesting(_ client: JellyfinClient, forServerID serverID: String) {
         clients[serverID] = client
+        connectionProfileIDs[serverID] = ProfileSettings.activeProfileID ?? "default"
     }
 
     func setConnectionStateForTesting(_ state: JellyfinConnectionState, forServerID serverID: String) {

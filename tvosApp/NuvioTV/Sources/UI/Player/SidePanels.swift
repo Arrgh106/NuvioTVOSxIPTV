@@ -123,8 +123,15 @@ struct PlayerPanelRow: View {
 struct PlayerEpisodesPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
     @FocusState private var focusedID: String?
+    @State private var revealableNextEpisodeKey: String?
+    @State private var strictWatchedEpisodeKeys: Set<String> = []
+    @State private var completedLedgerEpisodeKeysByContentID: [String: Set<String>] = [:]
+    @State private var hasCachedCompletedLedgerEvidence = false
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+    @AppStorage(SettingsKey.blurUnwatchedEpisodes) private var blurUnwatchedEpisodes = false
+    @AppStorage(SettingsKey.hideUnwatchedEpisodeTitles) private var hideUnwatchedEpisodeTitles = false
+    @AppStorage(SettingsKey.revealNextEpisodeSpoilers) private var revealNextEpisodeSpoilers = false
 
     private var rowCornerRadius: CGFloat {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 18)
@@ -143,11 +150,14 @@ struct PlayerEpisodesPanel: View {
     }
 
     var body: some View {
+        let revealableKey = self.revealableNextEpisodeKey
         PlayerSidePanelChrome(title: "Episodes", onExit: { viewModel.closeSidePanel() }) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if episodes.isEmpty {
+                        if viewModel.isShufflingEpisodes {
+                            shuffleOnContent
+                        } else if episodes.isEmpty {
                             Button {} label: {
                                 PlayerPanelRow(
                                     title: "Episodes unavailable",
@@ -165,7 +175,13 @@ struct PlayerEpisodesPanel: View {
                                 Button {
                                     viewModel.selectEpisode(episode)
                                 } label: {
-                                    episodeRow(episode, isCurrent: isCurrent, isFocused: focusedID == episode.id)
+                                    episodeRow(
+                                        episode,
+                                        isCurrent: isCurrent,
+                                        isFocused: focusedID == episode.id,
+                                        isRevealableNextEpisode: revealableKey
+                                            == EpisodeSpoilerPolicy.episodeKey(for: episode)
+                                    )
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
@@ -179,10 +195,123 @@ struct PlayerEpisodesPanel: View {
                 }
                 .focusSection()
                 .onAppear {
+                    if viewModel.isShufflingEpisodes {
+                        DispatchQueue.main.async { focusedID = Self.shuffleOffID }
+                    } else {
+                        scrollToTarget(proxy: proxy)
+                    }
+                }
+                .onChange(of: viewModel.shuffleRevision) { _, _ in
+                    // Shuffle just turned off: show the episodes in order.
                     scrollToTarget(proxy: proxy)
                 }
             }
         }
+        .onAppear {
+            refreshSpoilerEvidence()
+        }
+        .onChange(of: revealNextEpisodeSpoilers) { _, _ in
+            refreshSpoilerEvidence()
+        }
+        .onChange(of: viewModel.panelCurrentEpisodeId) { _, _ in
+            refreshSpoilerEvidence()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
+            refreshSpoilerEvidence()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: WatchProgressLedger.changedNotification).receive(on: RunLoop.main)) { _ in
+            refreshSpoilerEvidence(refreshCompletedLedgerEvidence: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AniListAccount.changedNotification).receive(on: RunLoop.main)) { _ in
+            refreshSpoilerEvidence()
+        }
+    }
+
+    private static let shuffleOffID = "shuffle_off"
+
+    /// While the series plays in shuffle, the panel says so instead of listing
+    /// the episodes in order, and offers to go back to playing in order.
+    @ViewBuilder
+    private var shuffleOnContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                L10n.string("player_shuffle_on", fallback: "Shuffle On"),
+                systemImage: "shuffle"
+            )
+            .font(.system(size: 26, weight: .bold))
+            .foregroundColor(.white)
+            Text(L10n.string(
+                "player_shuffle_on_subtitle",
+                fallback: "Episodes play in random order. None repeats until every episode has played."
+            ))
+            .font(.system(size: 20))
+            .foregroundColor(.white.opacity(0.7))
+            if let next = viewModel.nextEpisode {
+                Text(L10n.format(
+                    "player_shuffle_up_next",
+                    fallback: "Up next: S%1$d E%2$d",
+                    next.season,
+                    next.episode
+                ))
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+
+        Button {
+            viewModel.turnOffShuffle()
+        } label: {
+            PlayerPanelRow(
+                title: L10n.string("player_shuffle_turn_off", fallback: "Turn Off Shuffle"),
+                subtitle: L10n.string(
+                    "player_shuffle_turn_off_subtitle",
+                    fallback: "Play the following episodes in order and show the episode list"
+                ),
+                isFocused: focusedID == Self.shuffleOffID
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focusEffectDisabledIfAvailable()
+        .focused($focusedID, equals: Self.shuffleOffID)
+        .id(Self.shuffleOffID)
+    }
+
+    private func refreshSpoilerEvidence(refreshCompletedLedgerEvidence: Bool = false) {
+        var ledgerEvidenceChanged = false
+        if refreshCompletedLedgerEvidence || !hasCachedCompletedLedgerEvidence {
+            let latestEvidence = EpisodeSpoilerPolicy.completedLedgerEpisodeKeysByContentID()
+            ledgerEvidenceChanged = !hasCachedCompletedLedgerEvidence
+                || latestEvidence != completedLedgerEpisodeKeysByContentID
+            completedLedgerEpisodeKeysByContentID = latestEvidence
+            hasCachedCompletedLedgerEvidence = true
+        }
+        if refreshCompletedLedgerEvidence && hasCachedCompletedLedgerEvidence && !ledgerEvidenceChanged {
+            return
+        }
+        guard let meta = viewModel.activeMeta,
+              meta.isSeries else {
+            revealableNextEpisodeKey = nil
+            strictWatchedEpisodeKeys = []
+            return
+        }
+        let guide = viewModel.spoilerEpisodeGuide
+        let snapshot = WatchedStore.currentSnapshot()
+        let watchedKeys = EpisodeSpoilerPolicy.watchedEpisodeKeys(
+            for: meta,
+            in: guide,
+            snapshot: snapshot,
+            completedLedgerKeysByContentID: completedLedgerEpisodeKeysByContentID
+        )
+        strictWatchedEpisodeKeys = watchedKeys
+        revealableNextEpisodeKey = revealNextEpisodeSpoilers
+            ? EpisodeSpoilerPolicy.revealableNextEpisodeKey(
+                in: guide,
+                watchedEpisodeKeys: watchedKeys
+            )
+            : nil
     }
 
     private func scrollToTarget(proxy: ScrollViewProxy) {
@@ -199,8 +328,22 @@ struct PlayerEpisodesPanel: View {
         }
     }
 
-    private func episodeRow(_ episode: NuvioVideo, isCurrent: Bool, isFocused: Bool) -> some View {
-        HStack(spacing: 16) {
+    private func episodeRow(
+        _ episode: NuvioVideo,
+        isCurrent: Bool,
+        isFocused: Bool,
+        isRevealableNextEpisode: Bool
+    ) -> some View {
+        let isWatched = viewModel.isEpisodeWatched(episode)
+            || strictWatchedEpisodeKeys.contains(EpisodeSpoilerPolicy.episodeKey(for: episode))
+        let isSpoilerExempt = revealNextEpisodeSpoilers && isRevealableNextEpisode
+        let shouldBlur = blurUnwatchedEpisodes && !isWatched && !isCurrent && !isSpoilerExempt
+        let shouldHideTitle = hideUnwatchedEpisodeTitles && !isWatched && !isCurrent && !isSpoilerExempt
+        let displayTitle = shouldHideTitle
+            ? L10n.format("calendar_episode_number", fallback: "Episode %d", episode.episode)
+            : episode.title
+
+        return HStack(spacing: 16) {
             ZStack {
                 Color.white.opacity(0.08)
                 if let thumb = episode.thumbnail, let url = URL(string: thumb) {
@@ -216,13 +359,15 @@ struct PlayerEpisodesPanel: View {
                 }
             }
             .frame(width: 150, height: 84)
+            .scaleEffect(shouldBlur ? 1.08 : 1.0)
+            .blur(radius: shouldBlur ? 14 : 0)
             .clipShape(RoundedRectangle(cornerRadius: thumbCornerRadius, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("S\(episode.season) E\(episode.episode)")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.55))
-                Text(episode.title)
+                Text(displayTitle)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(isFocused ? .black : .white)
                     .lineLimit(3)
@@ -446,6 +591,12 @@ private extension NuvioStream {
 
     var panelSubtitle: String {
         var parts: [String] = []
+        if debridCacheStatusUnavailable == true {
+            parts.append(L10n.string(
+                "debrid_cache_status_unavailable",
+                fallback: "Cache status unavailable"
+            ))
+        }
         if let addonName, !addonName.isEmpty { parts.append(addonName) }
         if let description, !description.isEmpty,
            description.caseInsensitiveCompare(panelTitle) != .orderedSame {

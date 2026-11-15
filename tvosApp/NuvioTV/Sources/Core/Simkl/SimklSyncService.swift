@@ -126,6 +126,17 @@ struct SimklSyncSeason: Codable {
     let episodes: [SimklSyncEpisode]?
 }
 
+struct SimklNextToWatchInfo: Codable {
+    let title: String?
+    let season: Int?
+    let episode: Int?
+    let date: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title, season, episode, date
+    }
+}
+
 /// One row of `/sync/all-items`.
 ///
 /// The row is *not* flat. Watch state — `status`, `last_watched_at`,
@@ -153,6 +164,12 @@ struct SimklSyncItem: Codable {
     /// at this level, and the sibling `last_watched` field is a different thing
     /// that reads null on every row.
     let lastWatchedAt: String?
+    let lastWatched: String?
+    let nextToWatch: String?
+    let nextToWatchInfo: SimklNextToWatchInfo?
+    let watchedEpisodesCount: Int?
+    let totalEpisodesCount: Int?
+    let notAiredEpisodesCount: Int?
     let seasons: [SimklSyncSeason]?
 
     enum CodingKeys: String, CodingKey {
@@ -160,6 +177,13 @@ struct SimklSyncItem: Codable {
         case movie, show, anime
         case addedToWatchlistAt = "added_to_watchlist_at"
         case lastWatchedAt = "last_watched_at"
+        case lastWatched = "last_watched"
+        case nextToWatch = "next_to_watch"
+        case nextToWatchInfo = "next_to_watch_info"
+        case nextWatchInfo = "next_watch_info"
+        case watchedEpisodesCount = "watched_episodes_count"
+        case totalEpisodesCount = "total_episodes_count"
+        case notAiredEpisodesCount = "not_aired_episodes_count"
     }
 
     private struct Media: Decodable {
@@ -175,7 +199,13 @@ struct SimklSyncItem: Codable {
         status: String?,
         addedToWatchlistAt: String?,
         lastWatchedAt: String?,
-        seasons: [SimklSyncSeason]?
+        seasons: [SimklSyncSeason]?,
+        lastWatched: String? = nil,
+        nextToWatch: String? = nil,
+        nextToWatchInfo: SimklNextToWatchInfo? = nil,
+        watchedEpisodesCount: Int? = nil,
+        totalEpisodesCount: Int? = nil,
+        notAiredEpisodesCount: Int? = nil
     ) {
         self.title = title
         self.year = year
@@ -184,6 +214,12 @@ struct SimklSyncItem: Codable {
         self.addedToWatchlistAt = addedToWatchlistAt
         self.lastWatchedAt = lastWatchedAt
         self.seasons = seasons
+        self.lastWatched = lastWatched
+        self.nextToWatch = nextToWatch
+        self.nextToWatchInfo = nextToWatchInfo
+        self.watchedEpisodesCount = watchedEpisodesCount
+        self.totalEpisodesCount = totalEpisodesCount
+        self.notAiredEpisodesCount = notAiredEpisodesCount
     }
 
     init(from decoder: Decoder) throws {
@@ -194,6 +230,13 @@ struct SimklSyncItem: Codable {
             forKey: .addedToWatchlistAt
         )
         lastWatchedAt = try container.decodeIfPresent(String.self, forKey: .lastWatchedAt)
+        lastWatched = try container.decodeIfPresent(String.self, forKey: .lastWatched)
+        nextToWatch = try container.decodeIfPresent(String.self, forKey: .nextToWatch)
+        nextToWatchInfo = try container.decodeIfPresent(SimklNextToWatchInfo.self, forKey: .nextToWatchInfo)
+            ?? container.decodeIfPresent(SimklNextToWatchInfo.self, forKey: .nextWatchInfo)
+        watchedEpisodesCount = try container.decodeIfPresent(Int.self, forKey: .watchedEpisodesCount)
+        totalEpisodesCount = try container.decodeIfPresent(Int.self, forKey: .totalEpisodesCount)
+        notAiredEpisodesCount = try container.decodeIfPresent(Int.self, forKey: .notAiredEpisodesCount)
         seasons = try container.decodeIfPresent([SimklSyncSeason].self, forKey: .seasons)
 
         let media = try [CodingKeys.movie, .show, .anime]
@@ -220,7 +263,57 @@ struct SimklSyncItem: Codable {
         try container.encodeIfPresent(status, forKey: .status)
         try container.encodeIfPresent(addedToWatchlistAt, forKey: .addedToWatchlistAt)
         try container.encodeIfPresent(lastWatchedAt, forKey: .lastWatchedAt)
+        try container.encodeIfPresent(lastWatched, forKey: .lastWatched)
+        try container.encodeIfPresent(nextToWatch, forKey: .nextToWatch)
+        try container.encodeIfPresent(nextToWatchInfo, forKey: .nextToWatchInfo)
+        try container.encodeIfPresent(watchedEpisodesCount, forKey: .watchedEpisodesCount)
+        try container.encodeIfPresent(totalEpisodesCount, forKey: .totalEpisodesCount)
+        try container.encodeIfPresent(notAiredEpisodesCount, forKey: .notAiredEpisodesCount)
         try container.encodeIfPresent(seasons, forKey: .seasons)
+    }
+
+    var resolvedNextToWatch: (season: Int, episode: Int)? {
+        if let info = nextToWatchInfo, let ep = info.episode, ep > 0 {
+            return (info.season ?? 1, ep)
+        }
+        guard let next = nextToWatch?.trimmingCharacters(in: .whitespacesAndNewlines), !next.isEmpty else {
+            return nil
+        }
+        if let match = next.range(of: #"[sS](\d+)[eE](\d+)"#, options: .regularExpression) {
+            let text = String(next[match])
+            let parts = text.lowercased().dropFirst().split(separator: "e")
+            if parts.count == 2, let s = Int(parts[0]), let e = Int(parts[1]), s > 0, e > 0 {
+                return (s, e)
+            }
+        }
+        if let match = next.range(of: #"[eE](\d+)"#, options: .regularExpression) {
+            let text = String(next[match])
+            if let e = Int(text.dropFirst()), e > 0 {
+                return (1, e)
+            }
+        }
+        if let e = Int(next), e > 0 {
+            return (1, e)
+        }
+        return nil
+    }
+
+    var latestWatchedEpisode: (season: Int, episode: Int)? {
+        var highest: (season: Int, episode: Int)? = nil
+        for season in seasons ?? [] {
+            guard let s = season.number, s > 0 else { continue }
+            for ep in season.episodes ?? [] {
+                guard let e = ep.resolvedNumber, e > 0 else { continue }
+                if let current = highest {
+                    if s > current.season || (s == current.season && e > current.episode) {
+                        highest = (s, e)
+                    }
+                } else {
+                    highest = (s, e)
+                }
+            }
+        }
+        return highest
     }
 }
 
@@ -383,9 +476,9 @@ enum SimklSyncCache {
     private static let playbackInvalidatedKey = "nuvio.tv.simkl.sync.playback.invalidated.v3"
     private static let storageDirectoryName = "SimklSyncCache"
 
-    // Split v2 payloads cannot prove that their activity watermark belongs to
-    // the same item list. Start a fresh namespace and bootstrap once.
-    private static let itemSnapshotKey = "nuvio.tv.simkl.sync.items.snapshot.v3"
+    // v4: v3 snapshots may be incomplete if a category request failed during
+    // bootstrap. Start a fresh namespace and bootstrap once.
+    private static let itemSnapshotKey = "nuvio.tv.simkl.sync.items.snapshot.v4"
     struct ItemSnapshot: Codable {
         let items: SimklAllItemsResponse
         let activities: SimklActivitiesResponse?
@@ -1000,7 +1093,13 @@ private enum SimklSyncLoader {
             return cached
         }
 
-        let shouldBootstrap = cached == nil || previousActivities == nil || activities.removalsChanged(comparedWith: previousActivities)
+        let previousWatermark = previousActivities?.all?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasValidWatermark = previousWatermark != nil && !(previousWatermark!.isEmpty)
+        let shouldBootstrap = force
+            || cached == nil
+            || previousActivities == nil
+            || !hasValidWatermark
+            || activities.removalsChanged(comparedWith: previousActivities)
         var result = cached ?? SimklAllItemsResponse()
 
         if shouldBootstrap {
@@ -1008,21 +1107,25 @@ private enum SimklSyncLoader {
             for type in ["shows", "movies", "anime"] {
                 guard service.isCurrentAuthorization(),
                       TraktSettingsStore.librarySourceMode(in: store) == sourceAtStart else { return nil }
-                if let response = await service.getOptional(
+                guard let response = await service.getOptional(
                     SimklAllItemsResponse.self,
-                    path: "sync/all-items/\(type)"
-                ) {
-                    result.merge(response)
+                    path: "sync/all-items/\(type)",
+                    noContentValue: SimklAllItemsResponse()
+                ) else {
+                    return nil
                 }
+                result.merge(response)
             }
-        } else if let watermark = previousActivities?.all, !watermark.isEmpty {
-            if let delta = await service.getOptional(
+        } else if let watermark = previousWatermark {
+            guard let delta = await service.getOptional(
                 SimklAllItemsResponse.self,
                 path: "sync/all-items",
-                query: [URLQueryItem(name: "date_from", value: watermark)]
-            ) {
-                result.merge(delta)
+                query: [URLQueryItem(name: "date_from", value: watermark)],
+                noContentValue: SimklAllItemsResponse()
+            ) else {
+                return nil
             }
+            result.merge(delta)
         }
 
         guard service.isCurrentAuthorization(),
@@ -1140,6 +1243,12 @@ struct SimklHistoryService {
                 // All three endpoints are authoritative, so they can replace
                 // the old snapshot, including rows from older cache formats.
                 records = []
+                let allItems = SimklAllItemsResponse(
+                    shows: shows?.shows,
+                    movies: movies?.movies,
+                    anime: anime?.anime
+                )
+                SimklSyncCache.saveItems(allItems, activities: activities, store: store)
             }
             if let shows {
                 records = fullSnapshotSucceeded
@@ -2088,22 +2197,30 @@ struct SimklLibraryService {
         client: SimklAPIClient = SimklAPIClient(),
         tokenStorage: SimklTokenStorage = SimklKeychainTokenStorage(),
         profileScope: String? = nil,
+        requireSelectedSource: Bool = true,
         onSnapshot: LibraryMetadataHydrator.SnapshotHandler? = nil
     ) async -> [LibraryStoreItem]? {
         let resolvedProfile = profileScope ?? SimklRuntimeSession.profileScope()
-        guard TraktSettingsStore.librarySourceMode(in: store) == .simkl,
-              let owner = SimklAuthorizedClient(
-                  store: store, client: client,
-                  tokenStorage: tokenStorage, profileScope: resolvedProfile
-              ),
-              let response = await SimklSyncLoader.libraryItems(
-                  using: owner,
-                  force: force
-              ) else {
+        guard !requireSelectedSource || TraktSettingsStore.librarySourceMode(in: store) == .simkl else {
             return []
         }
-        guard owner.isCurrentAuthorization(),
-              TraktSettingsStore.librarySourceMode(in: store) == .simkl else { return nil }
+        guard let owner = SimklAuthorizedClient(
+            store: store, client: client,
+            tokenStorage: tokenStorage, profileScope: resolvedProfile
+        ) else {
+            return nil
+        }
+        guard owner.isCurrentAuthorization() else { return nil }
+        guard let response = await SimklSyncLoader.libraryItems(
+            using: owner,
+            force: force
+        ) else {
+            return (!requireSelectedSource || TraktSettingsStore.librarySourceMode(in: store) == .simkl) ? nil : []
+        }
+        guard owner.isCurrentAuthorization() else { return nil }
+        guard !requireSelectedSource || TraktSettingsStore.librarySourceMode(in: store) == .simkl else {
+            return []
+        }
 
         let seeds: [(String, SimklSyncItem)] =
             (response.movies ?? []).filter(isLibraryItem).map { ("movie", $0) }
@@ -2113,8 +2230,10 @@ struct SimklLibraryService {
         var results: [LibraryStoreItem] = []
         var seen = Set<String>()
         for (type, item) in seeds {
-            guard owner.isCurrentAuthorization(),
-              TraktSettingsStore.librarySourceMode(in: store) == .simkl else { return [] }
+            guard owner.isCurrentAuthorization() else { return nil }
+            guard !requireSelectedSource || TraktSettingsStore.librarySourceMode(in: store) == .simkl else {
+                return []
+            }
             guard !Task.isCancelled,
                   let placeholder = placeholderMeta(item: item, type: type),
                   seen.insert("\(type):\(placeholder.id)").inserted else { continue }
@@ -2138,7 +2257,7 @@ struct SimklLibraryService {
             onSnapshot: onSnapshot,
             isCurrent: {
                 !Task.isCancelled && owner.isCurrentAuthorization()
-                    && TraktSettingsStore.librarySourceMode(in: store) == .simkl
+                    && (!requireSelectedSource || TraktSettingsStore.librarySourceMode(in: store) == .simkl)
             }
         )
     }
@@ -2351,8 +2470,32 @@ enum SelectedLibraryService {
         }
     }
 
+    static func isInLibrary(meta: NuvioMeta) -> Bool {
+        let source = TraktSettingsStore.librarySourceMode
+        guard source != .local else {
+            return LibraryStore.contains(metaId: meta.id, type: meta.type)
+        }
+        let profileId = LibraryStore.activeProfileId
+        let store = ProfileSettings.store(for: profileId)
+        let bindingId = RemoteLibraryStore.accountBindingID(for: source, profileId: profileId, in: store)
+        return RemoteLibraryStore.contains(meta: meta, source: source, profileId: profileId, accountBindingId: bindingId)
+    }
+
+    static func isInLibrary(metaId: String, type: String) -> Bool {
+        let source = TraktSettingsStore.librarySourceMode
+        guard source != .local else {
+            return LibraryStore.contains(metaId: metaId, type: type)
+        }
+        let profileId = LibraryStore.activeProfileId
+        let store = ProfileSettings.store(for: profileId)
+        let bindingId = RemoteLibraryStore.accountBindingID(for: source, profileId: profileId, in: store)
+        return RemoteLibraryStore.contains(metaId: metaId, type: type, source: source, profileId: profileId, accountBindingId: bindingId)
+    }
+
     @MainActor
     static func setWatchlist(_ meta: NuvioMeta, isInWatchlist: Bool) async -> Bool {
+        // An AniList title goes by the IMDb/TMDB ids it maps to.
+        let meta = await AniListService.libraryMeta(for: meta)
         switch TraktSettingsStore.librarySourceMode {
         case .local:
             return false
@@ -2788,12 +2931,117 @@ struct SimklProgressService {
         // hiding a resume row behind its Up Next counterpart.
         if results.count < 20 {
             let needed = 20 - results.count
-            let candidateSeeds = upNextSeeds.filter { seed in
-                !playbackMetas.contains(where: {
-                    WatchedStore.sameContent($0, seed.meta)
-                })
+            let libraryResponse: SimklAllItemsResponse?
+            let itemSnapshot = SimklSyncCache.itemSnapshot(in: store)
+            if let cached = itemSnapshot?.items, itemSnapshot?.activities?.all == activities.all {
+                libraryResponse = cached
+            } else {
+                libraryResponse = await SimklSyncLoader.libraryItems(using: service)
             }
-            let seedsToInspect = Array(candidateSeeds.prefix(min(needed * 2, 24)))
+
+            var candidateSeeds: [SimklProgressItemSeed] = []
+            var candidateKeys = Set<String>()
+            var libraryMetas: [NuvioMeta] = []
+
+            let allShows: [(String, SimklSyncItem)] = (libraryResponse?.shows ?? []).map { ("series", $0) }
+            let allAnime: [(String, SimklSyncItem)] = (libraryResponse?.anime ?? []).map { ("series", $0) }
+            let allMovies: [(String, SimklSyncItem)] = (libraryResponse?.movies ?? []).map { ("movie", $0) }
+            let allLibraryItems = allShows + allAnime + allMovies
+
+            // Register all titles in user's Simkl account so seeds from history cannot
+            // resurrect series that are already completed, dropped, on-hold, plan to watch,
+            // or caught up.
+            for (type, item) in allLibraryItems {
+                if let placeholder = placeholderMeta(item: item, type: type) {
+                    libraryMetas.append(placeholder)
+                    candidateKeys.insert("\(type):\(placeholder.id.lowercased())")
+                    if let imdb = placeholder.imdbId?.lowercased(), !imdb.isEmpty {
+                        candidateKeys.insert("\(type):\(imdb)")
+                    }
+                }
+                let itemIdentity = SimklAllItemsResponse.identity(item).lowercased()
+                candidateKeys.insert("\(type):\(itemIdentity)")
+                if let simkl = item.ids?.simkl, simkl > 0 {
+                    candidateKeys.insert("\(type):simkl:\(simkl)")
+                }
+                if let tmdb = item.ids?.tmdb, tmdb > 0 {
+                    candidateKeys.insert("\(type):tmdb:\(tmdb)")
+                }
+            }
+
+            // 1. Titles in user's active Simkl Watching list (shows, anime, movies)
+            let watchingItems = allLibraryItems.filter { $0.1.status?.lowercased() == "watching" }
+
+            for (type, item) in watchingItems {
+                guard let placeholder = placeholderMeta(item: item, type: type) else { continue }
+                guard !playbackMetas.contains(where: { WatchedStore.sameContent($0, placeholder) }) else { continue }
+
+                let date = parseDate(item.lastWatchedAt)
+                    ?? parseDate(item.addedToWatchlistAt)
+                    ?? .distantPast
+
+                if type == "movie" {
+                    candidateSeeds.append(SimklProgressItemSeed(
+                        meta: placeholder,
+                        type: "movie",
+                        season: nil,
+                        episode: nil,
+                        watchedAt: date,
+                        isWatchingList: true,
+                        upNextWatchedSeason: nil
+                    ))
+                } else {
+                    let target: (season: Int, episode: Int)?
+                    if let next = item.resolvedNextToWatch {
+                        target = (next.season, next.episode)
+                    } else if let latest = item.latestWatchedEpisode {
+                        if let watched = item.watchedEpisodesCount,
+                           let total = item.totalEpisodesCount,
+                           total > 0, watched >= total {
+                            target = nil // caught up
+                        } else {
+                            target = (latest.season, latest.episode + 1)
+                        }
+                    } else if (item.watchedEpisodesCount ?? 0) == 0 {
+                        target = (1, 1)
+                    } else {
+                        target = nil
+                    }
+
+                    guard let target else { continue }
+                    candidateSeeds.append(SimklProgressItemSeed(
+                        meta: placeholder,
+                        type: "series",
+                        season: target.season,
+                        episode: target.episode,
+                        watchedAt: date,
+                        isWatchingList: true,
+                        upNextWatchedSeason: item.latestWatchedEpisode?.season ?? target.season
+                    ))
+                }
+            }
+
+            // 2. Up Next seeds from Watched History (only for titles not in library response)
+            for seed in upNextSeeds {
+                guard !playbackMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) }) else { continue }
+                let key = "series:\(seed.meta.id.lowercased())"
+                guard !candidateKeys.contains(key),
+                      !libraryMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) }) else { continue }
+                guard candidateKeys.insert(key).inserted else { continue }
+
+                candidateSeeds.append(SimklProgressItemSeed(
+                    meta: seed.meta,
+                    type: "series",
+                    season: nil,
+                    episode: seed.episode,
+                    watchedAt: seed.watchedAt,
+                    isWatchingList: false,
+                    upNextWatchedSeason: seed.season
+                ))
+            }
+
+            candidateSeeds.sort { $0.watchedAt > $1.watchedAt }
+            let seedsToInspect = Array(candidateSeeds.prefix(min(needed * 2, 30)))
 
             let upNextRows = await withTaskGroup(of: (Int, ContinueWatchingItem?).self) { group in
                 var taskResults: [Int: ContinueWatchingItem] = [:]
@@ -2805,7 +3053,7 @@ struct SimklProgressService {
                     inFlight += 1
                     group.addTask {
                         guard !Task.isCancelled else { return (index, nil) }
-                        let item = await makeUpNextItem(from: seed, repository: repository)
+                        let item = await makeContinueWatchingItem(from: seed, repository: repository)
                         return (index, item)
                     }
                 }
@@ -2826,6 +3074,16 @@ struct SimklProgressService {
             }
         }
         return results
+    }
+
+    private struct SimklProgressItemSeed {
+        let meta: NuvioMeta
+        let type: String
+        let season: Int?
+        let episode: Int?
+        let watchedAt: Date
+        let isWatchingList: Bool
+        let upNextWatchedSeason: Int?
     }
 
     private struct UpNextSeed {
@@ -2882,41 +3140,92 @@ struct SimklProgressService {
         return selectedByContentID.values.sorted { $0.watchedAt > $1.watchedAt }
     }
 
-    private static func makeUpNextItem(
-        from seed: UpNextSeed,
+    private static func makeContinueWatchingItem(
+        from seed: SimklProgressItemSeed,
         repository: CatalogRepository
     ) async -> ContinueWatchingItem? {
+        if seed.type == "movie" {
+            let meta = (try? await repository.getMetadata(
+                id: seed.meta.id,
+                type: "movie"
+            )) ?? seed.meta
+            let duration = max(runtimeSeconds(for: meta), 120)
+            return ContinueWatchingItem(
+                meta: meta,
+                streamUrl: "",
+                position: 1,
+                duration: duration,
+                lastWatchedAt: seed.watchedAt,
+                season: nil,
+                episode: nil,
+                released: meta.released,
+                episodeTitleOverride: nil,
+                episodeOverviewOverride: nil,
+                episodeThumbnailOverride: nil,
+                isUpNext: false
+            )
+        }
+
         var meta = (try? await repository.getMetadata(
             id: seed.meta.id,
             type: "series"
         )) ?? seed.meta
 
-        var next = nextEpisode(
-            after: (season: seed.season, episode: seed.episode),
-            in: meta
-        )
-        if next == nil, let refreshed = try? await repository.refreshMetadata(
-            id: seed.meta.id,
-            type: "series"
-        ) {
-            meta = refreshed
-            next = nextEpisode(
-                after: (season: seed.season, episode: seed.episode),
+        let targetSeason: Int
+        let targetEpisode: Int
+        var matchedVideo: NuvioVideo? = nil
+
+        if seed.isWatchingList, let s = seed.season, let e = seed.episode {
+            targetSeason = s
+            targetEpisode = e
+            matchedVideo = meta.videos?.first(where: { $0.season == s && $0.episode == e })
+            if matchedVideo == nil, let refreshed = try? await repository.refreshMetadata(
+                id: seed.meta.id,
+                type: "series"
+            ) {
+                meta = refreshed
+                matchedVideo = meta.videos?.first(where: { $0.season == s && $0.episode == e })
+            }
+            if let videos = meta.videos, !videos.isEmpty, matchedVideo == nil {
+                return nil
+            }
+        } else {
+            let watchedSeason = seed.upNextWatchedSeason ?? 1
+            let watchedEp = seed.episode ?? 1
+            var next = nextEpisode(
+                after: (season: watchedSeason, episode: watchedEp),
                 in: meta
             )
+            if next == nil, let refreshed = try? await repository.refreshMetadata(
+                id: seed.meta.id,
+                type: "series"
+            ) {
+                meta = refreshed
+                next = nextEpisode(
+                    after: (season: watchedSeason, episode: watchedEp),
+                    in: meta
+                )
+            }
+            guard let next else { return nil }
+            targetSeason = next.season
+            targetEpisode = next.episode
+            matchedVideo = next
         }
-        guard let next, EpisodeReleasePolicy.shouldSurfaceNextEpisode(
-            watchedSeason: seed.season,
-            candidateSeason: next.season,
-            released: next.released
-        ) else {
-            return nil
+
+        if let released = matchedVideo?.released {
+            guard EpisodeReleasePolicy.shouldSurfaceNextEpisode(
+                watchedSeason: seed.upNextWatchedSeason ?? targetSeason,
+                candidateSeason: targetSeason,
+                released: released
+            ) else {
+                return nil
+            }
         }
 
         let enriched = await EpisodeMetadataEnrichment.fetch(
             meta: meta,
-            season: next.season,
-            episode: next.episode
+            season: targetSeason,
+            episode: targetEpisode
         )
         let duration = max(runtimeSeconds(for: meta), 120)
         return ContinueWatchingItem(
@@ -2925,14 +3234,14 @@ struct SimklProgressService {
             position: 1,
             duration: duration,
             lastWatchedAt: seed.watchedAt,
-            season: next.season,
-            episode: next.episode,
-            released: enriched?.released ?? next.released,
-            episodeTitleOverride: enriched?.title ?? next.title,
-            episodeOverviewOverride: enriched?.overview ?? next.overview,
-            episodeThumbnailOverride: enriched?.thumbnail ?? next.thumbnail,
+            season: targetSeason,
+            episode: targetEpisode,
+            released: enriched?.released ?? matchedVideo?.released,
+            episodeTitleOverride: enriched?.title ?? matchedVideo?.title,
+            episodeOverviewOverride: enriched?.overview ?? matchedVideo?.overview,
+            episodeThumbnailOverride: enriched?.thumbnail ?? matchedVideo?.thumbnail,
             isUpNext: true,
-            upNextSeedSeason: seed.season
+            upNextSeedSeason: seed.upNextWatchedSeason ?? targetSeason
         )
     }
 

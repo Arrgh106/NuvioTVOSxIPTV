@@ -51,8 +51,8 @@ let signingXCConfig: Path = .relativeToManifest("Configurations/Signing.xcconfig
 // Own bundle ID so this fork installs next to NuvioTVOS instead of replacing it.
 // The App Group (group.<bundleID>) follows automatically.
 let bundleID = "io.github.arrgh106.nuvioiptv"
-let marketingVersion = "3.5.0"
-let projectVersion = "81"
+let marketingVersion = "3.5.1"
+let projectVersion = "82"
 // LibTrueHD 3.0.0 requires tvOS 18; APAC rendering itself is gated to tvOS 26+.
 let tvOSDeployment = "18.0"
 
@@ -148,6 +148,9 @@ let appTarget: Target = .target(
         "NuvioTV/Resources/SceneModels/YuNet.mlpackage",
         "NuvioTV/Resources/SceneModels/SFace-LICENSE.txt",
         "NuvioTV/Resources/SceneModels/YuNet-LICENSE.txt",
+        // AIOStreams in Nuvio (AIOStreamsHost): the installer and starter, as a
+        // folder. AIOStreams itself is downloaded from its official image.
+        .folderReference(path: "NuvioTV/AIOInstaller"),
     ],
     entitlements: .file(path: "NuvioTV/NuvioTV.entitlements"),
     scripts: [
@@ -171,6 +174,9 @@ let appTarget: Target = .target(
         .package(product: "MPVKit"),
         .package(product: "SwiftAssRenderer"),
         .package(product: "Realtime"),
+        .package(product: "SwiftSoup"),
+        // Node.js 24 for tvOS (nodejs-mobile), for AIOStreams: Vendor/NodeMobile.
+        .package(product: "NodeMobile"),
     ],
     settings: .settings(
         base: [
@@ -297,8 +303,11 @@ let project = Project(
         .local(path: "../Vendor/AetherEngine"),
         .local(path: "../Vendor/LibTorrent"),
         .local(path: "../MPVKit"),
+        .local(path: "../Vendor/NodeMobile"),
         .package(url: "https://github.com/mihai8804858/swift-ass-renderer.git", from: "1.3.1"),
         .package(url: "https://github.com/supabase/supabase-swift.git", .exact("2.55.4")),
+        // HTML parsing for plugins' cheerio (jsoup on Android; SwiftSoup is its port).
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", .exact("2.14.3")),
     ],
     settings: .settings(
         base: projectBaseSettings,

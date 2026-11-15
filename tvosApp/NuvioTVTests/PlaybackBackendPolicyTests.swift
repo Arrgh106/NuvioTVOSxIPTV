@@ -1040,7 +1040,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertEqual(translated, [7: "Hei"])
     }
 
-    func testOpenRouterBatchTranslatorDisablesReasoningForEveryModelAndPreservesCueIDs() async throws {
+    func testOpenRouterBatchTranslatorDisablesReasoningForOptionalModelsAndPreservesCueIDs() async throws {
         GeminiURLProtocolStub.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-api-key")
@@ -1052,6 +1052,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             )
             let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
             XCTAssertEqual(reasoning["enabled"] as? Bool, false)
+            XCTAssertNil(reasoning["effort"])
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
                 statusCode: 200,
@@ -1089,6 +1090,130 @@ final class PlaybackBackendPolicyTests: XCTestCase {
 
             XCTAssertEqual(translated, [7: "Hei", 9: "Ha det"])
         }
+    }
+
+    func testOpenRouterBatchTranslatorUsesMinimalReasoningForModelsWithMandatoryReasoning() async throws {
+        GeminiURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-api-key")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-goog-api-key"))
+            XCTAssertEqual(request.httpMethod, "POST")
+            let requestBody = try XCTUnwrap(GeminiURLProtocolStub.body(from: request))
+            let requestJSON = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
+            XCTAssertEqual(reasoning["effort"] as? String, "minimal")
+            XCTAssertNil(reasoning["enabled"])
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let payload = #"{"choices":[{"message":{"content":"```json\n[{\"id\":7,\"text\":\"Hei\"},{\"id\":9,\"text\":\"Ha det\"}]\n```"}}]}"#
+            return (response, Data(payload.utf8))
+        }
+        defer { GeminiURLProtocolStub.handler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiURLProtocolStub.self]
+
+        for model in [
+            "google/gemini-3.8-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-pro",
+            "google/gemini-4-carbon",
+            "google/gemini-omni-1.2-flash",
+            "openai/o3-mini",
+            "deepseek/deepseek-r1",
+        ] {
+            let translated = try await OpenRouterSubtitleTranslator.translateBatch(
+                [
+                    .init(id: 7, text: "Hello"),
+                    .init(id: 9, text: "Goodbye"),
+                ],
+                to: "Norwegian",
+                model: model,
+                apiKey: "test-api-key",
+                session: URLSession(configuration: configuration)
+            )
+
+            XCTAssertEqual(translated, [7: "Hei", 9: "Ha det"])
+        }
+    }
+
+    func testOpenRouterSubtitleTranslatorRetriesWithMinimalReasoningWhenReasoningIsMandatory() async throws {
+        var attempts = 0
+        GeminiURLProtocolStub.handler = { request in
+            attempts += 1
+            let requestBody = try XCTUnwrap(GeminiURLProtocolStub.body(from: request))
+            let requestJSON = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
+
+            if attempts == 1 {
+                XCTAssertEqual(reasoning["enabled"] as? Bool, false)
+                XCTAssertNil(reasoning["effort"])
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 400,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                let errorPayload = #"{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}"#
+                return (response, Data(errorPayload.utf8))
+            } else {
+                XCTAssertEqual(reasoning["effort"] as? String, "minimal")
+                XCTAssertNil(reasoning["enabled"])
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                let payload = #"{"choices":[{"message":{"content":"```json\n[{\"id\":12,\"text\":\"Hallo verden\"}]\n```"}}]}"#
+                return (response, Data(payload.utf8))
+            }
+        }
+        defer { GeminiURLProtocolStub.handler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiURLProtocolStub.self]
+
+        let translated = try await OpenRouterSubtitleTranslator.translateBatch(
+            [.init(id: 12, text: "Hello world")],
+            to: "Norwegian",
+            model: "custom-unlisted-reasoning-model",
+            apiKey: "test-api-key",
+            session: URLSession(configuration: configuration)
+        )
+
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(translated, [12: "Hallo verden"])
+    }
+
+    func testOpenRouterMandatoryReasoningDetection() {
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-3.8-flash"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-3.5-flash-lite"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("gemini-3.0-pro"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-pro"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-pro-preview"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-4-carbon"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-omni-1.2-flash"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-pro-latest"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-flash-latest"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("openai/o3-mini"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("deepseek/deepseek-r1"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("moonshotai/kimi-k2-thinking"))
+
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-flash-lite"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.0-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("qwen/qwen3.7-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("anthropic/claude-haiku-4.5"))
     }
 
     func testAISubtitleCachePersistsAndSeparatesTranslationSettings() async {
@@ -2274,7 +2399,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
                 preferredSubtitleLanguages: ["Spanish"],
                 allowForcedSubtitles: true
             ),
-            .forced(language: "English")
+            .preferredLanguages(["Spanish"])
         )
         XCTAssertEqual(
             PlayerViewModel.automaticSubtitlePolicy(
@@ -2290,9 +2415,27 @@ final class PlaybackBackendPolicyTests: XCTestCase {
                 selectedAudio: englishAudio,
                 preferredAudioLanguage: "English",
                 preferredSubtitleLanguages: ["English", "Arabic"],
+                allowForcedSubtitles: true
+            ),
+            .forced(language: "English")
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["English", "Arabic"],
                 allowForcedSubtitles: false
             ),
             .preferredLanguages(["English", "Arabic"])
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: [],
+                allowForcedSubtitles: true
+            ),
+            .forced(language: "English")
         )
         XCTAssertEqual(
             PlayerViewModel.automaticSubtitlePolicy(
@@ -2384,7 +2527,8 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         model.selectAudio(japaneseAudio)
 
         XCTAssertEqual(ShowAudioLanguageStore.getLanguage(for: meta.id), "Japanese")
-        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "4")
+        // Preferred subtitle language is English; foreign Japanese audio automatically receives full English subtitles.
+        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "5")
 
         let manualFullSubtitle = model.subtitles.first(where: { $0.id == "5" })!
         model.selectSubtitle(manualFullSubtitle)
@@ -2602,6 +2746,11 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         reloadSignal.send(.finished(nilASSnapshot(renderer, builder: builder, at: 2.5)))
         XCTAssertNil(subview?.image)
         XCTAssertTrue(subview?.isHidden ?? false)
+    }
+
+    @MainActor
+    func testASSRenderCoordinatorPresentationPipelineLeadIs150ms() {
+        XCTAssertEqual(ASSRenderCoordinator.presentationPipelineLeadSeconds, 0.150, accuracy: 0.001)
     }
 }
 

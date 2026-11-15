@@ -1,22 +1,13 @@
 {
-  "originHash" : "d8605bc32272e0696a1ea7b453c001cb24d655c943a8f05bba1c08c266582cf0",
+  "originHash" : "8c3b9f048a5fb832f5e51ffcae4df8ae82d50eece2c31a7abbb4fc946daf44a1",
   "pins" : [
     {
       "identity" : "libdovi",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/superuser404notfound/LibDovi",
       "state" : {
-        "revision" : "0d7cce1d6836a30d13a3a2326e50a153af53f014",
-        "version" : "2.1.0"
-      }
-    },
-    {
-      "identity" : "libtruehd",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/superuser404notfound/LibTrueHD",
-      "state" : {
-        "revision" : "73bee84d7ac7b8619db570e36490b92761fe91a6",
-        "version" : "3.1.0"
+        "revision" : "caff700968700467c089a3f38c8b4180620518b5",
+        "version" : "2.2.0"
       }
     },
     {

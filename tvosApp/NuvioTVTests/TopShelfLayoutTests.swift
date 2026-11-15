@@ -5,16 +5,16 @@ import XCTest
 final class TopShelfLayoutTests: XCTestCase {
     // MARK: Rows
 
-    func testDefaultShowsTheFixedSectionsAndTheFirstCatalog() {
+    func testAdvancedMixShowsTheFixedSectionsAndTheFirstCatalog() {
         let feeds = makeFeeds()
-        let rows = TopShelfComposer.rows(configuration: .default) { feeds[$0] }
+        let rows = TopShelfComposer.rows(configuration: TopShelfConfiguration()) { feeds[$0] }
         XCTAssertEqual(rows.map(\.id), ["continueWatching", "upNext", "library", "catalog:popular"])
         XCTAssertEqual(rows.last?.title, "Popular")
     }
 
     func testChosenCatalogsComeInHomeOrderAfterTheChosenSections() {
         let feeds = makeFeeds()
-        var configuration = TopShelfConfiguration.default
+        var configuration = TopShelfConfiguration()
         configuration.includesUpNext = false
         configuration.includesLibrary = false
         configuration.catalogRowIDs = ["trending", "popular"]
@@ -44,7 +44,7 @@ final class TopShelfLayoutTests: XCTestCase {
     func testEmptySourcesAreLeftOut() {
         var feeds = makeFeeds()
         feeds[.upNext] = TopShelfFeed(entries: [], title: "Up Next")
-        let rows = TopShelfComposer.rows(configuration: .default) { feeds[$0] }
+        let rows = TopShelfComposer.rows(configuration: TopShelfConfiguration()) { feeds[$0] }
         XCTAssertFalse(rows.contains { $0.id == "upNext" })
     }
 
@@ -55,12 +55,12 @@ final class TopShelfLayoutTests: XCTestCase {
         let yesterday = TopShelfEntry(contentId: "tt-old", contentType: "series", title: "Old", subtitle: nil,
                                       imageURL: nil, progress: nil, action: .details, airDate: "2026-10-28")
         feeds[.today] = TopShelfFeed(entries: [airing, yesterday], title: "Today")
-        let rows = TopShelfComposer.rows(configuration: .default, today: "2026-10-29") { feeds[$0] }
+        let rows = TopShelfComposer.rows(configuration: TopShelfConfiguration(), today: "2026-10-29") { feeds[$0] }
         XCTAssertEqual(rows.map(\.id), ["continueWatching", "upNext", "today", "library", "catalog:popular"])
         XCTAssertEqual(rows.first { $0.id == "today" }?.entries.map(\.contentId), ["tt-today"])
-        let nextDay = TopShelfComposer.rows(configuration: .default, today: "2026-10-30") { feeds[$0] }
+        let nextDay = TopShelfComposer.rows(configuration: TopShelfConfiguration(), today: "2026-10-30") { feeds[$0] }
         XCTAssertFalse(nextDay.contains { $0.id == "today" }, "past days leave the shelf without the app")
-        var off = TopShelfConfiguration.default
+        var off = TopShelfConfiguration()
         off.includesToday = false
         XCTAssertFalse(TopShelfComposer.rows(configuration: off, today: "2026-10-29") { feeds[$0] }.contains { $0.id == "today" })
     }
@@ -82,19 +82,48 @@ final class TopShelfLayoutTests: XCTestCase {
                                        iconURL: nil, iconWidth: 68)
         let newer = TopShelfRatingBadge(source: "imdb", name: "IMDb", value: "8.2", iconAssetName: "rating_imdb",
                                         iconURL: nil, iconWidth: 68)
+        let iconChanged = TopShelfRatingBadge(source: "imdb", name: "IMDb", value: "8.1", iconAssetName: nil,
+                                              iconURL: "https://example.com/new-imdb-icon.png", iconWidth: 68)
         XCTAssertEqual(TopShelfFeedStore.carouselImageName(for: entry, badges: nil), "top-shelf-c1.jpg")
         XCTAssertEqual(TopShelfFeedStore.carouselImageName(for: entry, badges: []), "top-shelf-c1.jpg")
         let rated = TopShelfFeedStore.carouselImageName(for: entry, badges: [imdb])
         XCTAssertNotEqual(rated, "top-shelf-c1.jpg")
         XCTAssertEqual(rated, TopShelfFeedStore.carouselImageName(for: entry, badges: [imdb]))
         XCTAssertNotEqual(rated, TopShelfFeedStore.carouselImageName(for: entry, badges: [newer]))
+        XCTAssertNotEqual(rated, TopShelfFeedStore.carouselImageName(for: entry, badges: [iconChanged]))
     }
 
     func testRatingsAreFreshForADay() {
         let now = Date()
-        XCTAssertTrue(TopShelfRatingsStore.isFresh(.init(badges: [], fetchedAt: now.addingTimeInterval(-3_600)), now: now))
-        XCTAssertFalse(TopShelfRatingsStore.isFresh(.init(badges: [], fetchedAt: now.addingTimeInterval(-90_000)), now: now))
+        let rated = [TopShelfRatingBadge(source: "imdb", name: "IMDb", value: "8.1", iconAssetName: nil, iconURL: nil, iconWidth: 40)]
+        XCTAssertTrue(TopShelfRatingsStore.isFresh(.init(badges: rated, fetchedAt: now.addingTimeInterval(-3_600)), now: now))
+        XCTAssertFalse(TopShelfRatingsStore.isFresh(.init(badges: rated, fetchedAt: now.addingTimeInterval(-90_000)), now: now))
+        // No rating at all is asked again after half an hour.
+        XCTAssertFalse(TopShelfRatingsStore.isFresh(.init(badges: [], fetchedAt: now.addingTimeInterval(-3_600)), now: now))
         XCTAssertFalse(TopShelfRatingsStore.isFresh(nil, now: now))
+    }
+
+    func testLegacyTopShelfRatingRecordDecodesWithoutConfigurationIdentity() throws {
+        struct LegacyRecord: Encodable {
+            let badges: [TopShelfRatingBadge]
+            let fetchedAt: Date
+        }
+
+        let data = try JSONEncoder().encode(LegacyRecord(badges: [], fetchedAt: Date()))
+        let decoded = try JSONDecoder().decode(TopShelfRatingsStore.Record.self, from: data)
+        XCTAssertNil(decoded.ratingsConfigurationIdentity)
+    }
+
+    func testHeroRatingVisibilityInvalidatesTopShelfRatingIdentity() {
+        let suiteName = "TopShelfHeroRatings-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let enabled = TopShelfRatingsBridge.configurationIdentity(defaults: defaults)
+
+        defaults.set(false, forKey: SettingsKey.homeHeroRatingsEnabled)
+        let disabled = TopShelfRatingsBridge.configurationIdentity(defaults: defaults)
+
+        XCTAssertNotEqual(enabled, disabled)
     }
 
     // MARK: Carousel
@@ -141,7 +170,7 @@ final class TopShelfLayoutTests: XCTestCase {
         let partial = try JSONDecoder().decode(
             TopShelfConfiguration.self,
             from: Data(#"{"style":"sideways","includesLibrary":false,"catalogRowIDs":["a"]}"#.utf8))
-        XCTAssertEqual(partial.style, .carouselDetails)
+        XCTAssertEqual(partial.style, .featuredCards)
         XCTAssertTrue(partial.includesContinueWatching)
         XCTAssertFalse(partial.includesLibrary)
         XCTAssertEqual(partial.catalogRowIDs, ["a"])
@@ -152,7 +181,7 @@ final class TopShelfLayoutTests: XCTestCase {
     }
 
     func testConfigurationSupportsLibrarySourceAndShuffleUpNext() throws {
-        var config = TopShelfConfiguration.default
+        var config = TopShelfConfiguration()
         config.librarySource = .simkl
         config.shufflesUpNext = true
         let data = try JSONEncoder().encode(config)
@@ -163,7 +192,7 @@ final class TopShelfLayoutTests: XCTestCase {
 
     func testShuffleUpNextPreservesAllEntries() {
         let feeds = makeFeeds()
-        var config = TopShelfConfiguration.default
+        var config = TopShelfConfiguration()
         config.shufflesUpNext = true
         let rows = TopShelfComposer.rows(configuration: config) { feeds[$0] }
         let upNextRow = rows.first { $0.id == "upNext" }

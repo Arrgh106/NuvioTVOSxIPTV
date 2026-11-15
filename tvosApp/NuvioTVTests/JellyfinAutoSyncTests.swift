@@ -233,4 +233,224 @@ final class JellyfinAutoSyncTests: XCTestCase {
             XCTFail("Expected syncing or done state, got \(JellyfinSessionManager.shared.syncState(for: server.id))")
         }
     }
+
+    func testSyncFetchesEpisodesSeparatelyWhenLibraryOmittedThemAndCalculatesMatchedEpisodes() async throws {
+        let serverID = "silo-\(UUID().uuidString)"
+        let server = JellyfinServerConfig(
+            id: serverID,
+            displayName: "Silo Server",
+            baseURLString: baseURL.absoluteString,
+            authKind: .apiKey,
+            userId: "user-silo",
+            selectedLibraryIDs: ["lib-silo"],
+            syncAutomatically: false
+        )
+        JellyfinServerStore.shared.upsert(server)
+
+        var requestedShowsEpisodesPath: String?
+
+        JellyfinAutoSyncMockProtocol.requestHandler = { request in
+            guard let url = request.url else {
+                return (HTTPURLResponse(url: URL(string: "http://error")!, statusCode: 400, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            let path = url.path
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+
+            if path == "/Users/user-silo/Items" {
+                // Returns 1 Movie and 1 Series, but NO episodes (typical Silo TV library behavior)
+                let json = """
+                {
+                    "Items": [
+                        {
+                            "Id": "movie-blade-runner",
+                            "Name": "Blade Runner 2049",
+                            "Type": "Movie",
+                            "ProductionYear": 2017,
+                            "ProviderIds": { "Imdb": "tt1856101" },
+                            "MediaSources": [{ "Container": "mkv", "Size": 5000000000 }]
+                        },
+                        {
+                            "Id": "series-breaking-bad",
+                            "Name": "Breaking Bad",
+                            "Type": "Series",
+                            "ProductionYear": 2008,
+                            "ProviderIds": { "Imdb": "tt0903747" }
+                        }
+                    ],
+                    "TotalRecordCount": 2,
+                    "StartIndex": 0
+                }
+                """
+                return (response, Data(json.utf8))
+            } else if path == "/Shows/series-breaking-bad/Episodes" {
+                requestedShowsEpisodesPath = path
+                let json = """
+                {
+                    "Items": [
+                        {
+                            "Id": "ep-bb-s1e1",
+                            "Name": "Pilot",
+                            "Type": "Episode",
+                            "ParentIndexNumber": 1,
+                            "IndexNumber": 1,
+                            "MediaSources": [{ "Container": "mp4", "Size": 1000000000 }]
+                        },
+                        {
+                            "Id": "ep-bb-s1e2",
+                            "Name": "Cat's in the Bag...",
+                            "Type": "Episode",
+                            "ParentIndexNumber": 1,
+                            "IndexNumber": 2,
+                            "MediaSources": [{ "Container": "mp4", "Size": 1100000000 }]
+                        }
+                    ],
+                    "TotalRecordCount": 2,
+                    "StartIndex": 0
+                }
+                """
+                return (response, Data(json.utf8))
+            }
+
+            return (HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token-silo", session: session)
+        JellyfinSessionManager.shared.setClientForTesting(client, forServerID: serverID)
+        JellyfinSessionManager.shared.setConnectionStateForTesting(
+            .connected(libraries: [JellyfinLibrary(id: "lib-silo", name: "Silo Library", collectionType: "tvshows")]),
+            forServerID: serverID
+        )
+
+        JellyfinSessionManager.shared.sync(server)
+
+        // Wait for sync to complete
+        var report: JellyfinSyncReport?
+        for _ in 0..<40 {
+            if case .done(let r) = JellyfinSessionManager.shared.syncState(for: serverID) {
+                report = r
+                break
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        let finalReport = try XCTUnwrap(report, "Sync should finish with .done state")
+        XCTAssertEqual(requestedShowsEpisodesPath, "/Shows/series-breaking-bad/Episodes", "Should fetch episodes for series lacking them")
+        XCTAssertEqual(finalReport.matchedTitles, 2, "Should index both movie and series")
+        XCTAssertEqual(finalReport.matchedEpisodes, 2, "Matched episodes should only count series episodes (2), not movie files")
+        XCTAssertTrue(finalReport.unmatched.isEmpty)
+
+        // Check index
+        let titles = JellyfinLibraryIndex.shared.titles().filter { $0.serverID == serverID }
+        XCTAssertEqual(titles.count, 2)
+
+        let movie = titles.first(where: { $0.type == "movie" })
+        XCTAssertNotNil(movie)
+        XCTAssertEqual(movie?.name, "Blade Runner 2049")
+        XCTAssertEqual(movie?.items.count, 1)
+
+        let series = titles.first(where: { $0.type == "series" })
+        XCTAssertNotNil(series)
+        XCTAssertEqual(series?.name, "Breaking Bad")
+        XCTAssertEqual(series?.items.count, 2, "Series must retain both fetched episodes")
+        XCTAssertEqual(series?.items.first?.episodeName, "Pilot")
+    }
+
+    func testSyncResumesSavedPagesAfterFailureAndKeepsPreviousIndexUntilCommit() async throws {
+        let serverID = "resume-\(UUID().uuidString)"
+        let server = JellyfinServerConfig(
+            id: serverID,
+            displayName: "Resume Server",
+            baseURLString: baseURL.absoluteString,
+            userId: "user-resume",
+            selectedLibraryIDs: ["lib-resume"],
+            syncAutomatically: false
+        )
+        JellyfinServerStore.shared.upsert(server)
+        let oldTitles = JellyfinLibraryResolver.resolve(
+            [movieItem(id: "old-movie", name: "Old Index")],
+            serverID: serverID,
+            libraryID: "lib-resume",
+            libraryName: "Movies"
+        ).titles
+        try JellyfinLibraryIndex.shared.replace(titles: oldTitles, forServerID: serverID)
+
+        var requestedStartIndices: [String] = []
+        var failSecondPageOnce = true
+        JellyfinAutoSyncMockProtocol.requestHandler = { request in
+            let url = request.url!
+            let startIndex = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "StartIndex" })?.value ?? "0"
+            requestedStartIndices.append(startIndex)
+            if startIndex == "1", failSecondPageOnce {
+                failSecondPageOnce = false
+                return (HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil, headerFields: nil)!, Data("temporary failure".utf8))
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let body = startIndex == "0"
+                ? #"{"Items":[{"Id":"new-1","Name":"New One","Type":"Movie"}],"TotalRecordCount":2}"#
+                : #"{"Items":[{"Id":"new-2","Name":"New Two","Type":"Movie"}],"TotalRecordCount":2}"#
+            return (response, Data(body.utf8))
+        }
+
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token-resume", session: session)
+        JellyfinSessionManager.shared.setClientForTesting(client, forServerID: serverID)
+        JellyfinSessionManager.shared.setConnectionStateForTesting(
+            .connected(libraries: [JellyfinLibrary(id: "lib-resume", name: "Movies", collectionType: "movies")]),
+            forServerID: serverID
+        )
+
+        JellyfinSessionManager.shared.sync(server)
+        for _ in 0..<100 {
+            if case .failed = JellyfinSessionManager.shared.syncState(for: serverID) { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard case .failed = JellyfinSessionManager.shared.syncState(for: serverID) else {
+            XCTFail("First sync should fail at its second page")
+            return
+        }
+        XCTAssertEqual(JellyfinLibraryIndex.shared.titles().filter { $0.serverID == serverID }.map(\.name), ["Old Index"])
+
+        JellyfinSessionManager.shared.sync(server)
+        var completed = false
+        for _ in 0..<100 {
+            if case .done = JellyfinSessionManager.shared.syncState(for: serverID) {
+                completed = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(completed, "Second sync should resume and commit")
+        XCTAssertEqual(requestedStartIndices, ["0", "1", "1"], "The saved first page should not be fetched again")
+        XCTAssertEqual(
+            Set(JellyfinLibraryIndex.shared.titles().filter { $0.serverID == serverID }.map(\.name)),
+            Set(["New One", "New Two"])
+        )
+    }
+
+    private func movieItem(id: String, name: String) -> JellyfinMediaItem {
+        JellyfinMediaItem(
+            id: id,
+            name: name,
+            type: "Movie",
+            overview: nil,
+            productionYear: nil,
+            premiereDate: nil,
+            communityRating: nil,
+            officialRating: nil,
+            genres: nil,
+            runTimeTicks: nil,
+            imdbId: nil,
+            tmdbId: nil,
+            primaryImageTag: nil,
+            backdropImageTag: nil,
+            cast: nil,
+            directors: nil,
+            seriesId: nil,
+            parentIndexNumber: nil,
+            indexNumber: nil,
+            container: nil,
+            sizeBytes: nil
+        )
+    }
 }

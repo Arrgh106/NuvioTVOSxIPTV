@@ -202,6 +202,13 @@ enum CollectionFolderGridMetrics {
     static let posterGap: CGFloat = 28
 }
 
+/// Whether a row is being built a few cards at a time (`TVCatalogRow.stagesCardBuild`), decided
+/// by its first build. Not observed: the row redraws as its count of built cards changes.
+final class TVRowCardStaging {
+    var isDecided = false
+    var isActive = false
+}
+
 /// A row whose catalog is still in flight: its real title over a lightweight
 /// skeleton strip, sized exactly like `TVCatalogRow` so the row keeps its height
 /// and the rows below it do not jump when the real cards arrive.
@@ -387,6 +394,9 @@ struct TVCatalogRow: View {
     let horizontalEdgeInset: CGFloat
     let items: [NuvioMeta]
     var progressByItemId: [String: ContinueWatchingItem] = [:]
+    /// IDs whose actual next episode follows the furthest watched guide entry.
+    /// Built by Home when progress/watch state changes, outside card rendering.
+    var revealableNextEpisodeMetaIDs: Set<String> = []
     /// The Today row's episode, time and picture per card, shown
     /// like Up Next cards.
     var calendarLabelsByItemId: [String: CalendarHomeToday.CardLabel] = [:]
@@ -399,6 +409,13 @@ struct TVCatalogRow: View {
     let landscapeFocusedId: String?
     var explicitTileShape: CollectionTileShape? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
+    /// The row, as it is first built, gets its cards a few at a time, from where it is scrolled,
+    /// instead of all in one frame: a row Home builds ahead, off screen (as focus settles, the
+    /// row three away came in one go, the 60-160 ms frame half a second after a move down), and
+    /// any row but the focused one in a fast run of moves (rows came faster than one frame could
+    /// build them, a 340 ms stall). Read as the row first appears; it then finishes at its pace,
+    /// or at once when focus comes into it.
+    var stagesCardBuild = false
     var restrictFocusToCardKey: String? = nil
     var retainFocusAppearanceForCardKey: String? = nil
     var suppressFocusAnimations: Bool = false
@@ -416,6 +433,37 @@ struct TVCatalogRow: View {
     var onMove: ((MoveCommandDirection) -> Void)? = nil
 
     @State private var scrollIndex: Int?
+    @State private var stagedCardCount = 0
+    @State private var cardStaging = TVRowCardStaging()
+
+    /// Decided once, by the row's first build (its first body reads it), as `stagesCardBuild` said
+    /// then.
+    private func decideCardStaging() {
+        guard !cardStaging.isDecided else { return }
+        cardStaging.isDecided = true
+        cardStaging.isActive = stagesCardBuild
+    }
+
+    /// The rest of the row's cards, now.
+    private func finishCardStaging() {
+        guard cardStaging.isActive else { return }
+        cardStaging.isActive = false
+        stagedCardCount = Int.max / 2
+    }
+
+    /// Cards an off-screen row adds every 40 ms, and how many it is done at (a screen's width).
+    private static let stagedCardStep = 3
+    private static let stagedCardTarget = 12
+
+    /// Whether card `index` waits its turn in an off-screen row built a few cards at a time:
+    /// the cards from just before where the row is scrolled come first.
+    private func isCardBuildDeferred(_ index: Int) -> Bool {
+        decideCardStaging()
+        guard cardStaging.isActive else { return false }
+        let start = max(0, effectiveScrollIndex - 1)
+        return index < start || index >= start + max(2, stagedCardCount)
+    }
+
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
@@ -467,11 +515,22 @@ struct TVCatalogRow: View {
         }
     }
 
+    /// How far along a row Back still slides back to its first card (further, it jumps).
+    private static let backSlideLimit = 24
+
     private func alignScrollIndexToRestrictedFocus() {
         guard let restrictedFocusIndex else { return }
-        withTransaction(Transaction(animation: nil)) {
-            scrollIndex = restrictedFocusIndex
-            onScrollIndexChange(restrictedFocusIndex)
+        let from = scrollIndex ?? initialScrollIndex
+        if restrictedFocusIndex == 0, (1...Self.backSlideLimit).contains(from) {
+            withAnimation(.easeOut(duration: 0.3)) {
+                scrollIndex = restrictedFocusIndex
+                onScrollIndexChange(restrictedFocusIndex)
+            }
+        } else {
+            withTransaction(Transaction(animation: nil)) {
+                scrollIndex = restrictedFocusIndex
+                onScrollIndexChange(restrictedFocusIndex)
+            }
         }
     }
 
@@ -555,6 +614,18 @@ struct TVCatalogRow: View {
         .focusSection()
         .defaultFocusIfAvailable(externalFocus, defaultFocusCardKey)
         .modifier(OptionalMoveCommandHandler(handler: onMove))
+        .task {
+            decideCardStaging()
+            guard cardStaging.isActive else { return }
+            while stagedCardCount < Self.stagedCardTarget {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                guard !Task.isCancelled, cardStaging.isActive else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { stagedCardCount += Self.stagedCardStep }
+            }
+            finishCardStaging()
+        }
     }
 
     private var cardStrip: some View {
@@ -588,8 +659,12 @@ struct TVCatalogRow: View {
                 let upcomingArtworkURL: String? = id == TVHomeSection.upcomingId ? progressItem?.meta.backdropUrl : nil
                 let episodeArtworkURL: String? = progressItem?.episodeArtworkURL ?? upcomingArtworkURL ?? calendarLabel?.artworkURL
                 let isUpNext: Bool = progressItem?.isUpNextEntry == true || calendarLabel != nil
+                let isRevealableNextEpisode = (id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId)
+                    && progressItem?.isUpNextEntry == true
+                    && revealableNextEpisodeMetaIDs.contains(item.id)
                 let upNextBadgeText: String? = progressItem?.upNextBadgeText ?? calendarLabel?.badge
                 let handleFocus: (NuvioMeta) -> Void = { focused in
+                    finishCardStaging()
                     let focusStarted = TVHomeDebugTrace.now()
                     let targetIndex = items.firstIndex(where: {
                         TVHomeCardIdentity.key(rowID: id, item: $0) == cardKey
@@ -651,9 +726,12 @@ struct TVCatalogRow: View {
                     continueEpisodeTitleText: episodeTitleText,
                     continueEpisodeArtworkURL: episodeArtworkURL,
                     continueIsUpNext: isUpNext,
+                    continueEpisodeSpoilerRevealable: isRevealableNextEpisode,
                     continueUpNextBadgeText: upNextBadgeText,
                     collectionOrigin: id == TVHomeSection.continueWatchingId && progressItem?.isUpNextEntry == false
                         ? collectionOriginsByItemId[item.id] : nil,
+                    showsAniListOrigin: id == TVHomeSection.continueWatchingId,
+                    sourceBadge: AniListService.sourceBadge(rowID: id),
                     showsWatchedBadge: id != TVHomeSection.continueWatchingId && id != TVHomeSection.upcomingId
                         && id != TVHomeSection.calendarTodayId,
                     shouldRequestInitialFocus: shouldRequestInitialFocus,
@@ -685,7 +763,8 @@ struct TVCatalogRow: View {
                         restrictFocusToCardKey: restrictFocusToCardKey,
                         suppressFocusAnimations: suppressFocusAnimations
                     ),
-                    onMove: onMove
+                    onMove: onMove,
+                    buildsLater: isCardBuildDeferred(itemIndex)
                 ) {
                     onSelect(item)
                 }
@@ -754,8 +833,10 @@ extension TVCatalogRow: Equatable {
               lhs.showsSectionTitle == rhs.showsSectionTitle,
               lhs.explicitTileShape == rhs.explicitTileShape,
               lhs.initialFocusCardKey == rhs.initialFocusCardKey,
+              lhs.stagesCardBuild == rhs.stagesCardBuild,
               lhs.items.count == rhs.items.count,
               lhs.progressByItemId.count == rhs.progressByItemId.count,
+              lhs.revealableNextEpisodeMetaIDs == rhs.revealableNextEpisodeMetaIDs,
               lhs.calendarLabelsByItemId == rhs.calendarLabelsByItemId
         else {
             return false
@@ -798,15 +879,34 @@ extension TVCatalogRow: Equatable {
 }
 
 enum TVHomeGridLayout {
-    static let columns = 7
+    static let defaultItemsPerRow = 7
+    static let columns = defaultItemsPerRow
     static let defaultRows = 3
     static let rows = defaultRows
     static let minRows = 1
     static let maxRows = 10
+    static let minItemsPerRow = 4
+    static let maxItemsPerRow = 20
+    static let seeAllItemsPerRow = maxItemsPerRow + 1
 
-    static func previewItemCount(rows: Int = defaultRows) -> Int {
-        let effectiveRows = max(minRows, min(maxRows, rows))
-        return effectiveRows * columns - 1
+    static func showsAllItems(itemsPerRow: Int) -> Bool {
+        itemsPerRow == seeAllItemsPerRow
+    }
+
+    static func clampedItemsPerRow(_ itemsPerRow: Int) -> Int {
+        max(minItemsPerRow, min(maxItemsPerRow, itemsPerRow))
+    }
+
+    static func clampedRows(_ rows: Int) -> Int {
+        max(minRows, min(maxRows, rows))
+    }
+
+    static func previewItemCount(
+        rows: Int = defaultRows,
+        itemsPerRow: Int = defaultItemsPerRow
+    ) -> Int {
+        guard !showsAllItems(itemsPerRow: itemsPerRow) else { return .max }
+        return clampedRows(rows) * clampedItemsPerRow(itemsPerRow) - 1
     }
 
     static var previewItemCount: Int {
@@ -822,11 +922,28 @@ enum TVHomeGridLayout {
     /// Inset inside tvOS's 80pt safe area (80 + 61 = 141pt from screen edges) to center the 7-column grid symmetrically.
     static let horizontalPadding: CGFloat = 61
 
-    static var gridColumns: [GridItem] {
+    static func gridColumns(itemsPerRow: Int = defaultItemsPerRow) -> [GridItem] {
         Array(
             repeating: GridItem(.fixed(posterWidth), spacing: itemSpacing, alignment: .top),
-            count: columns
+            count: clampedItemsPerRow(itemsPerRow)
         )
+    }
+
+    static var gridColumns: [GridItem] {
+        gridColumns()
+    }
+
+    static func horizontalGridRows(rowCount: Int = defaultRows, showsLabels: Bool = false) -> [GridItem] {
+        let rowHeight = posterHeight + (showsLabels ? 60 : 0)
+        return Array(
+            repeating: GridItem(.fixed(rowHeight), spacing: itemSpacing, alignment: .top),
+            count: clampedRows(rowCount)
+        )
+    }
+
+    static func gridContentWidth(itemsPerRow: Int = defaultItemsPerRow) -> CGFloat {
+        let count = clampedItemsPerRow(itemsPerRow)
+        return CGFloat(count) * posterWidth + CGFloat(count - 1) * itemSpacing
     }
 
 }
@@ -852,9 +969,26 @@ struct TVHomeCatalogGridSection: View {
 
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
     @AppStorage(SettingsKey.gridRows) private var gridRows = TVHomeGridLayout.defaultRows
+    @AppStorage(SettingsKey.gridItemsPerRow) private var gridItemsPerRow = TVHomeGridLayout.defaultItemsPerRow
+    @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
 
     private var previewItems: [NuvioMeta] {
-        Array(section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows)))
+        Array(section.items.prefix(
+            TVHomeGridLayout.previewItemCount(rows: gridRows, itemsPerRow: gridItemsPerRow)
+        ))
+    }
+
+    private var showsAllItems: Bool {
+        TVHomeGridLayout.showsAllItems(itemsPerRow: gridItemsPerRow)
+    }
+
+    private var focusTargetCardKey: String? {
+        guard let first = previewItems.first else { return nil }
+        if let initialFocusCardKey,
+           previewItems.contains(where: { TVHomeCardIdentity.key(rowID: section.id, item: $0) == initialFocusCardKey }) {
+            return initialFocusCardKey
+        }
+        return TVHomeCardIdentity.key(rowID: section.id, item: first)
     }
 
     private var seeAllKey: String {
@@ -862,11 +996,44 @@ struct TVHomeCatalogGridSection: View {
     }
 
     private var defaultFocusCardKey: String? {
-        guard let first = previewItems.first else { return nil }
-        if let initialFocusCardKey, previewItems.contains(where: { TVHomeCardIdentity.key(rowID: section.id, item: $0) == initialFocusCardKey }) {
-            return initialFocusCardKey
+        focusTargetCardKey
+    }
+
+    @ViewBuilder
+    private func posterCard(for item: NuvioMeta) -> some View {
+        let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: item)
+        let shouldRequestInitialFocus = cardKey == initialFocusCardKey
+        PosterGridCard(
+            meta: item,
+            customPosterScreen: customPosterScreen,
+            sourceBadge: AniListService.sourceBadge(rowID: section.id),
+            width: TVHomeGridLayout.posterWidth,
+            height: TVHomeGridLayout.posterHeight,
+            externalFocus: externalFocus,
+            focusValue: cardKey,
+            retainFocusAppearance: (retainFocusAppearanceForCardKey ?? restrictFocusToCardKey) == cardKey,
+            shouldRequestInitialFocus: shouldRequestInitialFocus,
+            onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
+            onFocus: { onFocus($0) },
+            onBlur: onBlur,
+            onLongPress: onLongPress.map { cb in { cb(item) } },
+            onRefreshCatalog: onRefreshCatalog
+        ) {
+            onSelect(item)
         }
-        return TVHomeCardIdentity.key(rowID: section.id, item: first)
+        .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != cardKey)
+        .id(cardKey)
+    }
+
+    private func restoreHorizontalFocus(using proxy: ScrollViewProxy) {
+        guard showsAllItems,
+              let focusTargetCardKey,
+              previewItems.contains(where: {
+                  TVHomeCardIdentity.key(rowID: section.id, item: $0) == focusTargetCardKey
+              }) else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(focusTargetCardKey, anchor: .center)
+        }
     }
 
     var body: some View {
@@ -890,47 +1057,45 @@ struct TVHomeCatalogGridSection: View {
                 }
             }
 
-            LazyVGrid(
-                columns: TVHomeGridLayout.gridColumns,
-                alignment: .leading,
-                spacing: TVHomeGridLayout.itemSpacing
-            ) {
-                ForEach(previewItems, id: \.homeTitleIdentity) { item in
-                    let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: item)
-                    let shouldRequestInitialFocus = cardKey == initialFocusCardKey
-                    PosterGridCard(
-                        meta: item,
-                        customPosterScreen: customPosterScreen,
-                        width: TVHomeGridLayout.posterWidth,
-                        height: TVHomeGridLayout.posterHeight,
-                        externalFocus: externalFocus,
-                        focusValue: cardKey,
-                        retainFocusAppearance: (retainFocusAppearanceForCardKey ?? restrictFocusToCardKey) == cardKey,
-                        shouldRequestInitialFocus: shouldRequestInitialFocus,
-                        onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
-                        onFocus: { onFocus($0) },
-                        onBlur: onBlur,
-                        onLongPress: onLongPress.map { cb in { cb(item) } },
-                        onRefreshCatalog: onRefreshCatalog
-                    ) {
-                        onSelect(item)
-                    }
-                    .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != cardKey)
-                }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    if showsAllItems {
+                        LazyHGrid(
+                            rows: TVHomeGridLayout.horizontalGridRows(rowCount: gridRows, showsLabels: posterLabels),
+                            alignment: .top,
+                            spacing: TVHomeGridLayout.itemSpacing
+                        ) {
+                            ForEach(previewItems, id: \.homeTitleIdentity) { posterCard(for: $0) }
+                        }
+                    } else {
+                        LazyVGrid(
+                            columns: TVHomeGridLayout.gridColumns(itemsPerRow: gridItemsPerRow),
+                            alignment: .leading,
+                            spacing: TVHomeGridLayout.itemSpacing
+                        ) {
+                            ForEach(previewItems, id: \.homeTitleIdentity) { posterCard(for: $0) }
 
-                TVHomeSeeAllCard(
-                    title: section.title,
-                    externalFocus: externalFocus,
-                    externalFocusValue: seeAllKey,
-                    retainFocusAppearance: (retainFocusAppearanceForCardKey ?? restrictFocusToCardKey) == seeAllKey,
-                    shouldRequestInitialFocus: seeAllKey == initialFocusCardKey,
-                    onInitialFocusRequested: seeAllKey == initialFocusCardKey
-                        ? onInitialFocusRequested
-                        : nil,
-                    onFocus: onSeeAllFocus,
-                    action: onSeeAll
-                )
-                .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != seeAllKey)
+                            TVHomeSeeAllCard(
+                                title: section.title,
+                                externalFocus: externalFocus,
+                                externalFocusValue: seeAllKey,
+                                retainFocusAppearance: (retainFocusAppearanceForCardKey ?? restrictFocusToCardKey) == seeAllKey,
+                                shouldRequestInitialFocus: seeAllKey == initialFocusCardKey,
+                                onInitialFocusRequested: seeAllKey == initialFocusCardKey
+                                    ? onInitialFocusRequested
+                                    : nil,
+                                onFocus: onSeeAllFocus,
+                                action: onSeeAll
+                            )
+                            .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != seeAllKey)
+                        }
+                        .frame(width: TVHomeGridLayout.gridContentWidth(itemsPerRow: gridItemsPerRow), alignment: .leading)
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .scrollClipDisabledIfAvailable()
+                .onAppear { restoreHorizontalFocus(using: proxy) }
+                .onChange(of: initialFocusCardKey) { _, _ in restoreHorizontalFocus(using: proxy) }
             }
         }
         .padding(.horizontal, TVHomeGridLayout.horizontalPadding)
@@ -989,8 +1154,8 @@ struct TVHomeSeeAllCard: View {
                 )
             )
             .shadow(
-                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2),
-                radius: showsFocusedAppearance ? 16 : 6
+                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0),
+                radius: showsFocusedAppearance ? 16 : 0
             )
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1)
         }
@@ -1016,7 +1181,14 @@ struct TVHomeSeeAllCard: View {
                 didRequestInitialFocus = false
             }
         }
-        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocusedAppearance)
+        .animation(
+            smoothFocus
+                ? (AppleTVCapability.current.supportsLiquidGlass
+                    ? .spring(response: 0.28, dampingFraction: 0.75)
+                    : .easeOut(duration: 0.14))
+                : nil,
+            value: showsFocusedAppearance
+        )
     }
 }
 
@@ -1334,11 +1506,22 @@ struct TVCollectionFolderRow: View {
         }
     }
 
+    /// How far along a row Back still slides back to its first card (further, it jumps).
+    private static let backSlideLimit = 24
+
     private func alignScrollIndexToRestrictedFocus() {
         guard let restrictedFocusIndex else { return }
-        withTransaction(Transaction(animation: nil)) {
-            scrollIndex = restrictedFocusIndex
-            onScrollIndexChange(restrictedFocusIndex)
+        let from = scrollIndex ?? initialScrollIndex
+        if restrictedFocusIndex == 0, (1...Self.backSlideLimit).contains(from) {
+            withAnimation(.easeOut(duration: 0.3)) {
+                scrollIndex = restrictedFocusIndex
+                onScrollIndexChange(restrictedFocusIndex)
+            }
+        } else {
+            withTransaction(Transaction(animation: nil)) {
+                scrollIndex = restrictedFocusIndex
+                onScrollIndexChange(restrictedFocusIndex)
+            }
         }
     }
 
@@ -1677,8 +1860,8 @@ struct TVCollectionFolderCard: View {
         showFocus ? (focusHighlighterEnabled ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width) : 0
     }
 
-    private var shadowOpacity: Double { showFocus ? 0.5 : 0.2 }
-    private var shadowRadius: CGFloat { showFocus ? 16 : 6 }
+    private var shadowOpacity: Double { showFocus ? 0.5 : 0 }
+    private var shadowRadius: CGFloat { showFocus ? 16 : 0 }
 
     private var focusGifURLString: String? {
         folder.activeFocusGifURLString

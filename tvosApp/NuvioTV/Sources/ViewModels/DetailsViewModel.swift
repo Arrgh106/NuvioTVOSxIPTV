@@ -495,7 +495,14 @@ class DetailsViewModel: ObservableObject {
     }
 
     @discardableResult
-    func loadDetails(id: String, type: String) -> Task<Void, Never> {
+    func loadDetails(
+        id: String,
+        type: String,
+        relatedItemsSnapshot: [RelatedTitle]? = nil,
+        relatedPeopleSnapshot: [TmdbPersonMetadata]? = nil,
+        relatedCompaniesSnapshot: [MetaCompany]? = nil,
+        simklRatingsSnapshot: SimklTitleRatings? = nil
+    ) -> Task<Void, Never> {
         TVHomeDebugTrace.log("details.load.begin id=\(id) type=\(type)")
         didLoadMetadataSuccessfully = false
         metadataLoadError = nil
@@ -510,29 +517,52 @@ class DetailsViewModel: ObservableObject {
         requestedStreamId = nil
         detailsRequestGeneration &+= 1
         let requestGeneration = detailsRequestGeneration
+        let hasRelatedItemsSnapshot = relatedItemsSnapshot != nil
 
         // Check if metadata is already in memory so we can render frame 0 instantly without showing a spinner.
         // Any cached catalog entry already has the title, artwork, rating, and description needed for frame 0,
         // allowing the details screen to appear immediately while full details and episode guides load in the background.
         var cachedHadImdbId = false
+        var cachedSeedID: String?
         if let cached = repository.cachedMetadata(for: id),
            !cached.name.isEmpty {
+            cachedSeedID = cached.id
             cachedHadImdbId = NuvioMeta.canonicalImdbID(from: cached.imdbId ?? "") != nil
                 || NuvioMeta.canonicalImdbID(from: cached.id) != nil
             uiState = DetailsUiState(
                 isLoading: false,
                 meta: seedingCachedRatings(into: cached),
                 error: nil,
-                isInWatchlist: LibraryStore.contains(metaId: cached.id, type: cached.type),
-                isWatched: WatchedStore.contains(meta: cached)
+                isInWatchlist: SelectedLibraryService.isInLibrary(meta: cached),
+                isWatched: WatchedStore.contains(meta: cached),
+                moreLikeThis: relatedItemsSnapshot ?? [],
+                companies: relatedCompaniesSnapshot ?? [],
+                people: relatedPeopleSnapshot ?? [],
+                simklRatings: simklRatingsSnapshot
             )
             if let enrichmentStarter = injectedEnrichmentStarter {
                 enrichmentStarter(cached, requestGeneration)
             } else {
-                loadEnrichment(for: cached, generation: requestGeneration)
+                loadEnrichment(
+                    for: cached,
+                    generation: requestGeneration,
+                    skipMoreLikeThisFetch: hasRelatedItemsSnapshot
+                )
             }
         } else if uiState.meta?.id != id {
-            uiState = DetailsUiState(isLoading: true, error: nil)
+            uiState = DetailsUiState(
+                isLoading: true,
+                error: nil,
+                moreLikeThis: relatedItemsSnapshot ?? [],
+                companies: relatedCompaniesSnapshot ?? [],
+                people: relatedPeopleSnapshot ?? [],
+                simklRatings: simklRatingsSnapshot
+            )
+        } else {
+            if let relatedItemsSnapshot { uiState.moreLikeThis = relatedItemsSnapshot }
+            if let relatedCompaniesSnapshot { uiState.companies = relatedCompaniesSnapshot }
+            if let relatedPeopleSnapshot { uiState.people = relatedPeopleSnapshot }
+            if let simklRatingsSnapshot { uiState.simklRatings = simklRatingsSnapshot }
         }
 
         let task = Task { [weak self] in
@@ -551,7 +581,7 @@ class DetailsViewModel: ObservableObject {
                 JellyfinLiveLookup.remember(resolvedMeta, alias: id)
                 var primaryState = self.uiState
                 primaryState.meta = resolvedMeta
-                primaryState.isInWatchlist = LibraryStore.contains(metaId: resolvedMeta.id, type: resolvedMeta.type)
+                primaryState.isInWatchlist = SelectedLibraryService.isInLibrary(meta: resolvedMeta)
                 primaryState.isWatched = WatchedStore.contains(meta: resolvedMeta)
                 primaryState.isLoading = false
                 primaryState.error = nil
@@ -577,11 +607,18 @@ class DetailsViewModel: ObservableObject {
                     let metaHasImdbId = NuvioMeta.canonicalImdbID(from: meta.imdbId ?? "") != nil
                         || NuvioMeta.canonicalImdbID(from: meta.id) != nil
                     let needsEnrichmentRetry = !cachedHadImdbId && metaHasImdbId
-                    if self.enrichmentTask == nil || needsEnrichmentRetry {
+                    // An AniList card of a later season loads as the whole series, under the
+                    // first season's id: enrich that title, not the card.
+                    let titleChanged = cachedSeedID.map { $0 != meta.id } ?? false
+                    if self.enrichmentTask == nil || needsEnrichmentRetry || titleChanged {
                         if let enrichmentStarter = self.injectedEnrichmentStarter {
                             enrichmentStarter(meta, requestGeneration)
                         } else {
-                            self.loadEnrichment(for: meta, generation: requestGeneration)
+                            self.loadEnrichment(
+                                for: meta,
+                                generation: requestGeneration,
+                                skipMoreLikeThisFetch: hasRelatedItemsSnapshot
+                            )
                         }
                     }
                 }
@@ -592,7 +629,9 @@ class DetailsViewModel: ObservableObject {
                       self.detailsRequestGeneration == requestGeneration else { return }
                 self.didLoadMetadataSuccessfully = false
                 self.metadataLoadError = error.localizedDescription
-                if self.uiState.meta == nil {
+                if let currentMeta = self.uiState.meta {
+                    self.triggerStreamPreFetch(for: currentMeta)
+                } else {
                     self.uiState.isLoading = false
                     self.uiState.error = error.localizedDescription
                 }
@@ -667,9 +706,44 @@ class DetailsViewModel: ObservableObject {
         prepareStreams(forId: targetStreamId, type: contentType)
     }
 
+    /// AniList's score first (an AniList title's own, or a Cinemeta anime's), then MDBList and the
+    /// rating add-ons, which ask about an AniList title by the IMDb id it maps to.
+    nonisolated static func combinedRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        async let aniListTask = AniListService.ratings(for: meta)
+        let asked = await AniListService.ratingsMeta(for: meta)
+        async let mdbTask = MdbListDetailsService.fetchRatings(forOptional: asked)
+        async let addonTask = AddonRatingsService.fetchRatings(forOptional: asked)
+        let (aniListRatings, mdbRatings, addonRatings) = await (aniListTask, mdbTask, addonTask)
+        var seen = Set<String>()
+        return (aniListRatings + mdbRatings + addonRatings).filter { seen.insert($0.source.lowercased()).inserted }
+    }
+
+    /// Whether an AniList title is in the selected library (Trakt, Simkl, MDBList, WeTrakr), which
+    /// keeps it under the IMDb/TMDB ids it maps to. nil = not known (or the local library).
+    nonisolated static func aniListLibraryMembership(for meta: NuvioMeta) async -> Bool? {
+        let mode = await MainActor.run { TraktSettingsStore.librarySourceMode }
+        guard mode != .local else { return nil }
+        let libraryMeta = await AniListService.libraryMeta(for: meta)
+        switch mode {
+        case .mdblist:
+            return await MdbListLibraryService.isInWatchlist(libraryMeta)
+        case .wetrakr:
+            return await WeTrakrLibraryService.isInWatchlist(libraryMeta)
+        default:
+            let inLib = await MainActor.run {
+                SelectedLibraryService.isInLibrary(meta: meta) || SelectedLibraryService.isInLibrary(meta: libraryMeta)
+            }
+            return inLib ? true : nil
+        }
+    }
+
     /// Loads More Like This, Production companies, and top Trakt comments
     /// progressively and concurrently as soon as each returns.
-    private func loadEnrichment(for meta: NuvioMeta, generation: UInt64) {
+    private func loadEnrichment(
+        for meta: NuvioMeta,
+        generation: UInt64,
+        skipMoreLikeThisFetch: Bool = false
+    ) {
         enrichmentTask?.cancel()
         enrichmentTask = Task { [weak self] in
             guard let self else { return }
@@ -681,6 +755,31 @@ class DetailsViewModel: ObservableObject {
                 if self.detailsRequestGeneration == generation {
                     self.uiState.isLoadingEnrichment = false
                 }
+            }
+
+            // Settings → Integrations → AniList: characters and recommendations from AniList;
+            // TMDB, Trakt and Simkl know no AniList ids.
+            if AniListService.isAniListTitle(meta.id) {
+                // The ratings as for any title: AniList's own, then MDBList and the rating
+                // add-ons by the IMDb id it maps to.
+                async let ratingsTask = Self.combinedRatings(for: meta)
+                if !skipMoreLikeThisFetch {
+                    let extras = await AniListService.extras(metaID: meta.id)
+                    guard self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
+                    if !extras.people.isEmpty {
+                        self.uiState.people = extras.people
+                    }
+                    if !extras.recommendations.isEmpty {
+                        self.uiState.moreLikeThis = extras.recommendations
+                    }
+                }
+                let ratings = await ratingsTask
+                self.applyMdbRatings(ratings, for: meta.id, generation: generation)
+                // In the selected library under the IMDb/TMDB ids it maps to.
+                if let member = await Self.aniListLibraryMembership(for: meta) {
+                    self.applyMdbListWatchlistMembership(member, for: meta.id, generation: generation)
+                }
+                return
             }
 
             let isSeries = meta.isSeries || NuvioMeta.isSeriesType(meta.type)
@@ -737,10 +836,7 @@ class DetailsViewModel: ObservableObject {
 
                 // 4. External Ratings (MDBList & Add-ons)
                 group.addTask {
-                    async let mdbTask = MdbListDetailsService.fetchRatings(for: meta)
-                    async let addonTask = AddonRatingsService.fetchRatings(for: meta)
-                    let (mdbRatings, addonRatings) = await (mdbTask, addonTask)
-                    let combinedRatings = mdbRatings + addonRatings
+                    let combinedRatings = await Self.combinedRatings(for: meta)
                     await MainActor.run { [weak self] in
                         self?.applyMdbRatings(combinedRatings, for: meta.id, generation: generation)
                     }
@@ -769,7 +865,7 @@ class DetailsViewModel: ObservableObject {
                 }
 
                 // 6. Simkl Details & Ratings
-                if isSimklConfigured {
+                if isSimklConfigured && (!skipMoreLikeThisFetch || self.uiState.simklRatings == nil) {
                     group.addTask {
                         let simkl = await SimklDetailsService.fetchDetails(for: meta)
                         await MainActor.run { [weak self] in
@@ -786,16 +882,20 @@ class DetailsViewModel: ObservableObject {
                     }
                 }
 
-                // 8. More Like This
-                group.addTask {
-                    let moreLikeThis = await Self.fetchAndHydrateMoreLikeThis(
-                        for: meta,
-                        preferredSource: preferredSource,
-                        isTraktAuth: isTraktAuth,
-                        isSimklConfigured: isSimklConfigured
-                    )
-                    await MainActor.run { [weak self] in
-                        self?.applyMoreLikeThis(moreLikeThis, for: meta.id, generation: generation)
+                // 8. More Like This. A valid navigation snapshot already has
+                // the exact ordered row the user selected from, so reload only
+                // the other enrichment while restoring this title.
+                if !skipMoreLikeThisFetch {
+                    group.addTask {
+                        let moreLikeThis = await Self.fetchAndHydrateMoreLikeThis(
+                            for: meta,
+                            preferredSource: preferredSource,
+                            isTraktAuth: isTraktAuth,
+                            isSimklConfigured: isSimklConfigured
+                        )
+                        await MainActor.run { [weak self] in
+                            self?.applyMoreLikeThis(moreLikeThis, for: meta.id, generation: generation)
+                        }
                     }
                 }
             }
@@ -950,6 +1050,10 @@ class DetailsViewModel: ObservableObject {
 
     private func applyMoreLikeThis(_ items: [RelatedTitle], for metaId: String, generation: UInt64) {
         guard isCurrentRequest(metaId: metaId, generation: generation) else { return }
+        for item in items {
+            repository.cacheCatalogMetadata(item.asMeta)
+            CinemetaCatalogRepository.cacheCatalogMetadata(item.asMeta)
+        }
         uiState.moreLikeThis = items
     }
 
@@ -1150,7 +1254,7 @@ class DetailsViewModel: ObservableObject {
     func refreshWatchlistAndWatchedStatus() {
         guard let meta = uiState.meta else { return }
         var updatedState = uiState
-        updatedState.isInWatchlist = LibraryStore.contains(metaId: meta.id, type: meta.type)
+        updatedState.isInWatchlist = SelectedLibraryService.isInLibrary(meta: meta)
         updatedState.isWatched = WatchedStore.contains(meta: meta)
         uiState = updatedState
     }
@@ -1160,6 +1264,7 @@ class DetailsViewModel: ObservableObject {
         if TraktSettingsStore.librarySourceMode == .local {
             watchlistMutationGeneration &+= 1
             uiState.isInWatchlist = LibraryStore.toggle(meta: meta)
+            TrackingAddonService.sendLibraryMembership(uiState.isInWatchlist, meta: meta)
             return
         }
 
@@ -1174,6 +1279,7 @@ class DetailsViewModel: ObservableObject {
         let mutationGeneration = watchlistMutationGeneration
         let requestGeneration = detailsRequestGeneration
         uiState.isInWatchlist = desiredMembership
+        TrackingAddonService.sendLibraryMembership(desiredMembership, meta: meta)
         let previousMutation = watchlistMutationTask
         watchlistMutationTask = Task { @MainActor in
             if let previousMutation { await previousMutation.value }
@@ -1208,6 +1314,7 @@ class DetailsViewModel: ObservableObject {
         } else {
             uiState.isWatched = WatchedStore.toggle(meta: meta)
         }
+        TrackingAddonService.sendWatched(uiState.isWatched, meta: meta)
     }
 
     func setMdbListUserRating(_ rating: Int?) {
