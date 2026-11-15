@@ -191,6 +191,8 @@ struct LiveTVSourceEditor: View {
     let target: Target
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
+    /// The form opens on its first field (not on the switches below).
+    @Namespace private var formScope
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @State private var name: String
@@ -240,6 +242,7 @@ struct LiveTVSourceEditor: View {
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
                             text: $name
                         )
+                        .prefersDefaultFocus(true, in: formScope)
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_server", fallback: "Server"),
                             subtitle: L10n.string("livetv_source_server_detail", fallback: "e.g. http://example.com:8080"),
@@ -315,6 +318,7 @@ struct LiveTVSourceEditor: View {
                     .focusSection()
                 }
                 .padding(40)
+                .focusScope(formScope)
             }
         }
     }
@@ -367,6 +371,8 @@ struct LiveTVPlaylistEditor: View {
     let target: LiveTVSourceEditor.Target
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
+    /// The form opens on its first field (not on the switches below).
+    @Namespace private var formScope
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @State private var name: String
@@ -409,6 +415,7 @@ struct LiveTVPlaylistEditor: View {
                             placeholder: L10n.string("livetv_source_name_placeholder", fallback: "e.g. My provider"),
                             text: $name
                         )
+                        .prefersDefaultFocus(true, in: formScope)
                         LiveTVSettingsRows.textField(
                             title: L10n.string("livetv_source_link", fallback: "Playlist Link"),
                             subtitle: L10n.string("livetv_source_link_detail", fallback: "e.g. http://example.com/playlist.m3u"),
@@ -464,6 +471,7 @@ struct LiveTVPlaylistEditor: View {
                     .focusSection()
                 }
                 .padding(40)
+                .focusScope(formScope)
             }
         }
     }
