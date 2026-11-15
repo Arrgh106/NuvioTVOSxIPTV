@@ -17614,9 +17614,9 @@ enum LiveTVSettingsRows {
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
         status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
     ) -> some View {
-        // The editor kept off screen (as the other settings fields): the
-        // native one behind the capsule shone through on the TV.
-        SettingsTextFieldRow(
+        // The system's field: tvOS goes on to the next one by itself when
+        // a field is confirmed (also typing on the iPhone).
+        SettingsNativeTextFieldRow(
             title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
             fieldWidth: fieldWidth, status: status, statusColor: statusColor)
     }
@@ -17957,12 +17957,16 @@ private struct SettingsNativeTextFieldRow: View {
 
             ZStack(alignment: .leading) {
                 Group {
+                    // Fork: the title as prompt, so the iPhone's keyboard
+                    // says what the field is for; drawn clear (the field's
+                    // own text shone through the capsule on the TV).
                     if isSecure {
-                        SecureField("", text: $text)
+                        SecureField("", text: $text, prompt: Text(title).foregroundColor(.clear))
                     } else {
-                        TextField("", text: $text)
+                        TextField("", text: $text, prompt: Text(title).foregroundColor(.clear))
                     }
                 }
+                .foregroundColor(.clear)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
                 .focusEffectDisabledIfAvailable()
