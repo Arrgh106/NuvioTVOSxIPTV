@@ -17612,15 +17612,13 @@ enum LiveTVSettingsRows {
 
     static func textField(
         title: String, subtitle: String, placeholder: String, text: Binding<String>, fieldWidth: CGFloat = 300,
-        status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false,
-        chain: Binding<Int?>? = nil, chainIndex: Int = 0, chainLast: Bool = true
+        status: String? = nil, statusColor: Color = .white.opacity(0.56), isSecure: Bool = false
     ) -> some View {
         // The editor kept off screen (as the other settings fields): the
         // native one behind the capsule shone through on the TV.
         SettingsTextFieldRow(
             title: title, subtitle: subtitle, placeholder: placeholder, text: text, isSecure: isSecure,
-            fieldWidth: fieldWidth, status: status, statusColor: statusColor,
-            chain: chain, chainIndex: chainIndex, chainLast: chainLast)
+            fieldWidth: fieldWidth, status: status, statusColor: statusColor)
     }
 
     static func stepper(
@@ -17899,11 +17897,6 @@ private struct SettingsTextFieldRow: View {
     var statusColor: Color = .white.opacity(0.56)
     var centerDisplayText = false
     var onCommit: () -> Void = {}
-    /// Fields in a form: Return goes on to the field `chainIndex + 1`
-    /// (as the system's fields did), the last one ends.
-    var chain: Binding<Int?>? = nil
-    var chainIndex = 0
-    var chainLast = true
 
     @FocusState private var isFocused: Bool
     @State private var isEditing = false
@@ -17930,13 +17923,7 @@ private struct SettingsTextFieldRow: View {
                     fieldWidth: fieldWidth,
                     centerDisplayText: centerDisplayText,
                     prompt: title,
-                    returnKey: chain != nil && !chainLast ? .next : .done,
-                    onCommit: onCommit,
-                    onReturn: chain == nil || chainLast ? nil : {
-                        let next = chainIndex + 1
-                        // After the keyboard has gone.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chain?.wrappedValue = next }
-                    }
+                    onCommit: onCommit
                 )
             }
         }
@@ -17944,12 +17931,6 @@ private struct SettingsTextFieldRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
-        .onChange(of: chain?.wrappedValue ?? -1) { _, wanted in
-            guard wanted == chainIndex else { return }
-            chain?.wrappedValue = nil
-            isFocused = true
-            isEditing = true
-        }
     }
 }
 
@@ -18032,9 +18013,7 @@ struct SettingsGlassTextField: View {
     var keyboardType: UIKeyboardType = .default
     /// What the field is for, in the iPhone's keyboard (default: the placeholder).
     var prompt: String? = nil
-    var returnKey: UIReturnKeyType = .done
     var onCommit: () -> Void = {}
-    var onReturn: (() -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -18044,9 +18023,7 @@ struct SettingsGlassTextField: View {
                 isSecure: isSecure,
                 prompt: prompt ?? placeholder,
                 keyboardType: keyboardType,
-                returnKey: returnKey,
-                onCommit: onCommit,
-                onReturn: onReturn
+                onCommit: onCommit
             )
                 .frame(width: 1, height: 1)
                 .offset(x: -4_000)
@@ -18084,11 +18061,7 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     /// What the field is for: shown in the iPhone's keyboard (Remote app).
     var prompt: String? = nil
     var keyboardType: UIKeyboardType = .default
-    /// `.next` when Return goes on to the next field.
-    var returnKey: UIReturnKeyType = .done
     var onCommit: () -> Void = {}
-    /// Return pressed (not dismissed): to go on to the next field.
-    var onReturn: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> HiddenSettingsUITextField {
         let textField = HiddenSettingsUITextField(frame: .zero)
@@ -18096,7 +18069,7 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
         textField.backgroundColor = .clear
         textField.textColor = .clear
         textField.tintColor = .clear
-        textField.returnKeyType = returnKey
+        textField.returnKeyType = .done
         textField.keyboardAppearance = .dark
         textField.keyboardType = keyboardType
         textField.autocorrectionType = .no
@@ -18129,21 +18102,19 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, isEditing: $isEditing, onCommit: onCommit, onReturn: onReturn)
+        Coordinator(text: $text, isEditing: $isEditing, onCommit: onCommit)
     }
 
     final class Coordinator: NSObject, UITextFieldDelegate {
         private let text: Binding<String>
         private let isEditing: Binding<Bool>
         private let onCommit: () -> Void
-        private let onReturn: (() -> Void)?
         private var committedCurrentEditingSession = false
 
-        init(text: Binding<String>, isEditing: Binding<Bool>, onCommit: @escaping () -> Void, onReturn: (() -> Void)? = nil) {
+        init(text: Binding<String>, isEditing: Binding<Bool>, onCommit: @escaping () -> Void) {
             self.text = text
             self.isEditing = isEditing
             self.onCommit = onCommit
-            self.onReturn = onReturn
         }
 
         @objc func textDidChange(_ sender: UITextField) {
@@ -18157,7 +18128,6 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             commit(textField)
             textField.resignFirstResponder()
-            onReturn?()
             return true
         }
 
