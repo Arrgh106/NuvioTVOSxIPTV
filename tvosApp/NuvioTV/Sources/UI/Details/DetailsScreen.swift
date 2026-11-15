@@ -11959,6 +11959,22 @@ struct StreamListPreview: View {
             videoSize: 350_000_000),
     ]
 
+    private func previewCard(index: Int, badges: StreamBadgeSettingsSnapshot) -> some View {
+        let stream: NuvioStream = Self.samples[index]
+        let presentation = TvStreamCardPresentation(stream: stream, badgeSettings: badges)
+        let cardID: String = Self.previewCardID(
+            stream, badges: badges, showAddonLogo: showAddonLogo, revision: badgeRevision, style: style)
+        let card = TvStreamCard(
+            stream: stream,
+            presentation: presentation,
+            style: style,
+            previewFocused: index == 0,
+            externalFocus: $focus,
+            action: {}
+        )
+        return card.id(cardID)
+    }
+
     /// Fork: the card id built in steps (Xcode 26 gave up type-checking
     /// the one interpolated string in reasonable time).
     private static func previewCardID(
@@ -12008,16 +12024,10 @@ struct StreamListPreview: View {
                 // The picker scrolls; here the cards keep their own height and the panel cuts
                 // them off, so they never squeeze into each other.
                 VStack(spacing: style.metrics.cardSpacing) {
-                    ForEach(Array(Self.samples.enumerated()), id: \.offset) { index, stream in
-                        TvStreamCard(
-                            stream: stream,
-                            presentation: TvStreamCardPresentation(stream: stream, badgeSettings: badges),
-                            style: style,
-                            previewFocused: index == 0,
-                            externalFocus: $focus,
-                            action: {}
-                        )
-                        .id(Self.previewCardID(stream, badges: badges, showAddonLogo: showAddonLogo, revision: badgeRevision, style: style))
+                    // Fork: the card in its own function (Xcode 26 gave up
+                    // type-checking it inside the ForEach).
+                    ForEach(Self.samples.indices, id: \.self) { (index: Int) in
+                        previewCard(index: index, badges: badges)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
