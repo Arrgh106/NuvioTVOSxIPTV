@@ -356,7 +356,11 @@ struct LiveTVMultiviewHost: View {
         let frames = model.layout.frames
         guard frames.indices.contains(index) else { return .zero }
         let f = frames[index]
-        return CGRect(x: f.x * size.width, y: f.y * size.height, width: f.width * size.width, height: f.height * size.height)
+        let x: CGFloat = CGFloat(f.x) * size.width
+        let y: CGFloat = CGFloat(f.y) * size.height
+        let width: CGFloat = CGFloat(f.width) * size.width
+        let height: CGFloat = CGFloat(f.height) * size.height
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     private func move(_ direction: MoveCommandDirection) {
@@ -674,12 +678,22 @@ private struct LiveTVMultiviewLayoutIcon: View {
 
     var body: some View {
         GeometryReader { geo in
-            ForEach(Array(layout.frames.enumerated()), id: \.offset) { _, f in
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(dark ? Color.black.opacity(0.75) : Color.white.opacity(0.8))
-                    .frame(width: max(1, f.width * geo.size.width - 3), height: max(1, f.height * geo.size.height - 3))
-                    .offset(x: f.x * geo.size.width, y: f.y * geo.size.height)
+            ForEach(0..<layout.frames.count, id: \.self) { (index: Int) in
+                box(layout.frames[index], in: geo.size)
             }
         }
+    }
+
+    // In steps: the type checker gave up on it in one expression.
+    private func box(_ frame: LiveTVMultiviewLayout.Frame, in size: CGSize) -> some View {
+        let width: CGFloat = max(1, CGFloat(frame.width) * size.width - 3)
+        let height: CGFloat = max(1, CGFloat(frame.height) * size.height - 3)
+        let x: CGFloat = CGFloat(frame.x) * size.width
+        let y: CGFloat = CGFloat(frame.y) * size.height
+        let color: Color = dark ? Color.black.opacity(0.75) : Color.white.opacity(0.8)
+        return RoundedRectangle(cornerRadius: 3)
+            .fill(color)
+            .frame(width: width, height: height)
+            .offset(x: x, y: y)
     }
 }
