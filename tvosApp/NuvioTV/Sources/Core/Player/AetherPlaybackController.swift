@@ -5299,6 +5299,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             // Read the active profile for each load; unsupported sources keep the normal bridge.
             objectAudioRendering: SpatialAudioSettings.rendering(),
             isLive: isLive,
+            // Fork (Live TV step 14): pause and rewind live TV.
+            dvrWindowSeconds: isLive ? request.liveDVRWindowSeconds : nil,
             liveJoinProfile: isLive ? .fastZap : .standard,
             liveStartupGraceSeconds: isLive ? 0.5 : nil,
             liveStartupSingleSegmentMinimumSeconds: isLive ? 1.5 : nil,

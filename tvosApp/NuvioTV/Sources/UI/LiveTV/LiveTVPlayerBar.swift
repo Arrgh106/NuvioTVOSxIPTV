@@ -38,6 +38,8 @@ struct LiveTVPlayerBar: View {
                         .lineLimit(1)
                     if replay != nil {
                         replayLine()
+                    } else if player.isTimeShifted {
+                        timeshiftLine()
                     } else if let current {
                         let info = LiveTVProgrammeInfo(
                             start: current.start, end: current.end, title: current.title, description: current.description)
@@ -100,6 +102,8 @@ struct LiveTVPlayerBar: View {
                      + LiveTVInfoPanel.clock(replay.end, now: Date(), withDay: false))
                     .font(.system(size: LiveTVTheme.Font.badge))
                     .foregroundColor(LiveTVTheme.secondaryText)
+            } else if player.isTimeShifted {
+                tag("⏪ " + L10n.string("livetv_info_timeshift", fallback: "TIME-SHIFT"), fill: LiveTVTheme.markColor)
             } else {
                 tag("● " + L10n.string("livetv_info_live", fallback: "LIVE"), fill: LiveTVTheme.liveRed)
             }
@@ -116,6 +120,22 @@ struct LiveTVPlayerBar: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(fill, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// A live channel behind live (step 14): how far, paused, and the keys.
+    private func timeshiftLine() -> some View {
+        HStack(spacing: 12) {
+            if player.isPaused {
+                Image(systemName: "pause.fill")
+                    .foregroundColor(LiveTVTheme.primaryText)
+            }
+            Text(L10n.format("livetv_timeshift_behind_format", fallback: "%@ behind live", Self.duration(player.behindLive)))
+                .font(.system(size: LiveTVTheme.Font.small).monospacedDigit())
+                .foregroundColor(LiveTVTheme.secondaryText)
+            Text(L10n.string("livetv_timeshift_keys", fallback: "◀ 10 s  ·  30 s ▶  ·  ▶︎❚❚ pause, again: continue or live"))
+                .font(.system(size: LiveTVTheme.Font.badge))
+                .foregroundColor(LiveTVTheme.tertiaryText)
+        }
     }
 
     /// A replay: position of length, paused, and the keys for it.

@@ -86,6 +86,7 @@ The password is stored in the Apple TV Keychain. Each Nuvio profile has its own 
 - **Your order:** long press a channel → *Reorder Channels* (or a group → *Reorder Groups*). OK picks one up, move to the new place, OK puts it there; Back saves.
 - **Your own groups:** long press a channel → *Add to Group…* (pick one of yours or make a new one). The channel stays in its own group too. Your groups sit above the provider's; long press one to rename, delete or reorder it.
 - **Parental controls:** Settings → Live TV / VOD → Parental Controls → *Set a PIN* (4 to 8 digits). Then long press a group → *Lock with PIN*, or let groups named Adult, XXX or 18+ lock themselves. Locked groups ask for the PIN and stay out of All Channels, search, favorites and your groups.
+- **Pause and rewind:** Play/Pause pauses a live channel; behind live, ◀ / ▶ skip 10 s back and 30 s on, Play/Pause again offers *Continue watching* or *Back to live*. Settings → Live TV / VOD → Playback → *Pause and Rewind Live TV*, *Keep Up To* (kept on the Apple TV while you watch, gone when you change channel).
 - **VOD:** your provider's movies and series (every Xtream login and Stalker portal with *Include Movies & Series* on) show up as *VOD* in a title's stream list, next to your add-ons (matched by TMDB id, or by name and year). Read once a day; Settings → Live TV / VOD → VOD. The *VOD* page in the sidebar has a row per category (Movies / Series), and Home a *VOD* row with what the provider added last. A title opens Nuvio's own details when it can be matched, otherwise the provider's details. Search also finds the provider's titles your add-ons don't have (at the end of the results). Settings → Live TV / VOD → VOD → *Categories*: hide categories or lock them with the parental PIN; *Merge Duplicates* shows each title once, its stream list offers every version. *Languages*: only movies and series in the languages you pick (read from the provider's tags and categories; titles with no language given are out unless you turn them on).
 - **Jellyfin page:** your Jellyfin libraries in the sidebar, a row each. Settings → Appearance: the VOD and Jellyfin pages (Sidebar) and their Home rows (Home Rows) can each be turned off; their streams stay in the stream lists.
 - **More guides:** Settings → Live TV / VOD → Guide Sources → *Add XMLTV Guide* (a link to an `.xml` or `.xml.gz` file). Each guide can be turned off and moved in time; a channel takes the guide with real listings that goes furthest ahead. The provider's own guide can be turned off there too.
@@ -135,7 +136,9 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | Custom groups | ✅ Done |
 | Parental controls (PIN lock for groups) | ✅ Done |
 | Catch-up, restart live shows | ✅ Done |
-| Time-shift (pause and rewind live without an archive) | 🗓 Planned |
+| Time-shift (pause and rewind live without an archive) | 🧪 Built, not tested on a device yet |
+| Multiview (up to four channels at once) | 🗓 Planned |
+| Seek thumbnails (pictures above the seek bar) | 🗓 Planned |
 | VOD (provider movies & series, matched to Nuvio details) | ✅ Done |
 | Several sources: Xtream logins, M3U playlists, Stalker portals | 🧪 Built; Stalker and M3U catch-up not tested on a device yet |
 | Live TV in search, "Find & stream" through your add-ons | 🗓 Planned |
