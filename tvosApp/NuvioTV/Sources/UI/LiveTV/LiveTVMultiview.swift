@@ -74,9 +74,16 @@ final class LiveTVMultiview: ObservableObject {
         isOpen = true
         LiveTVFullscreenState.shared.multiviewActive = true
         for (index, channel) in list.enumerated() { assign(channel, to: index) }
-        // An empty first pane: straight to the channels.
-        if list.isEmpty { pickerPane = 0 }
         showOverlays()
+        // An empty first pane: straight to the channels, once the screen is
+        // up and holds the remote (opened with it, the picker never got the
+        // focus: no arrow, no Menu).
+        if list.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self, self.isOpen, self.pickerPane == nil, !self.layoutPickerOpen else { return }
+                self.pickerPane = 0
+            }
+        }
     }
 
     /// "Add to Multiview" (a channel's menu): into the first empty pane, or
@@ -322,6 +329,8 @@ struct LiveTVMultiviewHost: View {
                     bar
                         .frame(maxWidth: .infinity, alignment: .top)
                         .padding(.top, 30)
+                        // A picker open: the remote stays in it.
+                        .disabled(model.pickerPane != nil || model.layoutPickerOpen)
                         .zIndex(3)
                         .transition(.opacity)
                 }
@@ -342,6 +351,10 @@ struct LiveTVMultiviewHost: View {
         .animation(.easeInOut(duration: 0.2), value: model.overlaysShown)
         .onAppear {
             focus = .panes
+            // The screen fades in over the app: focus again once it's there.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if model.pickerPane == nil, !model.layoutPickerOpen { focus = .panes }
+            }
             LiveTVPlayPausePress.shared.install { LiveTVMultiview.shared.toggleFullScreen() }
         }
         .onDisappear { LiveTVPlayPausePress.shared.remove() }
@@ -573,7 +586,13 @@ private struct LiveTVMultiviewPicker: View {
             // Favorites when there are some, else the group Live TV shows.
             let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
             group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
-            focus = store.channels(inGroup: currentGroup).first.map { "c:\($0.streamID)" } ?? "g:" + currentGroup
+            let first = store.channels(inGroup: currentGroup).first.map { "c:\($0.streamID)" } ?? "g:" + currentGroup
+            focus = first
+            // Once the rows are laid out, focus surely lands on the first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                focus = nil
+                DispatchQueue.main.async { focus = first }
+            }
         }
     }
 
@@ -647,7 +666,13 @@ private struct LiveTVMultiviewLayoutPicker: View {
         .frame(width: 520)
         .liveTVGlass(cornerRadius: 24)
         .padding(30)
-        .onAppear { focus = model.layout }
+        .onAppear {
+            focus = model.layout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                focus = nil
+                DispatchQueue.main.async { focus = model.layout }
+            }
+        }
         .onExitCommand { model.layoutPickerOpen = false }
     }
 
