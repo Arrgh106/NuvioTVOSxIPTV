@@ -51,6 +51,8 @@ final class LiveTVMultiview: ObservableObject {
     }
 
     let panes: [Pane] = (0..<LiveTVMultiviewLayout.maxPanes).map(Pane.init)
+    /// The channel picker's highlight and lists.
+    let picker = LiveTVMultiviewPickerModel()
     private var overlayTimer: Timer?
 
     var visiblePanes: [Pane] { Array(panes.prefix(layout.paneCount)) }
@@ -532,91 +534,286 @@ private struct LiveTVMultiviewSurface: UIViewRepresentable {
 
 // MARK: - Pickers
 
-/// The channels for a pane, as Live TV's groups: a group, then its
-/// channels. Locked groups stay out (as everywhere).
+/// The channel picker's state, as the full-screen guide's (LiveTVOverlay):
+/// the highlight is an index, only the rows on screen are drawn, so even
+/// 100,000 channels scroll at once. Groups as in Live TV: a source's
+/// heading (more than one source) folds its groups; locked groups stay out.
+@MainActor
+final class LiveTVMultiviewPickerModel: ObservableObject {
+    enum Level { case groups, channels }
+
+    @Published private(set) var level: Level = .channels
+    @Published private(set) var groups: [LiveTVGroup] = []
+    @Published private(set) var groupIndex = 0
+    /// The group whose channels are listed.
+    @Published private(set) var groupID = LiveTVGroup.allID
+    @Published private(set) var channels: [XtreamLiveChannel] = []
+    @Published private(set) var channelIndex = 0
+    @Published private(set) var channelWindow = LiveTVListWindow(rows: 12)
+    @Published private(set) var groupWindow = LiveTVListWindow(rows: 12)
+
+    private var groupTask: Task<Void, Never>?
+    private var store: LiveTVStore { LiveTVStore.shared }
+
+    var highlighted: XtreamLiveChannel? {
+        channels.indices.contains(channelIndex) ? channels[channelIndex] : nil
+    }
+
+    /// Opens on the pane's channel, else Favorites when there are some,
+    /// else the group Live TV shows.
+    func open(current: XtreamLiveChannel?) {
+        rebuildGroups()
+        let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
+        var group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
+        if !groups.contains(where: { $0.id == group && !$0.isHeading }) { group = LiveTVGroup.allID }
+        var list = store.channels(inGroup: group)
+        if let current, !list.contains(where: { $0.streamID == current.streamID }) {
+            group = LiveTVGroup.allID
+            list = store.channels(inGroup: group)
+        }
+        show(group: group, channels: list, landOn: current)
+        level = .channels
+        LiveTVOverlayPan.shared.install { [weak self] delta in self?.scroll(by: delta) }
+    }
+
+    func close() {
+        groupTask?.cancel()
+        LiveTVOverlayPan.shared.remove()
+    }
+
+    /// The panel sets how many rows fit.
+    func setRows(_ rows: Int) {
+        guard channelWindow.rows != rows else { return }
+        channelWindow.rows = max(1, rows)
+        groupWindow.rows = max(1, rows)
+        channelWindow.follow(channelIndex, count: channels.count)
+        groupWindow.follow(groupIndex, count: groups.count)
+    }
+
+    func move(_ direction: MoveCommandDirection) {
+        // Up / Down from a swipe: the swipe itself scrolls.
+        if direction == .up || direction == .down, !LiveTVOverlayPan.shared.acceptsMoveCommand() { return }
+        switch (level, direction) {
+        case (.channels, .up): moveChannel(by: -1, wraps: true)
+        case (.channels, .down): moveChannel(by: 1, wraps: true)
+        case (.channels, .left):
+            groupIndex = groups.firstIndex { $0.id == groupID } ?? 0
+            groupWindow.land(on: groupIndex, count: groups.count)
+            level = .groups
+        case (.groups, .up): moveGroup(by: -1)
+        case (.groups, .down): moveGroup(by: 1)
+        case (.groups, .right):
+            applyPendingGroup()
+            level = .channels
+        default: break
+        }
+    }
+
+    func scroll(by delta: Int) {
+        switch level {
+        case .channels: moveChannel(by: delta, wraps: false)
+        case .groups: moveGroup(by: delta)
+        }
+    }
+
+    /// OK: a channel is picked (returned); a group lists its channels; a
+    /// source's heading folds or unfolds its groups.
+    func select() -> XtreamLiveChannel? {
+        switch level {
+        case .channels:
+            return highlighted
+        case .groups:
+            guard groups.indices.contains(groupIndex) else { return nil }
+            let group = groups[groupIndex]
+            if group.isHeading {
+                store.toggleFold(headingID: group.id)
+                rebuildGroups()
+                groupIndex = groups.firstIndex { $0.id == group.id } ?? 0
+                groupWindow.follow(groupIndex, count: groups.count)
+                return nil
+            }
+            applyPendingGroup()
+            level = .channels
+            return nil
+        }
+    }
+
+    func isTaken(_ channel: XtreamLiveChannel, in model: LiveTVMultiview) -> Bool {
+        model.panes.contains { $0.channel?.streamID == channel.streamID }
+    }
+
+    private func rebuildGroups() {
+        groups = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
+    }
+
+    private func show(group: String, channels list: [XtreamLiveChannel], landOn channel: XtreamLiveChannel?) {
+        groupID = group
+        channels = list
+        channelIndex = channel.flatMap { current in list.firstIndex { $0.streamID == current.streamID } } ?? 0
+        channelWindow.land(on: channelIndex, count: list.count)
+        groupIndex = groups.firstIndex { $0.id == group } ?? 0
+        groupWindow.land(on: groupIndex, count: groups.count)
+    }
+
+    private func moveChannel(by delta: Int, wraps: Bool) {
+        guard !channels.isEmpty else { return }
+        if wraps {
+            channelIndex = ((channelIndex + delta) % channels.count + channels.count) % channels.count
+        } else {
+            channelIndex = min(max(0, channelIndex + delta), channels.count - 1)
+        }
+        channelWindow.follow(channelIndex, count: channels.count)
+    }
+
+    private func moveGroup(by delta: Int) {
+        guard !groups.isEmpty else { return }
+        groupIndex = min(max(0, groupIndex + delta), groups.count - 1)
+        groupWindow.follow(groupIndex, count: groups.count)
+        // The channels switch once the highlight rests (as the guide).
+        groupTask?.cancel()
+        groupTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.applyPendingGroup()
+        }
+    }
+
+    private func applyPendingGroup() {
+        groupTask?.cancel()
+        guard groups.indices.contains(groupIndex) else { return }
+        let group = groups[groupIndex]
+        guard !group.isHeading, group.id != groupID else { return }
+        let index = groupIndex
+        show(group: group.id, channels: store.channels(inGroup: group.id), landOn: nil)
+        groupIndex = index
+    }
+}
+
+/// The channels for a pane: groups on the left, their channels on the
+/// right. One invisible button takes the remote; rows are drawn from the
+/// model's highlight.
 private struct LiveTVMultiviewPicker: View {
     @ObservedObject var model: LiveTVMultiview
     let pane: Int
-    @ObservedObject private var store = LiveTVStore.shared
-    @State private var group: String?
-    @FocusState private var focus: String?
+    @ObservedObject private var picker: LiveTVMultiviewPickerModel
+    @FocusState private var focused: Bool
 
-    private var groups: [LiveTVGroup] {
-        store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID && !$0.isHeading }
+    private static let rowHeight: CGFloat = 54
+    private static let rowSpacing: CGFloat = 6
+
+    init(model: LiveTVMultiview, pane: Int) {
+        self.model = model
+        self.pane = pane
+        _picker = ObservedObject(wrappedValue: model.picker)
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(groups) { item in
-                        row(item.name, detail: String(item.count), selected: item.id == currentGroup, id: "g:" + item.id) {
-                            group = item.id
-                            focus = store.channels(inGroup: item.id).first.map { "c:\($0.streamID)" }
-                        }
-                    }
-                }
-                .padding(16)
+        ZStack {
+            HStack(alignment: .top, spacing: 0) {
+                groupColumn.frame(width: 380)
+                Rectangle().fill(Color.white.opacity(0.1)).frame(width: 1)
+                channelColumn.frame(width: 520)
             }
-            .frame(width: 360)
-            .focusSection()
-            Rectangle().fill(Color.white.opacity(0.1)).frame(width: 1)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(store.channels(inGroup: currentGroup), id: \.streamID) { channel in
-                        let taken = model.panes.contains { $0.channel?.streamID == channel.streamID }
-                        row(channel.name, detail: channel.number.map(String.init) ?? "", selected: taken,
-                            id: "c:\(channel.streamID)") {
-                            model.assign(channel, to: pane)
-                            model.pickerPane = nil
-                        }
-                    }
-                }
-                .padding(16)
-            }
-            .frame(width: 520)
-            .focusSection()
+            .padding(.vertical, 24)
+            .padding(.horizontal, 16)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(GeometryReader { geo in
+                Color.clear
+                    .onAppear { setRows(geo.size.height) }
+                    .onChange(of: geo.size.height) { _, height in setRows(height) }
+            })
+            // The remote's target: it draws nothing.
+            Button(action: select) { Color.clear.contentShape(Rectangle()) }
+                .buttonStyle(LiveTVInvisibleButtonStyle())
+                .focused($focused)
+                .onMoveCommand { picker.move($0) }
+                .onExitCommand(perform: back)
         }
-        .frame(maxHeight: .infinity)
-        .padding(.vertical, 40)
         .liveTVGlass(cornerRadius: 24)
         .padding(30)
-        .onExitCommand { model.pickerPane = nil }
         .onAppear {
-            // Favorites when there are some, else the group Live TV shows.
-            let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
-            group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
-            let first = store.channels(inGroup: currentGroup).first.map { "c:\($0.streamID)" } ?? "g:" + currentGroup
-            focus = first
-            // Once the rows are laid out, focus surely lands on the first.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                focus = nil
-                DispatchQueue.main.async { focus = first }
-            }
+            picker.open(current: model.panes[pane].channel)
+            focused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { focused = true }
+        }
+        .onDisappear { picker.close() }
+    }
+
+    private func setRows(_ height: CGFloat) {
+        let usable = height - 48
+        picker.setRows(max(1, Int((usable + Self.rowSpacing) / (Self.rowHeight + Self.rowSpacing))))
+    }
+
+    private func select() {
+        guard let channel = picker.select() else { return }
+        model.assign(channel, to: pane)
+        model.pickerPane = nil
+    }
+
+    /// Back: from the channels to the groups first, then closed.
+    private func back() {
+        if picker.level == .groups {
+            picker.move(.right)
+        } else {
+            model.pickerPane = nil
         }
     }
 
-    private var currentGroup: String { group ?? LiveTVGroup.allID }
-
-    private func row(_ title: String, detail: String, selected: Bool, id: String, action: @escaping () -> Void) -> some View {
-        let isFocused = focus == id
-        return Button(action: action) {
-            HStack(spacing: 12) {
-                Text(title)
-                    .font(.system(size: LiveTVTheme.Font.small, weight: selected || isFocused ? .semibold : .regular))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(detail)
-                    .font(.system(size: LiveTVTheme.Font.badge))
-                    .opacity(0.6)
+    private var groupColumn: some View {
+        let range = picker.groupWindow.range(count: picker.groups.count)
+        return VStack(alignment: .leading, spacing: Self.rowSpacing) {
+            ForEach(Array(range), id: \.self) { index in
+                let group = picker.groups[index]
+                row(group.isHeading ? group.name.uppercased() : group.name,
+                    detail: group.count.formatted(),
+                    heading: group.isHeading,
+                    highlighted: picker.level == .groups && index == picker.groupIndex,
+                    marked: group.id == picker.groupID,
+                    dimmed: picker.level != .groups)
             }
-            .foregroundColor(isFocused ? .black : (selected ? LiveTVTheme.accent : LiveTVTheme.primaryText))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(isFocused ? Color.white : Color.white.opacity(selected ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(LiveTVInvisibleButtonStyle())
-        .focused($focus, equals: id)
+        .padding(.horizontal, 12)
+    }
+
+    private var channelColumn: some View {
+        let range = picker.channelWindow.range(count: picker.channels.count)
+        return VStack(alignment: .leading, spacing: Self.rowSpacing) {
+            if picker.channels.isEmpty {
+                Text(L10n.string("livetv_multiview_no_channels", fallback: "No channels in this group"))
+                    .font(.system(size: LiveTVTheme.Font.small))
+                    .foregroundColor(LiveTVTheme.secondaryText)
+                    .padding(14)
+            }
+            ForEach(Array(range), id: \.self) { index in
+                let channel = picker.channels[index]
+                row(channel.name,
+                    detail: channel.number.map(String.init) ?? "",
+                    heading: false,
+                    highlighted: picker.level == .channels && index == picker.channelIndex,
+                    marked: picker.isTaken(channel, in: model),
+                    dimmed: false)
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private func row(_ title: String, detail: String, heading: Bool, highlighted: Bool, marked: Bool, dimmed: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: heading ? LiveTVTheme.Font.badge : LiveTVTheme.Font.small,
+                              weight: heading ? .heavy : (marked || highlighted ? .semibold : .regular)))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(detail)
+                .font(.system(size: LiveTVTheme.Font.badge))
+                .opacity(0.6)
+        }
+        .foregroundColor(highlighted ? .black : (heading ? LiveTVTheme.secondaryText : (marked ? LiveTVTheme.accent : LiveTVTheme.primaryText)))
+        .padding(.horizontal, 14)
+        .frame(height: Self.rowHeight)
+        .background(
+            highlighted ? Color.white : Color.white.opacity(marked && !heading ? (dimmed ? 0.16 : 0.12) : 0),
+            in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
