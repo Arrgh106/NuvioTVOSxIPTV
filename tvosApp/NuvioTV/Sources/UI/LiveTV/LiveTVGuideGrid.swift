@@ -775,6 +775,12 @@ struct LiveTVGuideGrid: UIViewRepresentable {
                     title: L10n.string("livetv_group_add", fallback: "Add to Group…"),
                     image: UIImage(systemName: "folder.badge.plus")
                 ) { _ in self?.onAddToGroup(channel) })
+                // Multiview (step 15): with the channel playing, or in the
+                // next free pane.
+                children.append(UIAction(
+                    title: L10n.string("livetv_multiview_add", fallback: "Add to Multiview"),
+                    image: UIImage(systemName: "rectangle.split.2x2")
+                ) { _ in LiveTVMultiview.shared.add(channel) })
                 if let removeFromGroup {
                     children.append(UIAction(
                         title: L10n.string("livetv_group_remove", fallback: "Remove from This Group"),

@@ -362,6 +362,8 @@ final class LiveTVGroupCell: UICollectionViewCell {
     private let countLabel = UILabel()
     /// Parental lock (step 11): in place of the count.
     private let lockView = UIImageView(image: UIImage(systemName: "lock.fill"))
+    /// A source's heading: folded or not, the arrow Multiview's picker uses.
+    private let chevron = UIImageView()
     private var isGroupSelected = false
     private var showsCount = true
     private var isLocked = false
@@ -386,7 +388,12 @@ final class LiveTVGroupCell: UICollectionViewCell {
         lockView.setContentHuggingPriority(.required, for: .horizontal)
         lockView.isHidden = true
 
-        let stack = UIStackView(arrangedSubviews: [nameLabel, countLabel, lockView])
+        chevron.contentMode = .scaleAspectFit
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        chevron.isHidden = true
+
+        let stack = UIStackView(arrangedSubviews: [chevron, nameLabel, countLabel, lockView])
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 16
@@ -415,6 +422,10 @@ final class LiveTVGroupCell: UICollectionViewCell {
         isLocked = group.locked
         isHeading = group.isHeading
         nameLabel.text = isHeading ? group.name.uppercased() : group.name
+        chevron.isHidden = !isHeading
+        if isHeading {
+            chevron.image = UIImage(systemName: LiveTVStore.shared.isFolded(headingID: group.id) ? "chevron.right" : "chevron.down")
+        }
         lockView.isHidden = !isLocked
         countLabel.isHidden = !showsCount || isLocked
         applyStyle()
@@ -454,6 +465,7 @@ final class LiveTVGroupCell: UICollectionViewCell {
         nameLabel.textColor = focused ? .black : (isHeading ? UIColor.white.withAlphaComponent(0.6) : .white)
         countLabel.textColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
         lockView.tintColor = countLabel.textColor
+        chevron.tintColor = nameLabel.textColor
         transform = focused ? CGAffineTransform(scaleX: 1.02, y: 1.02) : .identity
     }
 }

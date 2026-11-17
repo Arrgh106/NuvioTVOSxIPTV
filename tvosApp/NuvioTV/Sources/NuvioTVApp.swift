@@ -1251,7 +1251,7 @@ struct ContentView: View {
     /// visible behind its glass panel.
     private var fullScreenOverlayPresented: Bool {
         if isResolvingContinueWatchingStream { return true }
-        if liveTVFullscreen.isActive { return true }
+        if liveTVFullscreen.isActive || liveTVFullscreen.multiviewActive { return true }
         switch activeScreen {
         case .details, .player, .cloudLibrary, .collectionFolder, .productionBrowse, .personBrowse: return true
         default: return false
@@ -2946,6 +2946,12 @@ struct ContentView: View {
                 LiveTVFullscreenHost()
                     .transition(.opacity)
                     .zIndex(2.1)
+            }
+            // Fork: Multiview (Live TV step 15).
+            if liveTVFullscreen.multiviewActive {
+                LiveTVMultiviewHost()
+                    .transition(.opacity)
+                    .zIndex(2.2)
             }
 
             let showCloudLibrary = {

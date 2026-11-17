@@ -807,5 +807,27 @@ check(LiveTVStalkerWire.archiveCommand("100") == "auto /media/100.mpg", "stalker
 check(LiveTVStalkerWire.day(Date(timeIntervalSince1970: 1_800_000_000), zone: stalkerUTC) == "2027-01-15",
       "stalker catch-up: day in the portal's zone")
 
+// Step 15: Multiview layouts.
+check(LiveTVMultiviewLayout.allCases.allSatisfy { $0.frames.count == $0.paneCount }, "multiview: a frame per pane")
+check(LiveTVMultiviewLayout.allCases.allSatisfy { layout in
+    abs(layout.frames.reduce(0) { $0 + $1.width * $1.height } - 1) < 0.0001
+}, "multiview: panes fill the screen")
+check(LiveTVMultiviewLayout.fitting(3) == .three && LiveTVMultiviewLayout.fitting(9) == .four
+      && LiveTVMultiviewLayout.fitting(0) == .one, "multiview: layout for a count")
+check(LiveTVMultiviewLayout.four.next(from: 0, .right) == 1 && LiveTVMultiviewLayout.four.next(from: 1, .down) == 3
+      && LiveTVMultiviewLayout.four.next(from: 1, .right) == 1, "multiview: 2 x 2 arrows, no wrap")
+check(LiveTVMultiviewLayout.fourWideTop.next(from: 0, .down) == 2 && LiveTVMultiviewLayout.fourWideTop.next(from: 3, .up) == 0,
+      "multiview: wide top")
+check(LiveTVMultiviewLayout.threeBigLeft.next(from: 2, .left) == 0 && LiveTVMultiviewLayout.threeBigLeft.next(from: 1, .down) == 2,
+      "multiview: big left")
+check(LiveTVMultiviewLayout.three.isTop(1) && !LiveTVMultiviewLayout.three.isTop(2), "multiview: top row")
+check(LiveTVMultiviewLayout.back(pickerOpen: true, fullScreen: true, overlaysShown: true) == .closePicker
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: true, overlaysShown: true) == .allPanes
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: false, overlaysShown: true) == .hideOverlays
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: false, overlaysShown: false) == .leave,
+      "multiview: back one level at a time")
+check(LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 3, forward: true) == 0
+      && LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 0, forward: false) == 3, "multiview: full screen goes round")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
