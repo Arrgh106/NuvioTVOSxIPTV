@@ -555,9 +555,9 @@ private struct LiveTVMultiviewSurface: UIViewRepresentable {
 // MARK: - Pickers
 
 /// The channel picker, as Android's: one list down the side away from the
-/// pane being filled. All channels and your groups on top, then each
-/// source's heading (more than one source; OK folds its groups) with its
-/// groups; OK on a group opens its channels under it (number, logo, name,
+/// pane being filled. Your groups on top, then each source's heading
+/// (more than one source; OK folds its groups) with its own All channels
+/// and its groups (one source: All channels on top); OK on a group opens its channels under it (number, logo, name,
 /// what's on now). The list is a `UICollectionView` with cell reuse, as
 /// Live TV's lists: tvOS scrolls it natively, with its fast-scroll thumb on
 /// long swipes.
@@ -585,14 +585,14 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
     /// Opens on the pane's channel in its group, else Favorites when there
     /// are some, else the group Live TV shows.
     func open(current: XtreamLiveChannel?) {
-        groups = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
+        groups = pickerGroups()
         let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
         var group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
-        if !groups.contains(where: { $0.id == group && !$0.isHeading }) { group = LiveTVGroup.allID }
-        var list = store.channels(inGroup: group)
+        if !groups.contains(where: { $0.id == group && !$0.isHeading }) { group = allGroup(for: current) }
+        var list = channels(of: group)
         if let current, !list.contains(where: { $0.streamID == current.streamID }) {
-            group = LiveTVGroup.allID
-            list = store.channels(inGroup: group)
+            group = allGroup(for: current)
+            list = channels(of: group)
         }
         openGroupID = group
         openChannels = list
@@ -618,7 +618,7 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
             toggle(group)
         case .heading(let heading):
             store.toggleFold(headingID: heading.id)
-            groups = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
+            groups = pickerGroups()
             rebuild()
             land(on: items.firstIndex { if case .heading(let h) = $0 { return h.id == heading.id } else { return false } } ?? 0)
         }
@@ -657,10 +657,53 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
             openChannels = []
         } else {
             openGroupID = group.id
-            openChannels = store.channels(inGroup: group.id)
+            openChannels = channels(of: group.id)
         }
         rebuild()
         land(on: items.firstIndex { if case .group(let g, _) = $0 { return g.id == group.id } else { return false } } ?? 0)
+    }
+
+    /// A source's own All channels row (more than one source).
+    private static let sourceAllPrefix = "__all__:"
+
+    /// The groups as rows. With more than one source, All channels sits
+    /// under each source's heading (that source's channels) instead of
+    /// once on top.
+    private func pickerGroups() -> [LiveTVGroup] {
+        let shown = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
+        guard shown.contains(where: \.isHeading) else { return shown }
+        var counts: [Int: Int] = [:]
+        for channel in store.channels(inGroup: LiveTVGroup.allID) {
+            counts[LiveTVSourceIDs.slot(ofChannel: channel.streamID), default: 0] += 1
+        }
+        let name = L10n.string("livetv_all_channels", fallback: "All channels")
+        var result: [LiveTVGroup] = []
+        for group in shown where group.id != LiveTVGroup.allID {
+            result.append(group)
+            guard let sourceID = LiveTVSourceIDs.sourceID(ofHeading: group.id),
+                  !store.foldedSources.contains(sourceID),
+                  let source = store.sources.first(where: { $0.id == sourceID }) else { continue }
+            result.append(LiveTVGroup(id: Self.sourceAllPrefix + sourceID, name: name, count: counts[source.slot] ?? 0))
+        }
+        return result
+    }
+
+    /// A row's channels; a source's All channels are its share of all.
+    private func channels(of groupID: String) -> [XtreamLiveChannel] {
+        guard groupID.hasPrefix(Self.sourceAllPrefix) else { return store.channels(inGroup: groupID) }
+        let sourceID = String(groupID.dropFirst(Self.sourceAllPrefix.count))
+        guard let slot = store.sources.first(where: { $0.id == sourceID })?.slot else { return [] }
+        return store.channels(inGroup: LiveTVGroup.allID).filter { LiveTVSourceIDs.slot(ofChannel: $0.streamID) == slot }
+    }
+
+    /// The All channels row to fall back on: the channel's source's when
+    /// there is one per source, else the first one shown.
+    private func allGroup(for channel: XtreamLiveChannel?) -> String {
+        if groups.contains(where: { $0.id == LiveTVGroup.allID }) { return LiveTVGroup.allID }
+        let shown = store.sources.filter { source in groups.contains { $0.id == Self.sourceAllPrefix + source.id } }
+        let slot = channel.map { LiveTVSourceIDs.slot(ofChannel: $0.streamID) }
+        guard let source = shown.first(where: { $0.slot == slot }) ?? shown.first else { return LiveTVGroup.allID }
+        return Self.sourceAllPrefix + source.id
     }
 
     private func land(on at: Int) {
