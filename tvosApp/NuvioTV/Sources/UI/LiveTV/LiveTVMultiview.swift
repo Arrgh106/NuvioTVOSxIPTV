@@ -582,19 +582,12 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
     private var openChannels: [XtreamLiveChannel] = []
     private var store: LiveTVStore { LiveTVStore.shared }
 
-    /// The open group and its channels (the full-screen overlay zaps
-    /// through them).
-    var openGroup: String? { openGroupID }
-    var openList: [XtreamLiveChannel] { openChannels }
-    var current: Item? { items.indices.contains(index) ? items[index] : nil }
-
     /// Opens on the pane's channel in its group, else Favorites when there
-    /// are some, else the group Live TV shows. `group`: start in that one
-    /// (the full-screen overlay: the group the channel was started from).
-    func open(current: XtreamLiveChannel?, in startGroup: String? = nil) {
+    /// are some, else the group Live TV shows.
+    func open(current: XtreamLiveChannel?) {
         groups = pickerGroups()
         let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
-        var group = startGroup ?? (favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID)
+        var group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
         if !groups.contains(where: { $0.id == group && !$0.isHeading }) { group = allGroup(for: current) }
         var list = channels(of: group)
         if let current, !list.contains(where: { $0.streamID == current.streamID }) {
