@@ -323,14 +323,18 @@ struct LiveTVMultiviewHost: View {
                         .zIndex(model.fullPane == pane.id ? 1 : 0)
                         .opacity(model.fullPane == nil || model.fullPane == pane.id ? 1 : 0)
                 }
-                // The remote's target over the panes: it draws nothing.
-                Button(action: { model.select() }) { Color.clear.contentShape(Rectangle()) }
-                    .buttonStyle(LiveTVInvisibleButtonStyle())
-                    .focused($focus, equals: .panes)
-                    .onMoveCommand(perform: move)
-                    .onExitCommand { model.back() }
-                    .disabled(model.pickerPane != nil || model.layoutPickerOpen || onBar)
-                    .zIndex(2)
+                // The remote's target over the panes: it draws nothing. Gone
+                // while a picker is open: only disabled, it kept the focus
+                // and the channel list (UIKit) never got it.
+                if model.pickerPane == nil && !model.layoutPickerOpen {
+                    Button(action: { model.select() }) { Color.clear.contentShape(Rectangle()) }
+                        .buttonStyle(LiveTVInvisibleButtonStyle())
+                        .focused($focus, equals: .panes)
+                        .onMoveCommand(perform: move)
+                        .onExitCommand { model.back() }
+                        .disabled(onBar)
+                        .zIndex(2)
+                }
                 if model.overlaysShown {
                     bar
                         .frame(maxWidth: .infinity, alignment: .top)
@@ -364,7 +368,9 @@ struct LiveTVMultiviewHost: View {
             LiveTVPlayPausePress.shared.install { LiveTVMultiview.shared.toggleFullScreen() }
         }
         .onDisappear { LiveTVPlayPausePress.shared.remove() }
-        .onChange(of: model.pickerPane) { _, open in if open == nil { leaveBar() } }
+        .onChange(of: model.pickerPane) { _, open in
+            if open == nil { leaveBar() } else { focus = nil }
+        }
         // On the bar: it stays up; back on the panes the timer runs again.
         .onChange(of: onBar) { _, value in model.barFocused = value }
         .onChange(of: model.layoutPickerOpen) { _, open in if !open { leaveBar() } }
