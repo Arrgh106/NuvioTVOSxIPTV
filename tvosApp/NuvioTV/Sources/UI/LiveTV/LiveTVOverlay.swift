@@ -3,10 +3,11 @@ import UIKit
 
 /// The guide over the full-screen picture (LIVE_TV_DESIGN.md, step 4b), as
 /// Android's `LiveTvOverlayMode` (TiviMate's overlay mode). Left in full
-/// screen opens the group's channels, with the highlighted channel's shows
-/// beside them and what's on top right; Left again the groups. Right: the
-/// highlighted channel's schedule by day (OK on a past show replays it),
-/// Right again the dates.
+/// screen opens the list, as Multiview's picker: groups (each source's
+/// heading folds them) with the open group's channels under it, the
+/// highlighted channel's shows beside them and what's on top right. Left
+/// on a channel goes up to its group. Right: the highlighted channel's
+/// schedule by day (OK on a past show replays it), Right again the dates.
 ///
 /// No focus engine: the full-screen controls pass the remote's presses here
 /// and only the highlight moves, so nothing can jump to the sidebar, and
@@ -14,8 +15,8 @@ import UIKit
 @MainActor
 final class LiveTVOverlayModel: ObservableObject {
     enum Level {
+        /// The list of groups and channels.
         case channels
-        case groups
         /// One channel's shows, by day.
         case schedule
         /// The days of that schedule (Up / Down jump to a day).
@@ -37,16 +38,13 @@ final class LiveTVOverlayModel: ObservableObject {
 
     @Published private(set) var isOpen = false
     @Published private(set) var level: Level = .channels
-    @Published private(set) var groups: [LiveTVGroup] = []
-    @Published private(set) var groupIndex = 0
-    /// The group whose channels are listed.
-    @Published private(set) var groupID = LiveTVGroup.allID
-    @Published private(set) var channels: [XtreamLiveChannel] = []
-    @Published private(set) var channelIndex = 0
+    /// The list's rows: the same tree as Multiview's picker.
+    let tree = LiveTVMultiviewPickerModel()
+    /// Bumped when the tree or its highlight changes.
+    @Published private(set) var treeRevision = 0
     /// Digits of the longest channel number: the number column is that wide.
     @Published private(set) var numberDigits = 1
     @Published private(set) var channelWindow = LiveTVListWindow(rows: 10)
-    @Published private(set) var groupWindow = LiveTVListWindow(rows: 12)
     /// The highlighted channel once the highlight rests: the schedule and
     /// the details follow it, not every step while scrolling.
     @Published private(set) var settledChannel: XtreamLiveChannel?
@@ -74,13 +72,19 @@ final class LiveTVOverlayModel: ObservableObject {
     ) -> Void = { _, _, _, _ in }
 
     private var settleTask: Task<Void, Never>?
-    private var groupTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var rowsTask: Task<Void, Never>?
     private var scheduleTask: Task<Void, Never>?
 
+    /// The open group's channels (the zapping list) and its id.
+    var channels: [XtreamLiveChannel] { tree.openList }
+    var groupID: String { tree.openGroup ?? LiveTVGroup.allID }
+    /// The highlighted row.
+    var listIndex: Int { tree.index }
+
     var highlighted: XtreamLiveChannel? {
-        channels.indices.contains(channelIndex) ? channels[channelIndex] : nil
+        guard let item = tree.current, case .channel(let channel) = item else { return nil }
+        return channel
     }
 
     /// The show highlighted in the schedule.
@@ -98,27 +102,10 @@ final class LiveTVOverlayModel: ObservableObject {
     /// Opens on the channel playing, in the group it was started from.
     func open(playing: XtreamLiveChannel?) {
         guard let store else { return }
-        // Locked groups (step 11) open only in the guide, with the PIN.
-        // No headings here: one All channels for every source.
-        var shown = store.groups.filter { !$0.locked && !$0.isHeading && $0.sourceOfAll == nil }
-        if !shown.contains(where: { $0.id == LiveTVGroup.allID }) {
-            let all = store.channels(inGroup: LiveTVGroup.allID)
-            if !all.isEmpty {
-                let special = [LiveTVGroup.searchID, LiveTVGroup.favoritesID, LiveTVGroup.recentID]
-                let at = shown.firstIndex { !special.contains($0.id) } ?? shown.count
-                shown.insert(LiveTVGroup(id: LiveTVGroup.allID,
-                                         name: L10n.string("livetv_all_channels", fallback: "All channels"),
-                                         count: all.count), at: at)
-            }
-        }
-        groups = shown
-        var group = store.selectedGroupID
-        var list = store.channels(inGroup: group)
-        if let playing, !list.contains(where: { $0.streamID == playing.streamID }) {
-            group = LiveTVGroup.allID
-            list = store.channels(inGroup: group)
-        }
-        show(group: group, channels: list, landOn: playing)
+        // Locked groups (step 11) open only in the guide, with the PIN
+        // (the tree leaves them out).
+        tree.open(current: playing, in: store.selectedGroupID)
+        treeChanged(land: true)
         level = .channels
         scheduleChannel = nil
         withAnimation(.easeOut(duration: 0.2)) { isOpen = true }
@@ -129,7 +116,6 @@ final class LiveTVOverlayModel: ObservableObject {
     func close() {
         LiveTVOverlayPan.shared.remove()
         settleTask?.cancel()
-        groupTask?.cancel()
         closeTask?.cancel()
         rowsTask?.cancel()
         scheduleTask?.cancel()
@@ -138,7 +124,7 @@ final class LiveTVOverlayModel: ObservableObject {
     }
 
     /// The panels set how many rows fit.
-    func setRows(channels channelRows: Int, groups groupRows: Int, schedule scheduleRowCount: Int, dates dateRows: Int) {
+    func setRows(channels channelRows: Int, schedule scheduleRowCount: Int, dates dateRows: Int) {
         if scheduleWindow.rows != scheduleRowCount {
             scheduleWindow.rows = max(1, scheduleRowCount)
             scheduleWindow.follow(showIndex, count: scheduleRows.count)
@@ -149,11 +135,7 @@ final class LiveTVOverlayModel: ObservableObject {
         }
         if channelWindow.rows != channelRows {
             channelWindow.rows = max(1, channelRows)
-            channelWindow.follow(channelIndex, count: channels.count)
-        }
-        if groupWindow.rows != groupRows {
-            groupWindow.rows = max(1, groupRows)
-            groupWindow.follow(groupIndex, count: groups.count)
+            channelWindow.follow(tree.index, count: tree.items.count)
         }
     }
 
@@ -164,18 +146,20 @@ final class LiveTVOverlayModel: ObservableObject {
         // Up / Down from a swipe: the swipe itself scrolls (LiveTVOverlayPan).
         if direction == .up || direction == .down, !LiveTVOverlayPan.shared.acceptsMoveCommand() { return }
         switch (level, direction) {
-        case (.channels, .up): moveChannel(by: -1)
-        case (.channels, .down): moveChannel(by: 1)
+        case (.channels, .up): moveRow(by: -1)
+        case (.channels, .down): moveRow(by: 1)
         case (.channels, .left):
-            groupIndex = groups.firstIndex { $0.id == groupID } ?? 0
-            groupWindow.land(on: groupIndex, count: groups.count)
-            level = .groups
-        case (.groups, .up): moveGroup(by: -1)
-        case (.groups, .down): moveGroup(by: 1)
-        case (.groups, .right):
-            applyPendingGroup()
-            level = .channels
-        case (.channels, .right): openSchedule()
+            // A channel: up to its group.
+            tree.left()
+            treeChanged()
+        case (.channels, .right):
+            // A channel: its schedule; a closed group: its channels.
+            if highlighted != nil {
+                openSchedule()
+            } else {
+                tree.right()
+                treeChanged()
+            }
         case (.schedule, .up): moveShow(by: -1)
         case (.schedule, .down): moveShow(by: 1)
         case (.schedule, .left): level = .channels
@@ -198,28 +182,28 @@ final class LiveTVOverlayModel: ObservableObject {
         guard isOpen else { return }
         touched()
         switch level {
-        case .channels: moveChannel(by: delta, wraps: false)
-        case .groups: moveGroup(by: delta)
+        case .channels: moveRow(by: delta)
         case .schedule: moveShow(by: delta)
         case .dates: jumpToDate(dateIndex + delta)
         }
     }
 
     /// OK: plays the highlighted channel (OK on the one playing live
-    /// closes); in the groups, shows that group's channels; in the schedule,
-    /// plays the show on now live or a past one again.
+    /// closes); on a group opens or closes it, on a source's heading folds
+    /// it; in the schedule, plays the show on now live or a past one again.
     func select(playing: XtreamLiveChannel?) {
         touched()
         switch level {
         case .channels:
-            guard let channel = highlighted else { return }
+            guard let channel = highlighted else {
+                _ = tree.select(tree.index)
+                treeChanged()
+                return
+            }
             if channel.streamID != playing?.streamID || LiveTVPlayer.shared.replay != nil {
                 onPlay(channel, channels, groupID)
             }
             close()
-        case .groups:
-            applyPendingGroup()
-            level = .channels
         case .schedule:
             activateShow(playing: playing)
         case .dates:
@@ -227,14 +211,13 @@ final class LiveTVOverlayModel: ObservableObject {
         }
     }
 
-    /// Menu: one level back (dates, schedule, groups), from the channels out.
+    /// Menu: one level back (dates, schedule); in the list an open group
+    /// closes, then the overlay.
     func back() {
         touched()
         switch level {
-        case .channels: close()
-        case .groups:
-            applyPendingGroup()
-            level = .channels
+        case .channels:
+            if tree.back() { treeChanged() } else { close() }
         case .schedule: level = .channels
         case .dates: level = .schedule
         }
@@ -355,48 +338,27 @@ final class LiveTVOverlayModel: ObservableObject {
 
     // MARK: Private
 
-    private func show(group: String, channels list: [XtreamLiveChannel], landOn channel: XtreamLiveChannel?) {
-        groupID = group
-        channels = list
-        numberDigits = list.lazy.compactMap(\.number).map { String($0).count }.max() ?? 1
-        channelIndex = channel.flatMap { playing in list.firstIndex { $0.streamID == playing.streamID } } ?? 0
-        channelWindow.land(on: channelIndex, count: list.count)
+    /// The tree changed (opened, a group opened or closed, a source
+    /// folded): the window follows the highlight (`land`: it starts there).
+    private func treeChanged(land: Bool = false) {
+        numberDigits = channels.lazy.compactMap(\.number).map { String($0).count }.max() ?? 1
+        if land {
+            channelWindow.land(on: tree.index, count: tree.items.count)
+        } else {
+            channelWindow.follow(tree.index, count: tree.items.count)
+        }
+        treeRevision &+= 1
         settledChannel = nil
         settle(after: 0)
     }
 
-    private func moveChannel(by delta: Int, wraps: Bool = true) {
-        guard !channels.isEmpty else { return }
-        if wraps {
-            // Presses wrap round at the ends, as on Android.
-            channelIndex = ((channelIndex + delta) % channels.count + channels.count) % channels.count
-        } else {
-            // A swipe stops at the ends.
-            channelIndex = min(max(0, channelIndex + delta), channels.count - 1)
-        }
-        channelWindow.follow(channelIndex, count: channels.count)
+    /// Up / Down and swipes: through the rows; they stop at the ends.
+    private func moveRow(by delta: Int) {
+        guard !tree.items.isEmpty else { return }
+        tree.index = min(max(0, tree.index + delta), tree.items.count - 1)
+        channelWindow.follow(tree.index, count: tree.items.count)
+        treeRevision &+= 1
         settle(after: 0.2)
-    }
-
-    private func moveGroup(by delta: Int) {
-        guard !groups.isEmpty else { return }
-        groupIndex = min(max(0, groupIndex + delta), groups.count - 1)
-        groupWindow.follow(groupIndex, count: groups.count)
-        // The channels switch once the highlight rests: switching on every
-        // step made scrolling through the groups lag on Android.
-        groupTask?.cancel()
-        groupTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.applyPendingGroup()
-        }
-    }
-
-    private func applyPendingGroup() {
-        groupTask?.cancel()
-        guard let store, groups.indices.contains(groupIndex), groups[groupIndex].id != groupID else { return }
-        let id = groups[groupIndex].id
-        show(group: id, channels: store.channels(inGroup: id), landOn: LiveTVPlayer.shared.channel)
     }
 
     /// The highlight rested: schedule, details and the rows' shows.
@@ -419,8 +381,12 @@ final class LiveTVOverlayModel: ObservableObject {
     /// What's on for the rows on screen that aren't loaded yet.
     private func loadRows() {
         rowsTask?.cancel()
-        let missing = channelWindow.range(count: channels.count)
-            .map { channels[$0] }
+        let items = tree.items
+        let missing = channelWindow.range(count: items.count)
+            .compactMap { index -> XtreamLiveChannel? in
+                if case .channel(let channel) = items[index] { return channel }
+                return nil
+            }
             .filter { LiveTVGuideRows.shared.cached($0) == nil }
         guard !missing.isEmpty else { return }
         rowsTask = Task { [weak self] in
@@ -561,7 +527,6 @@ struct LiveTVOverlayView: View {
     @ObservedObject private var reminders = LiveTVReminders.shared
 
     static let channelRowHeight: CGFloat = 86
-    static let groupRowHeight: CGFloat = 62
     static let scheduleRowHeight: CGFloat = 52
     static let dateRowHeight: CGFloat = 84
     private static let headerHeight: CGFloat = 76
@@ -581,12 +546,7 @@ struct LiveTVOverlayView: View {
     private func content(now: Date) -> some View {
         ZStack(alignment: .topLeading) {
             HStack(alignment: .top, spacing: 0) {
-                if overlay.level == .groups {
-                    groupsPanel
-                }
                 switch overlay.level {
-                case .groups:
-                    channelsPanel(now: now)
                 case .channels:
                     channelsPanel(now: now)
                     if let channel = overlay.settledChannel {
@@ -616,7 +576,6 @@ struct LiveTVOverlayView: View {
                 let body = height - Self.headerHeight - 2 * Self.panelPadding
                 overlay.setRows(
                     channels: Int(body / Self.channelRowHeight),
-                    groups: Int((height - 2 * Self.panelPadding) / Self.groupRowHeight),
                     schedule: Int(body / Self.scheduleRowHeight),
                     dates: Int(body / Self.dateRowHeight))
             }
@@ -635,82 +594,82 @@ struct LiveTVOverlayView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: Groups
+    // MARK: The list
 
-    private var groupsPanel: some View {
-        let range = overlay.groupWindow.range(count: overlay.groups.count)
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(range), id: \.self) { index in
-                let group = overlay.groups[index]
-                let focused = index == overlay.groupIndex
-                HStack {
-                    Text(group.name)
-                        .font(.system(size: LiveTVTheme.Font.secondary, weight: focused ? .semibold : .regular))
-                        .lineLimit(1)
-                    Spacer(minLength: 12)
-                    if LiveTVSettings.shared.showGroupCounts {
-                        Text(String(group.count))
-                            .font(.system(size: LiveTVTheme.Font.badge))
-                            .opacity(0.6)
-                    }
-                }
-                .foregroundColor(focused ? .black : LiveTVTheme.primaryText)
-                .padding(.horizontal, 18)
-                .frame(height: Self.groupRowHeight - 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(focused ? Color.white : Color.clear)
-                )
-                .frame(height: Self.groupRowHeight)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, Self.panelPadding)
-        .frame(width: 400, alignment: .topLeading)
-        .frame(maxHeight: .infinity, alignment: .top)
-        // A shade darker than the channels beside it.
-        .background(Color.black.opacity(0.35))
-    }
-
-    // MARK: Channels
-
+    /// Groups and channels in one list, as Multiview's picker.
     private func channelsPanel(now: Date) -> some View {
-        let range = overlay.channelWindow.range(count: overlay.channels.count)
+        let items = overlay.tree.items
+        let range = overlay.channelWindow.range(count: items.count)
         let active = overlay.level == .channels
         let favorites = overlay.favoriteIDs
-        let title = overlay.groups.first { $0.id == overlay.groupID }?.name
-            ?? L10n.string("livetv_all_channels", fallback: "All channels")
         let digits = overlay.numberDigits
+        let selected = overlay.listIndex
         return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
+            Text(L10n.string("livetv_multiview_channels", fallback: "Channels"))
                 .font(.system(size: LiveTVTheme.Font.secondary, weight: .semibold))
                 .foregroundColor(LiveTVTheme.primaryText)
                 .lineLimit(1)
                 .padding(.horizontal, 20)
                 .frame(height: Self.headerHeight, alignment: .leading)
-            if overlay.channels.isEmpty {
+            if items.isEmpty {
                 Text(L10n.string("livetv_no_channels", fallback: "No channels in this group."))
                     .font(.system(size: LiveTVTheme.Font.small))
                     .foregroundColor(LiveTVTheme.secondaryText)
                     .padding(20)
             }
             ForEach(Array(range), id: \.self) { index in
-                let channel = overlay.channels[index]
-                channelRow(
-                    channel,
-                    highlighted: index == overlay.channelIndex,
-                    active: active,
-                    favorite: favorites.contains(channel.streamID),
-                    digits: digits,
-                    now: now)
+                switch items[index] {
+                case .heading(let group):
+                    groupRow(group, heading: true, open: !LiveTVStore.shared.isFolded(headingID: group.id),
+                             highlighted: index == selected, active: active)
+                case .group(let group, let open):
+                    groupRow(group, heading: false, open: open, highlighted: index == selected, active: active)
+                case .channel(let channel):
+                    channelRow(
+                        channel,
+                        highlighted: index == selected,
+                        active: active,
+                        favorite: favorites.contains(channel.streamID),
+                        digits: digits,
+                        now: now)
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, Self.panelPadding)
-        .frame(width: 560, alignment: .topLeading)
+        .frame(width: 680, alignment: .topLeading)
         .frame(maxHeight: .infinity, alignment: .top)
         // Redraw rows once their shows arrive.
         .id(overlay.rowsRevision)
+    }
+
+    /// A group or a source's heading: the arrow, the name, the count (as
+    /// Multiview's picker).
+    private func groupRow(_ group: LiveTVGroup, heading: Bool, open: Bool, highlighted: Bool, active: Bool) -> some View {
+        let solid = highlighted && active
+        return HStack(spacing: 12) {
+            Image(systemName: open ? "chevron.down" : "chevron.right")
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 24)
+            Text(heading ? group.name.uppercased() : group.name)
+                .font(heading ? .system(size: 20, weight: .heavy) : .system(size: 26, weight: open ? .bold : .regular))
+                .opacity(heading ? 0.6 : 1)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            if LiveTVSettings.shared.showGroupCounts {
+                Text(group.count.formatted())
+                    .font(.system(size: 22).monospacedDigit())
+                    .opacity(0.6)
+            }
+        }
+        .foregroundColor(solid ? .black : LiveTVTheme.primaryText)
+        .padding(.horizontal, 16)
+        .frame(height: Self.channelRowHeight - 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(solid ? Color.white : (highlighted ? Color.white.opacity(0.12) : Color.clear))
+        )
+        .frame(height: Self.channelRowHeight)
     }
 
     private func channelRow(
@@ -1008,7 +967,6 @@ struct LiveTVOverlayView: View {
         switch overlay.level {
         case .channels: return overlay.settledChannel
         case .schedule, .dates: return overlay.scheduleChannel
-        case .groups: return nil
         }
     }
 
@@ -1016,7 +974,6 @@ struct LiveTVOverlayView: View {
         switch overlay.level {
         case .channels: return overlay.settledProgrammes.first { $0.start <= now && now < $0.end }
         case .schedule, .dates: return overlay.focusedShow
-        case .groups: return nil
         }
     }
 
