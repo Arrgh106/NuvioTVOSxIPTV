@@ -811,12 +811,26 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             guard let target = picker.focusTarget, picker.items.indices.contains(target) else { return }
             collection.layoutIfNeeded()
             collection.scrollToItem(at: IndexPath(item: target, section: 0), at: .centeredVertically, animated: false)
-            // The focus goes to the row (preferred below).
-            DispatchQueue.main.async { [weak collection] in
-                collection?.setNeedsFocusUpdate()
-                collection?.updateFocusIfNeeded()
-            }
+            // The focus goes to the row (preferred below). Asked of the
+            // window's focus system: the panes' button had the focus and
+            // went disabled, so nothing in the list could ask for it.
+            pullFocus(attempts: 4)
             loadRows(after: 0.3)
+        }
+
+        /// Moves the focus into the list, trying again while the panel is
+        /// still appearing.
+        func pullFocus(attempts: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, let collection = self.collection else { return }
+                if let window = collection.window, let system = UIFocusSystem.focusSystem(for: window) {
+                    if let item = system.focusedItem as? UIView, item.isDescendant(of: collection) { return }
+                    system.requestFocusUpdate(to: collection)
+                    system.updateFocusIfNeeded()
+                }
+                guard attempts > 1 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.pullFocus(attempts: attempts - 1) }
+            }
         }
 
         @objc func pressLeft() { picker.left() }
