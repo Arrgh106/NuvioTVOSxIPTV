@@ -552,35 +552,28 @@ private struct LiveTVMultiviewSurface: UIViewRepresentable {
 /// pane being filled. All channels and your groups on top, then each
 /// source's heading (more than one source; OK folds its groups) with its
 /// groups; OK on a group opens its channels under it (number, logo, name,
-/// what's on now). The highlight is a cursor and only the rows on screen
-/// are drawn (as the full-screen guide), so 100,000 channels scroll at once.
+/// what's on now). The list is a `UICollectionView` with cell reuse, as
+/// Live TV's lists: tvOS scrolls it natively, with its fast-scroll thumb on
+/// long swipes.
 @MainActor
 final class LiveTVMultiviewPickerModel: ObservableObject {
-    enum Item: Identifiable {
+    enum Item {
         case heading(LiveTVGroup)
         case group(LiveTVGroup, open: Bool)
         case channel(XtreamLiveChannel)
-
-        var id: String {
-            switch self {
-            case .heading(let group): return "h:" + group.id
-            case .group(let group, _): return "g:" + group.id
-            case .channel(let channel): return "c:\(channel.streamID)"
-            }
-        }
     }
 
-    @Published private(set) var items: [Item] = []
-    @Published private(set) var index = 0
-    @Published private(set) var window = LiveTVListWindow(rows: 12)
-    /// The group whose channels are open under it.
-    @Published private(set) var openGroupID: String?
-    /// Bumped when what's on arrives for rows on screen.
-    @Published private(set) var rowsRevision = 0
+    private(set) var items: [Item] = []
+    /// Bumped when the items change: the list loads them again.
+    @Published private(set) var version = 0
+    /// The row with the focus (the list keeps it).
+    var index = 0
+    /// After a change, the row the focus goes to.
+    private(set) var focusTarget: Int?
 
     private var groups: [LiveTVGroup] = []
+    private var openGroupID: String?
     private var openChannels: [XtreamLiveChannel] = []
-    private var rowsTask: Task<Void, Never>?
     private var store: LiveTVStore { LiveTVStore.shared }
 
     /// Opens on the pane's channel in its group, else Favorites when there
@@ -598,61 +591,47 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
         openGroupID = group
         openChannels = list
         rebuild()
-        let at = current.flatMap { channel in items.firstIndex { $0.id == "c:\(channel.streamID)" } }
-            ?? items.firstIndex { if case .channel = $0 { return true } else { return false } }
-            ?? 0
+        let groupRow = items.firstIndex { if case .group(let g, _) = $0 { return g.id == group } else { return false } } ?? 0
+        let at = current.flatMap { channel in list.firstIndex { $0.streamID == channel.streamID } }.map { groupRow + 1 + $0 }
+            ?? (list.isEmpty ? groupRow : groupRow + 1)
         index = at
-        window.land(on: at, count: items.count)
-        loadRows()
-        LiveTVOverlayPan.shared.install { [weak self] delta in self?.step(delta, wraps: false) }
+        focusTarget = at
+        version &+= 1
     }
 
-    func close() {
-        rowsTask?.cancel()
-        LiveTVOverlayPan.shared.remove()
-    }
+    func focusTaken() { focusTarget = nil }
 
-    /// The panel sets how many rows fit.
-    func setRows(_ rows: Int) {
-        guard window.rows != rows else { return }
-        window.rows = max(1, rows)
-        window.follow(index, count: items.count)
-    }
-
-    func move(_ direction: MoveCommandDirection) {
-        // Up / Down from a swipe: the swipe itself scrolls.
-        if direction == .up || direction == .down, !LiveTVOverlayPan.shared.acceptsMoveCommand() { return }
-        switch direction {
-        case .up: step(-1, wraps: false)
-        case .down: step(1, wraps: false)
-        // Left in the channels: up to their group.
-        case .left: if case .channel? = current, let at = openGroupIndex { go(to: at) }
-        // Right on a group: its channels.
-        case .right: if case .group(let group, let open)? = current, !open { toggle(group) }
-        @unknown default: break
-        }
-    }
-
-    /// OK: a channel is picked (returned); a group opens or closes; a
-    /// heading folds or unfolds its source's groups.
-    func select() -> XtreamLiveChannel? {
-        switch current {
-        case .channel(let channel)?:
+    /// OK on a row: a channel is picked (returned); a group opens or
+    /// closes; a heading folds or unfolds its source's groups.
+    func select(_ at: Int) -> XtreamLiveChannel? {
+        guard items.indices.contains(at) else { return nil }
+        switch items[at] {
+        case .channel(let channel):
             return channel
-        case .group(let group, _)?:
+        case .group(let group, _):
             toggle(group)
-        case .heading(let heading)?:
+        case .heading(let heading):
             store.toggleFold(headingID: heading.id)
             groups = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
             rebuild()
-            go(to: items.firstIndex { $0.id == "h:" + heading.id } ?? 0)
-        case nil:
-            break
+            land(on: items.firstIndex { if case .heading(let h) = $0 { return h.id == heading.id } else { return false } } ?? 0)
         }
         return nil
     }
 
-    /// Back: in an open group, it closes (the cursor on it); else false and
+    /// Left in the channels: up to their group.
+    func left() {
+        guard items.indices.contains(index), case .channel = items[index], let at = openGroupIndex else { return }
+        land(on: at)
+    }
+
+    /// Right on a closed group: its channels.
+    func right() {
+        guard items.indices.contains(index), case .group(let group, let open) = items[index], !open else { return }
+        toggle(group)
+    }
+
+    /// Back: in an open group, it closes (the focus on it); else false and
     /// the picker closes.
     func back() -> Bool {
         guard let at = openGroupIndex, case .group(let group, _) = items[at], index >= at else { return false }
@@ -660,10 +639,9 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
         return true
     }
 
-    private var current: Item? { items.indices.contains(index) ? items[index] : nil }
-
     private var openGroupIndex: Int? {
-        openGroupID.flatMap { id in items.firstIndex { $0.id == "g:" + id } }
+        guard let id = openGroupID else { return nil }
+        return items.firstIndex { if case .group(let g, _) = $0 { return g.id == id } else { return false } }
     }
 
     /// Opens a group (closing the one open) or closes it.
@@ -676,10 +654,13 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
             openChannels = store.channels(inGroup: group.id)
         }
         rebuild()
-        let at = items.firstIndex { $0.id == "g:" + group.id } ?? 0
+        land(on: items.firstIndex { if case .group(let g, _) = $0 { return g.id == group.id } else { return false } } ?? 0)
+    }
+
+    private func land(on at: Int) {
         index = at
-        window.follow(at, count: items.count)
-        loadRows()
+        focusTarget = at
+        version &+= 1
     }
 
     private func rebuild() {
@@ -697,54 +678,15 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
         items = list
         index = min(index, max(0, list.count - 1))
     }
-
-    private func step(_ delta: Int, wraps: Bool) {
-        guard !items.isEmpty else { return }
-        go(to: min(max(0, index + delta), items.count - 1))
-    }
-
-    private func go(to at: Int) {
-        // The rows slide a little, as a list does.
-        withAnimation(.easeOut(duration: 0.14)) {
-            index = at
-            window.follow(at, count: items.count)
-        }
-        loadRows()
-    }
-
-    /// What's on for the channels on screen, once the cursor rests.
-    private func loadRows() {
-        rowsTask?.cancel()
-        let shown = window.range(count: items.count).compactMap { at -> XtreamLiveChannel? in
-            if case .channel(let channel) = items[at], LiveTVGuideRows.shared.cached(channel) == nil { return channel }
-            return nil
-        }
-        guard !shown.isEmpty else { return }
-        rowsTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            await withTaskGroup(of: Void.self) { group in
-                for channel in shown {
-                    group.addTask { @MainActor in _ = await LiveTVGuideRows.shared.programmes(for: channel) }
-                }
-            }
-            guard !Task.isCancelled else { return }
-            self?.rowsRevision &+= 1
-        }
-    }
 }
 
 /// The picker's panel: its pane and title on top, the list, a hint below.
-/// One invisible button takes the remote.
 private struct LiveTVMultiviewPicker: View {
     @ObservedObject var model: LiveTVMultiview
     let pane: Int
     @ObservedObject private var picker: LiveTVMultiviewPickerModel
-    @FocusState private var focused: Bool
 
-    static let width: CGFloat = 660
-    private static let rowHeight: CGFloat = 68
-    private static let rowSpacing: CGFloat = 4
+    static let width: CGFloat = 680
 
     init(model: LiveTVMultiview, pane: Int) {
         self.model = model
@@ -753,186 +695,431 @@ private struct LiveTVMultiviewPicker: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.format("livetv_multiview_pane_format", fallback: "Pane %d", pane + 1))
-                        .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
-                        .foregroundColor(LiveTVTheme.secondaryText)
-                    Text(L10n.string("livetv_multiview_channels", fallback: "Channels"))
-                        .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
-                        .foregroundColor(LiveTVTheme.primaryText)
-                }
-                .padding(.horizontal, 14)
-                list
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .clipped()
-                    .background(GeometryReader { geo in
-                        Color.clear
-                            .onAppear { setRows(geo.size.height) }
-                            .onChange(of: geo.size.height) { _, height in setRows(height) }
-                    })
-                Text(L10n.format("livetv_multiview_picker_hint", fallback: "OK: play in P%d · Back: close", pane + 1))
-                    .font(.system(size: LiveTVTheme.Font.badge))
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.format("livetv_multiview_pane_format", fallback: "Pane %d", pane + 1))
+                    .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
                     .foregroundColor(LiveTVTheme.secondaryText)
-                    .padding(.horizontal, 14)
+                Text(L10n.string("livetv_multiview_channels", fallback: "Channels"))
+                    .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
+                    .foregroundColor(LiveTVTheme.primaryText)
             }
-            .padding(.vertical, 24)
-            .padding(.horizontal, 12)
-            // The remote's target: it draws nothing.
-            Button(action: select) { Color.clear.contentShape(Rectangle()) }
-                .buttonStyle(LiveTVInvisibleButtonStyle())
-                .focused($focused)
-                .onMoveCommand { picker.move($0) }
-                .onExitCommand(perform: back)
+            .padding(.horizontal, 26)
+            LiveTVMultiviewPickerList(
+                picker: picker, version: picker.version, pane: pane,
+                paneOf: { id in model.panes.first { $0.channel?.streamID == id }?.id },
+                onPick: { channel in
+                    model.assign(channel, to: pane)
+                    model.pickerPane = nil
+                },
+                onBack: { if !picker.back() { model.pickerPane = nil } })
+                .frame(maxHeight: .infinity)
+            Text(L10n.format("livetv_multiview_picker_hint", fallback: "OK: play in P%d · Back: close", pane + 1))
+                .font(.system(size: LiveTVTheme.Font.badge))
+                .foregroundColor(LiveTVTheme.secondaryText)
+                .padding(.horizontal, 26)
         }
+        .padding(.vertical, 24)
         .frame(width: Self.width)
         .frame(maxHeight: .infinity)
         .liveTVGlass(cornerRadius: 24)
         .padding(20)
-        .onAppear {
-            picker.open(current: model.panes[pane].channel)
-            focused = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { focused = true }
+        .onAppear { picker.open(current: model.panes[pane].channel) }
+    }
+}
+
+/// The picker's rows in a `UICollectionView`.
+private struct LiveTVMultiviewPickerList: UIViewRepresentable {
+    let picker: LiveTVMultiviewPickerModel
+    let version: Int
+    let pane: Int
+    let paneOf: (Int) -> Int?
+    let onPick: (XtreamLiveChannel) -> Void
+    let onBack: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(picker: picker) }
+
+    func makeUIView(context: Context) -> LiveTVMenuTakingView {
+        let item = NSCollectionLayoutItem(layoutSize: .init(
+            widthDimension: .fractionalWidth(1), heightDimension: .absolute(LiveTVMultiviewPickerCell.height)))
+        let group = NSCollectionLayoutGroup.vertical(layoutSize: .init(
+            widthDimension: .fractionalWidth(1), heightDimension: .absolute(LiveTVMultiviewPickerCell.height)),
+            subitems: [item])
+        let section = NSCollectionLayoutSection(group: group)
+        section.interGroupSpacing = 4
+        section.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
+        let view = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout(section: section))
+        view.backgroundColor = .clear
+        view.clipsToBounds = true
+        view.remembersLastFocusedIndexPath = false
+        view.register(LiveTVMultiviewPickerCell.self, forCellWithReuseIdentifier: LiveTVMultiviewPickerCell.reuseID)
+        view.dataSource = context.coordinator
+        view.delegate = context.coordinator
+        // Left / Right presses: to the group, into a group.
+        for (type, action) in [(UIPress.PressType.leftArrow, #selector(Coordinator.pressLeft)),
+                               (UIPress.PressType.rightArrow, #selector(Coordinator.pressRight))] {
+            let press = UITapGestureRecognizer(target: context.coordinator, action: action)
+            press.allowedPressTypes = [NSNumber(value: type.rawValue)]
+            view.addGestureRecognizer(press)
         }
-        .onDisappear { picker.close() }
+        let container = LiveTVMenuTakingView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            view.topAnchor.constraint(equalTo: container.topAnchor),
+            view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        // Menu: back in the picker (closes a group, then the picker).
+        container.takesMenu = { true }
+        container.onMenu = { [weak coordinator = context.coordinator] in coordinator?.onBack() }
+        context.coordinator.collection = view
+        update(context.coordinator)
+        return container
     }
 
-    private struct ShownRow: Identifiable {
-        let at: Int
-        let item: LiveTVMultiviewPickerModel.Item
-        var id: String { item.id }
+    func updateUIView(_ container: LiveTVMenuTakingView, context: Context) {
+        update(context.coordinator)
     }
 
-    private func setRows(_ height: CGFloat) {
-        picker.setRows(max(1, Int((height + Self.rowSpacing) / (Self.rowHeight + Self.rowSpacing))))
+    private func update(_ coordinator: Coordinator) {
+        coordinator.pane = pane
+        coordinator.paneOf = paneOf
+        coordinator.onPick = onPick
+        coordinator.onBack = onBack
+        coordinator.apply(version: version)
     }
 
-    private func select() {
-        guard let channel = picker.select() else { return }
-        model.assign(channel, to: pane)
-        model.pickerPane = nil
+    @MainActor
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+        let picker: LiveTVMultiviewPickerModel
+        weak var collection: UICollectionView?
+        var pane = 0
+        var paneOf: (Int) -> Int? = { _ in nil }
+        var onPick: (XtreamLiveChannel) -> Void = { _ in }
+        var onBack: () -> Void = {}
+        private var shownVersion = -1
+        private var rowsTask: Task<Void, Never>?
+
+        init(picker: LiveTVMultiviewPickerModel) { self.picker = picker }
+
+        func apply(version: Int) {
+            guard version != shownVersion, let collection else { return }
+            shownVersion = version
+            collection.reloadData()
+            guard let target = picker.focusTarget, picker.items.indices.contains(target) else { return }
+            collection.layoutIfNeeded()
+            collection.scrollToItem(at: IndexPath(item: target, section: 0), at: .centeredVertically, animated: false)
+            // The focus goes to the row (preferred below).
+            DispatchQueue.main.async { [weak collection] in
+                collection?.setNeedsFocusUpdate()
+                collection?.updateFocusIfNeeded()
+            }
+            loadRows(after: 0.3)
+        }
+
+        @objc func pressLeft() { picker.left() }
+        @objc func pressRight() { picker.right() }
+
+        func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+            picker.items.count
+        }
+
+        func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: LiveTVMultiviewPickerCell.reuseID, for: indexPath)
+            configure(cell as? LiveTVMultiviewPickerCell, at: indexPath.item)
+            return cell
+        }
+
+        private func configure(_ cell: LiveTVMultiviewPickerCell?, at index: Int) {
+            guard let cell, picker.items.indices.contains(index) else { return }
+            switch picker.items[index] {
+            case .heading(let group): cell.configureHeading(group)
+            case .group(let group, let open): cell.configureGroup(group, open: open)
+            case .channel(let channel):
+                let inPane = paneOf(channel.streamID)
+                cell.configureChannel(channel, inThisPane: inPane == pane, otherPane: inPane == pane ? nil : inPane)
+            }
+        }
+
+        func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
+            let at = picker.focusTarget ?? picker.index
+            return picker.items.indices.contains(at) ? IndexPath(item: at, section: 0) : nil
+        }
+
+        func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext,
+                            with coordinator: UIFocusAnimationCoordinator) {
+            guard let path = context.nextFocusedIndexPath else { return }
+            picker.index = path.item
+            if picker.focusTarget == path.item { picker.focusTaken() }
+            loadRows(after: 0.3)
+        }
+
+        func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+            picker.index = indexPath.item
+            if let channel = picker.select(indexPath.item) { onPick(channel) }
+        }
+
+        /// What's on for the channels on screen, once the focus rests.
+        private func loadRows(after seconds: Double) {
+            rowsTask?.cancel()
+            rowsTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard !Task.isCancelled, let self, let collection = self.collection else { return }
+                let paths = collection.indexPathsForVisibleItems
+                let missing = paths.compactMap { path -> XtreamLiveChannel? in
+                    guard self.picker.items.indices.contains(path.item),
+                          case .channel(let channel) = self.picker.items[path.item],
+                          LiveTVGuideRows.shared.cached(channel) == nil else { return nil }
+                    return channel
+                }
+                guard !missing.isEmpty else { return }
+                await withTaskGroup(of: Void.self) { group in
+                    for channel in missing {
+                        group.addTask { @MainActor in _ = await LiveTVGuideRows.shared.programmes(for: channel) }
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                for path in collection.indexPathsForVisibleItems {
+                    self.configure(collection.cellForItem(at: path) as? LiveTVMultiviewPickerCell, at: path.item)
+                }
+            }
+        }
+    }
+}
+
+/// One row: a source's heading, a group (with its fold arrow) or a
+/// channel (number, logo, name, what's on now and its progress).
+private final class LiveTVMultiviewPickerCell: UICollectionViewCell {
+    static let reuseID = "LiveTVMultiviewPickerCell"
+    static let height: CGFloat = 76
+
+    private enum Kind { case heading, group, channel }
+
+    private let background = UIView()
+    private let chevron = UIImageView()
+    private let numberLabel = UILabel()
+    private let logoView = UIImageView()
+    private let titleLabel = UILabel()
+    private let nowLabel = UILabel()
+    private let progressTrack = UIView()
+    private let progressFill = UIView()
+    private let detailLabel = UILabel()
+    private let badge = UILabel()
+    private let playMark = UIImageView(image: UIImage(systemName: "play.fill"))
+    private var progressWidth: NSLayoutConstraint?
+    private var leading: NSLayoutConstraint?
+    private var kind = Kind.group
+    private var hasShow = false
+    private var logoURL: URL?
+    private var logoTask: Task<Void, Never>?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        background.layer.cornerRadius = 12
+        background.layer.cornerCurve = .continuous
+        background.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(background)
+
+        chevron.contentMode = .scaleAspectFit
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+        numberLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
+        numberLabel.textAlignment = .right
+        logoView.contentMode = .scaleAspectFit
+        titleLabel.lineBreakMode = .byTruncatingTail
+        nowLabel.font = .systemFont(ofSize: 20)
+        nowLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .regular)
+        badge.font = .systemFont(ofSize: 20, weight: .heavy)
+        badge.textAlignment = .center
+        badge.layer.cornerRadius = 5
+        badge.layer.masksToBounds = true
+        playMark.contentMode = .scaleAspectFit
+        playMark.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 20, weight: .bold)
+        progressTrack.layer.cornerRadius = 1.5
+        progressFill.layer.cornerRadius = 1.5
+        for view in [chevron, numberLabel, logoView, titleLabel, nowLabel, progressTrack, detailLabel, badge, playMark] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            contentView.addSubview(view)
+        }
+        progressFill.translatesAutoresizingMaskIntoConstraints = false
+        progressTrack.addSubview(progressFill)
+        for label in [titleLabel, nowLabel] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for view in [detailLabel, badge, playMark] as [UIView] {
+            view.setContentHuggingPriority(.required, for: .horizontal)
+            view.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+
+        let leading = chevron.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16)
+        self.leading = leading
+        let progressWidth = progressFill.widthAnchor.constraint(equalToConstant: 0)
+        self.progressWidth = progressWidth
+        NSLayoutConstraint.activate([
+            background.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            background.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            background.topAnchor.constraint(equalTo: contentView.topAnchor),
+            background.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            leading,
+            chevron.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 24),
+            numberLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            numberLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            numberLabel.widthAnchor.constraint(equalToConstant: 64),
+            logoView.leadingAnchor.constraint(equalTo: numberLabel.trailingAnchor, constant: 12),
+            logoView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            logoView.widthAnchor.constraint(equalToConstant: 48),
+            logoView.heightAnchor.constraint(equalToConstant: 48),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: detailLabel.leadingAnchor, constant: -12),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badge.leadingAnchor, constant: -12),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: playMark.leadingAnchor, constant: -12),
+            nowLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            nowLabel.trailingAnchor.constraint(lessThanOrEqualTo: badge.leadingAnchor, constant: -12),
+            nowLabel.trailingAnchor.constraint(lessThanOrEqualTo: playMark.leadingAnchor, constant: -12),
+            nowLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            progressTrack.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            progressTrack.widthAnchor.constraint(equalToConstant: 220),
+            progressTrack.heightAnchor.constraint(equalToConstant: 3),
+            progressTrack.topAnchor.constraint(equalTo: nowLabel.bottomAnchor, constant: 5),
+            progressFill.leadingAnchor.constraint(equalTo: progressTrack.leadingAnchor),
+            progressFill.topAnchor.constraint(equalTo: progressTrack.topAnchor),
+            progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
+            progressWidth,
+            detailLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            detailLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            badge.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            badge.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            playMark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            playMark.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+        ])
+        titleConstraints = (
+            groupLeading: titleLabel.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 12),
+            channelLeading: titleLabel.leadingAnchor.constraint(equalTo: logoView.trailingAnchor, constant: 14),
+            centered: titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            top: titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8))
+        applyStyle()
     }
 
-    private func back() {
-        if !picker.back() { model.pickerPane = nil }
+    private var titleConstraints: (groupLeading: NSLayoutConstraint, channelLeading: NSLayoutConstraint,
+                                   centered: NSLayoutConstraint, top: NSLayoutConstraint)?
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        logoTask?.cancel()
+        logoTask = nil
+        logoURL = nil
+        logoView.image = nil
     }
 
-    private var list: some View {
-        let range = picker.window.range(count: picker.items.count)
+    func configureHeading(_ group: LiveTVGroup) {
+        setKind(.heading)
+        titleLabel.text = group.name.uppercased()
+        detailLabel.text = group.count.formatted()
+        applyStyle()
+    }
+
+    func configureGroup(_ group: LiveTVGroup, open: Bool) {
+        setKind(.group)
+        chevron.image = UIImage(systemName: open ? "chevron.down" : "chevron.right")
+        titleLabel.text = group.name
+        titleLabel.font = .systemFont(ofSize: 26, weight: open ? .bold : .regular)
+        detailLabel.text = group.count.formatted()
+        applyStyle()
+    }
+
+    func configureChannel(_ channel: XtreamLiveChannel, inThisPane: Bool, otherPane: Int?) {
+        setKind(.channel)
+        numberLabel.text = channel.number.map { String($0) } ?? ""
+        titleLabel.text = channel.name
         let now = Date()
-        // Keyed by the item: moving a row on, the rows slide.
-        let shown = range.map { ShownRow(at: $0, item: picker.items[$0]) }
-        return VStack(alignment: .leading, spacing: Self.rowSpacing) {
-            ForEach(shown) { entry in
-                row(entry.item, highlighted: entry.at == picker.index, now: now, digits: 4)
-                    .frame(height: Self.rowHeight)
-            }
+        let show = LiveTVGuideRows.shared.cached(channel)?.first { $0.start <= now && now < $0.end }
+        hasShow = show != nil
+        nowLabel.text = show?.title ?? L10n.string("livetv_info_none", fallback: "No information")
+        progressTrack.isHidden = show == nil
+        if let show {
+            let info = LiveTVProgrammeInfo(start: show.start, end: show.end, title: nil, description: nil)
+            progressWidth?.constant = 220 * CGFloat(info.progress(at: now))
         }
-        // Rows redraw once their shows arrive.
-        .id(picker.rowsRevision)
+        playMark.isHidden = !inThisPane
+        badge.isHidden = otherPane == nil
+        badge.text = otherPane.map { "P\($0 + 1)" }
+        loadLogo(channel.logoURL.flatMap(URL.init(string:)))
+        applyStyle()
     }
 
-    @ViewBuilder
-    private func row(_ item: LiveTVMultiviewPickerModel.Item, highlighted: Bool, now: Date, digits: Int) -> some View {
-        switch item {
-        case .heading(let group):
-            HStack(spacing: 10) {
-                Text(group.name.uppercased())
-                    .font(.system(size: LiveTVTheme.Font.badge, weight: .heavy))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(group.count.formatted())
-                    .font(.system(size: LiveTVTheme.Font.badge))
-                    .opacity(0.7)
-            }
-            .foregroundColor(highlighted ? .black : LiveTVTheme.secondaryText)
-            .padding(.horizontal, 14)
-            .frame(maxHeight: .infinity)
-            .background(background(highlighted))
-        case .group(let group, let open):
-            HStack(spacing: 10) {
-                Image(systemName: open ? "chevron.down" : "chevron.right")
-                    .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold))
-                Text(group.name)
-                    .font(.system(size: LiveTVTheme.Font.small, weight: open ? .bold : .regular))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(group.count.formatted())
-                    .font(.system(size: LiveTVTheme.Font.badge))
-                    .opacity(0.6)
-            }
-            .foregroundColor(highlighted ? .black : LiveTVTheme.primaryText)
-            .padding(.horizontal, 14)
-            .frame(maxHeight: .infinity)
-            .background(background(highlighted))
-        case .channel(let channel):
-            channelRow(channel, highlighted: highlighted, now: now, digits: digits)
+    private func setKind(_ value: Kind) {
+        kind = value
+        let isChannel = value == .channel
+        chevron.isHidden = value != .group
+        numberLabel.isHidden = !isChannel
+        logoView.isHidden = !isChannel
+        nowLabel.isHidden = !isChannel
+        progressTrack.isHidden = !isChannel
+        detailLabel.isHidden = isChannel
+        if !isChannel {
+            badge.isHidden = true
+            playMark.isHidden = true
+        }
+        guard let c = titleConstraints else { return }
+        c.groupLeading.isActive = false
+        c.channelLeading.isActive = false
+        c.centered.isActive = false
+        c.top.isActive = false
+        if isChannel {
+            c.channelLeading.isActive = true
+            c.top.isActive = true
+        } else {
+            // A heading starts where a group's arrow does.
+            c.groupLeading.constant = value == .heading ? -24 : 12
+            c.groupLeading.isActive = true
+            c.centered.isActive = true
+        }
+        if value == .heading { titleLabel.font = .systemFont(ofSize: 20, weight: .heavy) }
+        if isChannel { titleLabel.font = .systemFont(ofSize: 24, weight: .semibold) }
+    }
+
+    private func loadLogo(_ url: URL?) {
+        guard url != logoURL else { return }
+        logoTask?.cancel()
+        logoURL = url
+        logoView.image = UIImage(systemName: "tv")
+        guard let url else { return }
+        if let cached = LiveTVLogoCache.shared.image(for: url) {
+            logoView.image = cached
+            return
+        }
+        logoTask = Task { [weak self] in
+            guard let image = await LiveTVLogoCache.shared.load(url) else { return }
+            guard let self, self.logoURL == url else { return }
+            self.logoView.image = image
         }
     }
 
-    private func channelRow(_ channel: XtreamLiveChannel, highlighted: Bool, now: Date, digits: Int) -> some View {
-        let current = LiveTVGuideRows.shared.cached(channel)?.first { $0.start <= now && now < $0.end }
-        let inPane = model.panes.first { $0.channel?.streamID == channel.streamID }?.id
-        let accent: Color = highlighted ? .black : LiveTVTheme.accent
-        return HStack(spacing: 10) {
-            Text(channel.number.map { String($0) } ?? "")
-                .font(.system(size: LiveTVTheme.Font.badge, weight: .semibold).monospacedDigit())
-                .foregroundColor(highlighted ? .black.opacity(0.7) : LiveTVTheme.secondaryText)
-                .frame(width: CGFloat(digits) * 11 + 4, alignment: .trailing)
-            LiveTVCachedLogo(url: channel.logoURL.flatMap(URL.init(string:)))
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(channel.name)
-                    .font(.system(size: LiveTVTheme.Font.small, weight: .semibold))
-                    .foregroundColor(highlighted ? .black : LiveTVTheme.primaryText)
-                    .lineLimit(1)
-                Text(current?.title ?? L10n.string("livetv_info_none", fallback: "No information"))
-                    .font(.system(size: LiveTVTheme.Font.badge))
-                    .foregroundColor(current == nil ? (highlighted ? .black.opacity(0.6) : LiveTVTheme.tertiaryText) : accent)
-                    .lineLimit(1)
-                if let current {
-                    let info = LiveTVProgrammeInfo(start: current.start, end: current.end, title: nil, description: nil)
-                    progress(info.progress(at: now), highlighted: highlighted)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let inPane {
-                // In this pane: a play mark; in another: its name.
-                if inPane == pane {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: LiveTVTheme.Font.badge))
-                        .foregroundColor(highlighted ? .black : LiveTVTheme.markColor)
-                } else {
-                    Text("P\(inPane + 1)")
-                        .font(.system(size: LiveTVTheme.Font.badge, weight: .heavy))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.white.opacity(highlighted ? 0.0 : 0.18), in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundColor(highlighted ? .black : .white)
-                }
-            }
-        }
-        .padding(.leading, 26)
-        .padding(.trailing, 14)
-        .frame(maxHeight: .infinity)
-        .background(background(highlighted))
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        coordinator.addCoordinatedAnimations({ [weak self] in self?.applyStyle() })
     }
 
-    private func background(_ highlighted: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(highlighted ? Color.white : Color.clear)
-    }
-
-    private func progress(_ fraction: Double, highlighted: Bool) -> some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(highlighted ? Color.black.opacity(0.2) : Color.white.opacity(0.18))
-                Capsule().fill(highlighted ? Color.black : LiveTVTheme.markColor)
-                    .frame(width: geometry.size.width * fraction)
-            }
-        }
-        .frame(height: 3)
+    private func applyStyle() {
+        let focused = isFocused
+        let primary: UIColor = focused ? .black : .white
+        let secondary: UIColor = focused ? UIColor.black.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.6)
+        background.backgroundColor = focused ? .white : .clear
+        titleLabel.textColor = kind == .heading ? secondary : primary
+        chevron.tintColor = primary
+        numberLabel.textColor = secondary
+        detailLabel.textColor = secondary
+        nowLabel.textColor = hasShow ? (focused ? .black : LiveTVTheme.accentUIColor) : secondary
+        progressTrack.backgroundColor = focused ? UIColor.black.withAlphaComponent(0.2) : UIColor.white.withAlphaComponent(0.18)
+        progressFill.backgroundColor = focused ? .black : LiveTVTheme.markUIColor
+        badge.textColor = primary
+        badge.backgroundColor = focused ? UIColor.black.withAlphaComponent(0.12) : UIColor.white.withAlphaComponent(0.18)
+        playMark.tintColor = focused ? .black : LiveTVTheme.markUIColor
+        logoView.tintColor = secondary
+        transform = focused ? CGAffineTransform(scaleX: 1.02, y: 1.02) : .identity
     }
 }
 
