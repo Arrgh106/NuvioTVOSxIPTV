@@ -663,47 +663,18 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
         land(on: items.firstIndex { if case .group(let g, _) = $0 { return g.id == group.id } else { return false } } ?? 0)
     }
 
-    /// A source's own All channels row (more than one source).
-    private static let sourceAllPrefix = "__all__:"
-
-    /// The groups as rows. With more than one source, All channels sits
-    /// under each source's heading (that source's channels) instead of
-    /// once on top.
+    /// The groups as rows (each source's All channels under its heading
+    /// comes from the store).
     private func pickerGroups() -> [LiveTVGroup] {
-        let shown = store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
-        guard shown.contains(where: \.isHeading) else { return shown }
-        var counts: [Int: Int] = [:]
-        for channel in store.channels(inGroup: LiveTVGroup.allID) {
-            counts[LiveTVSourceIDs.slot(ofChannel: channel.streamID), default: 0] += 1
-        }
-        let name = L10n.string("livetv_all_channels", fallback: "All channels")
-        var result: [LiveTVGroup] = []
-        for group in shown where group.id != LiveTVGroup.allID {
-            result.append(group)
-            guard let sourceID = LiveTVSourceIDs.sourceID(ofHeading: group.id),
-                  !store.foldedSources.contains(sourceID),
-                  let source = store.sources.first(where: { $0.id == sourceID }) else { continue }
-            result.append(LiveTVGroup(id: Self.sourceAllPrefix + sourceID, name: name, count: counts[source.slot] ?? 0))
-        }
-        return result
+        store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
     }
 
-    /// A row's channels; a source's All channels are its share of all.
     private func channels(of groupID: String) -> [XtreamLiveChannel] {
-        guard groupID.hasPrefix(Self.sourceAllPrefix) else { return store.channels(inGroup: groupID) }
-        let sourceID = String(groupID.dropFirst(Self.sourceAllPrefix.count))
-        guard let slot = store.sources.first(where: { $0.id == sourceID })?.slot else { return [] }
-        return store.channels(inGroup: LiveTVGroup.allID).filter { LiveTVSourceIDs.slot(ofChannel: $0.streamID) == slot }
+        store.channels(inGroup: groupID)
     }
 
-    /// The All channels row to fall back on: the channel's source's when
-    /// there is one per source, else the first one shown.
     private func allGroup(for channel: XtreamLiveChannel?) -> String {
-        if groups.contains(where: { $0.id == LiveTVGroup.allID }) { return LiveTVGroup.allID }
-        let shown = store.sources.filter { source in groups.contains { $0.id == Self.sourceAllPrefix + source.id } }
-        let slot = channel.map { LiveTVSourceIDs.slot(ofChannel: $0.streamID) }
-        guard let source = shown.first(where: { $0.slot == slot }) ?? shown.first else { return LiveTVGroup.allID }
-        return Self.sourceAllPrefix + source.id
+        store.allGroupID(for: channel)
     }
 
     private func land(on at: Int) {
@@ -909,7 +880,7 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
         private func configure(_ cell: LiveTVMultiviewPickerCell?, at index: Int) {
             guard let cell, picker.items.indices.contains(index) else { return }
             switch picker.items[index] {
-            case .heading(let group): cell.configureHeading(group)
+            case .heading(let group): cell.configureHeading(group, folded: LiveTVStore.shared.isFolded(headingID: group.id))
             case .group(let group, let open): cell.configureGroup(group, open: open)
             case .channel(let channel):
                 let inPane = paneOf(channel.streamID)
@@ -1088,8 +1059,10 @@ private final class LiveTVMultiviewPickerCell: UICollectionViewCell {
         logoView.image = nil
     }
 
-    func configureHeading(_ group: LiveTVGroup) {
+    /// A source's heading: the same arrow as a group's.
+    func configureHeading(_ group: LiveTVGroup, folded: Bool) {
         setKind(.heading)
+        chevron.image = UIImage(systemName: folded ? "chevron.right" : "chevron.down")
         titleLabel.text = group.name.uppercased()
         detailLabel.text = group.count.formatted()
         applyStyle()
@@ -1127,7 +1100,7 @@ private final class LiveTVMultiviewPickerCell: UICollectionViewCell {
     private func setKind(_ value: Kind) {
         kind = value
         let isChannel = value == .channel
-        chevron.isHidden = value != .group
+        chevron.isHidden = isChannel
         numberLabel.isHidden = !isChannel
         logoView.isHidden = !isChannel
         nowLabel.isHidden = !isChannel
@@ -1146,8 +1119,7 @@ private final class LiveTVMultiviewPickerCell: UICollectionViewCell {
             c.channelLeading.isActive = true
             c.top.isActive = true
         } else {
-            // A heading starts where a group's arrow does.
-            c.groupLeading.constant = value == .heading ? -24 : 12
+            c.groupLeading.constant = 12
             c.groupLeading.isActive = true
             c.centered.isActive = true
         }
