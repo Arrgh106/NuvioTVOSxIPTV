@@ -768,6 +768,13 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             press.allowedPressTypes = [NSNumber(value: type.rawValue)]
             view.addGestureRecognizer(press)
         }
+        // Menu: back in the picker (closes a group, then the picker). A
+        // recognizer of its own that the app's other Menu handlers wait on:
+        // the root's safety net (an overlay is up) took the press first.
+        let menu = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pressMenu))
+        menu.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+        menu.delegate = context.coordinator
+        view.addGestureRecognizer(menu)
         let container = LiveTVMenuTakingView()
         view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(view)
@@ -777,9 +784,6 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             view.topAnchor.constraint(equalTo: container.topAnchor),
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        // Menu: back in the picker (closes a group, then the picker).
-        container.takesMenu = { true }
-        container.onMenu = { [weak coordinator = context.coordinator] in coordinator?.onBack() }
         context.coordinator.collection = view
         update(context.coordinator)
         return container
@@ -798,7 +802,7 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
         let picker: LiveTVMultiviewPickerModel
         weak var collection: UICollectionView?
         var pane = 0
@@ -841,6 +845,13 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
 
         @objc func pressLeft() { picker.left() }
         @objc func pressRight() { picker.right() }
+        @objc func pressMenu() { onBack() }
+
+        /// Every other Menu recognizer waits until the picker's has failed.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            other.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
+        }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
             picker.items.count
