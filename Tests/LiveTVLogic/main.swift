@@ -885,18 +885,18 @@ check(LiveTVCalendarLogic.isWatched(season: 1, episode: 4, marked: [], furthest:
 check(LiveTVCalendarLogic.day("2026-12-31", plus: 1) == "2027-01-01" && LiveTVCalendarLogic.day("2026-03-01", plus: -1) == "2026-02-28",
       "calendar: day arithmetic")
 // West Coast: an East Coast show at 20:00 ET airs at 20:00 PT on the Pacific feed.
-let pacific = TimeZone(identifier: "America/Los_Angeles")!
-let berlin = TimeZone(identifier: "Europe/Berlin")!
+let calPacific = TimeZone(identifier: "America/Los_Angeles")!
+let calBerlin = TimeZone(identifier: "Europe/Berlin")!
 let eightET = Date(timeIntervalSince1970: 1_795_222_800) // 2026-11-21 01:00 UTC = 20:00 EST
 let pacificAir = LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
-                                              streaming: false, local: pacific)
+                                              streaming: false, local: calPacific)
 var pacificCalendar = Calendar(identifier: .gregorian)
-pacificCalendar.timeZone = pacific
+pacificCalendar.timeZone = calPacific
 check(pacificAir.map { pacificCalendar.component(.hour, from: $0) } == 20, "calendar: Pacific feed at the same clock time")
 check(LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
-                                   streaming: false, local: berlin) == eightET, "calendar: abroad, the real time")
+                                   streaming: false, local: calBerlin) == eightET, "calendar: abroad, the real time")
 check(LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
-                                   streaming: true, local: pacific) == eightET, "calendar: streaming, the real time")
+                                   streaming: true, local: calPacific) == eightET, "calendar: streaming, the real time")
 // Lists.
 let utcZone = TimeZone(identifier: "UTC")!
 let calNow = Date(timeIntervalSince1970: 1_795_176_000) // 2026-11-20 12:00 UTC
