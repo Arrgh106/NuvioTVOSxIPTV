@@ -31,6 +31,12 @@ final class LiveTVMultiview: ObservableObject {
         fileprivate var engine: AetherEngine?
         fileprivate var task: Task<Void, Never>?
         fileprivate var watch: AnyCancellable?
+        /// A run of tries since the channel was picked (step 15b): drops
+        /// reconnect, the second in a row moves to a backup copy.
+        fileprivate var attempts = 0
+        fileprivate var tried: Set<Int> = []
+        fileprivate var playingSince: Date?
+        fileprivate var retryTask: Task<Void, Never>?
 
         init(id: Int) { self.id = id }
     }
@@ -68,6 +74,8 @@ final class LiveTVMultiview: ObservableObject {
         let list = Array(unique.prefix(LiveTVMultiviewLayout.maxPanes))
         // The single player's connection goes first.
         LiveTVPlayer.shared.stop()
+        // Backup copies are ready by the time a pane needs one.
+        LiveTVStore.shared.prepareBackups()
         layout = .fitting(max(2, list.count))
         focused = 0
         fullPane = nil
@@ -136,10 +144,16 @@ final class LiveTVMultiview: ObservableObject {
         showOverlays()
     }
 
-    func assign(_ channel: XtreamLiveChannel, to index: Int) {
+    /// `run`: a reconnect or a backup copy, not a channel you picked (the
+    /// tries so far count).
+    func assign(_ channel: XtreamLiveChannel, to index: Int, run: Bool = false) {
         guard panes.indices.contains(index) else { return }
         let pane = panes[index]
         clear(pane)
+        if !run {
+            pane.attempts = 0
+            pane.tried = []
+        }
         pane.channel = channel
         pane.status = .loading
         if pane.engine == nil { pane.engine = try? AetherEngine() }
@@ -149,12 +163,19 @@ final class LiveTVMultiview: ObservableObject {
         }
         pane.watch = engine.$state.combineLatest(engine.$hasFirstFrameReadyForDisplay)
             .receive(on: RunLoop.main)
-            .sink { [weak pane] state, firstFrame in
+            .sink { [weak self, weak pane] state, firstFrame in
                 MainActor.assumeIsolated {
-                    guard let pane, pane.channel != nil else { return }
+                    guard let self, let pane, pane.channel != nil else { return }
                     switch state {
-                    case .error(let message): pane.status = .failed(message)
-                    default: if firstFrame, pane.status != .playing { pane.status = .playing }
+                    case .error(let message): self.paneFailed(pane, message)
+                    // A live stream never really ends: the provider closed it.
+                    case .ended: self.paneFailed(pane, L10n.string("livetv_multiview_lost", fallback: "The stream stopped"))
+                    default:
+                        // Playing again (not the engine stopped for a reconnect).
+                        if firstFrame, state == .playing, pane.status != .playing {
+                            pane.status = .playing
+                            pane.playingSince = Date()
+                        }
                     }
                 }
             }
@@ -188,7 +209,7 @@ final class LiveTVMultiview: ObservableObject {
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled else { return }
-                pane.status = .failed(error.localizedDescription)
+                self?.paneFailed(pane, error.localizedDescription)
             }
         }
         applySound()
@@ -200,7 +221,53 @@ final class LiveTVMultiview: ObservableObject {
         if fullPane == index { fullPane = nil }
     }
 
+    /// How often a pane reconnects before it shows its error.
+    private static let maxAttempts = 3
+
+    /// A pane's stream failed or dropped (step 15b, as Android's panes): it
+    /// reconnects after a short wait; the second failure in a row moves it
+    /// to a backup copy of the channel when there is one (Backup Channel
+    /// on); out of tries, it shows the error.
+    private func paneFailed(_ pane: Pane, _ message: String) {
+        guard let channel = pane.channel, pane.retryTask == nil else { return }
+        if case .failed = pane.status { return }
+        // Playing for a minute since the last drop counts as recovered.
+        if let since = pane.playingSince, Date().timeIntervalSince(since) >= 60 {
+            pane.attempts = 0
+            pane.tried = []
+        }
+        pane.playingSince = nil
+        pane.attempts += 1
+        pane.task?.cancel()
+        pane.engine?.stop()
+        let index = pane.id
+        if pane.attempts >= 2, LiveTVSettings.shared.backupChannel {
+            pane.tried.insert(channel.streamID)
+            if let backup = LiveTVStore.shared.backup(for: channel, tried: pane.tried) {
+                print("[Multiview] P\(index + 1): \(channel.name) won't play: switched to \(backup.name)")
+                assign(backup, to: index, run: true)
+                return
+            }
+        }
+        guard pane.attempts <= Self.maxAttempts else {
+            pane.status = .failed(message)
+            return
+        }
+        // The last picture stays; the pane shows it is loading again.
+        pane.status = .loading
+        let wait = UInt64(min(pane.attempts * 2, 10)) * 1_000_000_000
+        pane.retryTask = Task { [weak self, weak pane] in
+            try? await Task.sleep(nanoseconds: wait)
+            guard !Task.isCancelled, let self, let pane, pane.channel?.streamID == channel.streamID else { return }
+            pane.retryTask = nil
+            self.assign(channel, to: index, run: true)
+        }
+    }
+
     private func clear(_ pane: Pane) {
+        pane.retryTask?.cancel()
+        pane.retryTask = nil
+        pane.playingSince = nil
         pane.task?.cancel()
         pane.task = nil
         pane.watch = nil
@@ -514,6 +581,20 @@ private struct LiveTVMultiviewPaneView: View {
     }
 
     private var label: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            nameLine
+            // What's on now (step 15b).
+            if let channel = pane.channel {
+                LiveTVMultiviewNow(channel: channel)
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var nameLine: some View {
         HStack(spacing: 8) {
             Text("P\(pane.id + 1)")
                 .font(.system(size: LiveTVTheme.Font.badge, weight: .heavy))
@@ -530,10 +611,37 @@ private struct LiveTVMultiviewPaneView: View {
                     .font(.system(size: LiveTVTheme.Font.badge))
             }
         }
-        .foregroundColor(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// A pane's show on now, with how far it is (step 15b, as Android's pane
+/// names). Nothing without guide information.
+private struct LiveTVMultiviewNow: View {
+    let channel: XtreamLiveChannel
+    @State private var programmes: [XtreamProgram] = []
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            if let show = programmes.first(where: { $0.start <= context.date && context.date < $0.end }) {
+                let info = LiveTVProgrammeInfo(start: show.start, end: show.end, title: nil, description: nil)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(show.title)
+                        .font(.system(size: LiveTVTheme.Font.badge))
+                        .foregroundColor(LiveTVTheme.accent)
+                        .lineLimit(1)
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.18))
+                        Capsule().fill(LiveTVTheme.markColor)
+                            .frame(width: 180 * info.progress(at: context.date))
+                    }
+                    .frame(width: 180, height: 3)
+                }
+            }
+        }
+        .task(id: channel.streamID) {
+            programmes = LiveTVGuideRows.shared.cached(channel) ?? []
+            programmes = await LiveTVGuideRows.shared.programmes(for: channel)
+        }
     }
 }
 
@@ -564,6 +672,9 @@ private struct LiveTVMultiviewSurface: UIViewRepresentable {
 @MainActor
 final class LiveTVMultiviewPickerModel: ObservableObject {
     enum Item {
+        /// The first row: search the channels (step 15b); with a search
+        /// on, its words and how many were found.
+        case search(String?, count: Int)
         case heading(LiveTVGroup)
         case group(LiveTVGroup, open: Bool)
         case channel(XtreamLiveChannel)
@@ -580,11 +691,20 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
     private var groups: [LiveTVGroup] = []
     private var openGroupID: String?
     private var openChannels: [XtreamLiveChannel] = []
+    /// The words searched for (nil: no search); the list shows what was
+    /// found instead of the groups.
+    private(set) var query: String?
+    private var results: [XtreamLiveChannel] = []
     private var store: LiveTVStore { LiveTVStore.shared }
+
+    /// Most channels a search shows (as Android).
+    private static let maxResults = 5000
 
     /// Opens on the pane's channel in its group, else Favorites when there
     /// are some, else the group Live TV shows.
     func open(current: XtreamLiveChannel?) {
+        query = nil
+        results = []
         groups = pickerGroups()
         let favorites = store.channels(inGroup: LiveTVGroup.favoritesID)
         var group = favorites.isEmpty ? store.selectedGroupID : LiveTVGroup.favoritesID
@@ -621,8 +741,37 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
             groups = pickerGroups()
             rebuild()
             land(on: items.firstIndex { if case .heading(let h) = $0 { return h.id == heading.id } else { return false } } ?? 0)
+        case .search:
+            // The list asks for the words (the keyboard), then `search`.
+            break
         }
         return nil
+    }
+
+    /// Searches channel names in every shown group; empty words end the
+    /// search. The highlight goes to the first channel found.
+    func search(_ text: String) {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else {
+            endSearch()
+            return
+        }
+        query = words
+        var found: [XtreamLiveChannel] = []
+        for channel in store.channels(inGroup: LiveTVGroup.allID) where channel.name.localizedCaseInsensitiveContains(words) {
+            found.append(channel)
+            if found.count == Self.maxResults { break }
+        }
+        results = found
+        rebuild()
+        land(on: found.isEmpty ? 0 : 1)
+    }
+
+    private func endSearch() {
+        query = nil
+        results = []
+        rebuild()
+        land(on: openGroupIndex ?? 0)
     }
 
     /// Left in the channels: up to their group.
@@ -640,6 +789,11 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
     /// Back: in an open group, it closes (the focus on it); else false and
     /// the picker closes.
     func back() -> Bool {
+        // A search ends first.
+        if query != nil {
+            endSearch()
+            return true
+        }
         guard let at = openGroupIndex, case .group(let group, _) = items[at], index >= at else { return false }
         toggle(group)
         return true
@@ -684,8 +838,14 @@ final class LiveTVMultiviewPickerModel: ObservableObject {
     }
 
     private func rebuild() {
-        var list: [Item] = []
-        list.reserveCapacity(groups.count + openChannels.count)
+        var list: [Item] = [.search(query, count: results.count)]
+        if query != nil {
+            list += results.map(Item.channel)
+            items = list
+            index = min(index, max(0, list.count - 1))
+            return
+        }
+        list.reserveCapacity(groups.count + openChannels.count + 1)
         for group in groups {
             if group.isHeading {
                 list.append(.heading(group))
@@ -848,7 +1008,12 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 guard let self, let collection = self.collection else { return }
                 if let window = collection.window, let system = UIFocusSystem.focusSystem(for: window) {
-                    if let item = system.focusedItem as? UIView, item.isDescendant(of: collection) { return }
+                    // In the list already, on the row asked for (a search
+                    // moves it off the search row).
+                    if let item = system.focusedItem as? UIView, item.isDescendant(of: collection) {
+                        guard let target = self.picker.focusTarget, let cell = item as? UICollectionViewCell,
+                              collection.indexPath(for: cell)?.item != target else { return }
+                    }
                     system.requestFocusUpdate(to: collection)
                     system.updateFocusIfNeeded()
                 }
@@ -880,6 +1045,7 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
         private func configure(_ cell: LiveTVMultiviewPickerCell?, at index: Int) {
             guard let cell, picker.items.indices.contains(index) else { return }
             switch picker.items[index] {
+            case .search(let query, let count): cell.configureSearch(query, count: count)
             case .heading(let group): cell.configureHeading(group, folded: LiveTVStore.shared.isFolded(headingID: group.id))
             case .group(let group, let open): cell.configureGroup(group, open: open)
             case .channel(let channel):
@@ -903,7 +1069,32 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
             picker.index = indexPath.item
+            if picker.items.indices.contains(indexPath.item), case .search = picker.items[indexPath.item] {
+                askForSearch()
+                return
+            }
             if let channel = picker.select(indexPath.item) { onPick(channel) }
+        }
+
+        /// The tvOS keyboard for the words to search (an alert: it brings
+        /// its own focus and Menu, and gives them back to the list).
+        private func askForSearch() {
+            guard var top = collection?.window?.rootViewController else { return }
+            while let presented = top.presentedViewController { top = presented }
+            let alert = UIAlertController(
+                title: L10n.string("livetv_search_channels", fallback: "Search channels"), message: nil, preferredStyle: .alert)
+            alert.addTextField { [picker] field in
+                field.text = picker.query
+                field.autocorrectionType = .no
+                field.autocapitalizationType = .none
+                field.returnKeyType = .search
+            }
+            alert.addAction(UIAlertAction(
+                title: L10n.string("livetv_search_go", fallback: "Search"), style: .default) { [weak self, weak alert] _ in
+                    self?.picker.search(alert?.textFields?.first?.text ?? "")
+                })
+            alert.addAction(UIAlertAction(title: L10n.string("common_cancel", fallback: "Cancel"), style: .cancel))
+            top.present(alert, animated: true)
         }
 
         /// What's on for the channels on screen, once the focus rests.
@@ -1057,6 +1248,17 @@ private final class LiveTVMultiviewPickerCell: UICollectionViewCell {
         logoTask = nil
         logoURL = nil
         logoView.image = nil
+    }
+
+    /// The search row: a magnifier, the words searched and how many found.
+    func configureSearch(_ query: String?, count: Int) {
+        setKind(.group)
+        chevron.image = UIImage(systemName: "magnifyingglass")
+        titleLabel.text = query.map { L10n.format("livetv_search_for_format", fallback: "Search: %@", $0) }
+            ?? L10n.string("livetv_search_channels", fallback: "Search channels")
+        titleLabel.font = .systemFont(ofSize: 26, weight: query == nil ? .regular : .bold)
+        detailLabel.text = query == nil ? "" : count.formatted()
+        applyStyle()
     }
 
     /// A source's heading: the same arrow as a group's.

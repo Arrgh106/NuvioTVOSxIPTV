@@ -264,6 +264,11 @@ final class LiveTVStore: ObservableObject {
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
     private var channelsByID: [Int: XtreamLiveChannel] = [:]
+    /// Backup copies by name (step 15b), worked out off the main thread
+    /// for the list of `backupRevision`.
+    private var backupIndex: [String: [LiveTVBackupNames.Copy]]?
+    private var backupRevision = -1
+    private var backupTask: Task<Void, Never>?
     private var knownCategoryIDs: Set<String> = []
     /// "All channels" without hidden groups; rebuilt when they change.
     private var allVisible: [XtreamLiveChannel] = []
@@ -667,6 +672,50 @@ final class LiveTVStore: ObservableObject {
               let source = sources.first(where: { $0.slot == LiveTVSourceIDs.slot(ofChannel: channel.streamID) }),
               groups.contains(where: { $0.id == LiveTVGroup.allID(source: source.id) }) else { return defaultGroupID }
         return LiveTVGroup.allID(source: source.id)
+    }
+
+    // MARK: Backup copies (step 15b)
+
+    /// Works out the backup copies for the list now (once per list, in the
+    /// background): Multiview asks for one when a pane won't play.
+    func prepareBackups() {
+        guard backupRevision != listRevision || backupIndex == nil, backupTask == nil else { return }
+        let revision = listRevision
+        let locked = lockedGroupIDs
+        let copies = channels.filter { !locked.contains(groupID(of: $0)) }.map {
+            LiveTVBackupNames.Copy(id: $0.streamID, name: $0.name, slot: LiveTVSourceIDs.slot(ofChannel: $0.streamID))
+        }
+        backupTask = Task.detached(priority: .utility) { [weak self] in
+            let index = LiveTVBackupNames.index(copies)
+            await self?.setBackupIndex(index, revision: revision)
+        }
+    }
+
+    private func setBackupIndex(_ index: [String: [LiveTVBackupNames.Copy]], revision: Int) {
+        backupTask = nil
+        backupIndex = index
+        backupRevision = revision
+        // The list changed meanwhile: again for the new one.
+        if revision != listRevision { prepareBackups() }
+    }
+
+    /// Another copy of `channel` to play instead, skipping `tried` (other
+    /// sources first; channels of locked groups never). nil when there is
+    /// none, or the copies aren't worked out yet.
+    func backup(for channel: XtreamLiveChannel, tried: Set<Int>) -> XtreamLiveChannel? {
+        guard let index = backupIndex, backupRevision == listRevision else {
+            prepareBackups()
+            return nil
+        }
+        let failed = LiveTVBackupNames.Copy(
+            id: channel.streamID, name: channel.name, slot: LiveTVSourceIDs.slot(ofChannel: channel.streamID))
+        var skip = tried
+        // A copy whose group was locked since: on to the next.
+        while let pick = LiveTVBackupNames.backup(for: failed, in: index, tried: skip) {
+            if let found = channelsByID[pick.id], !lockedGroupIDs.contains(groupID(of: found)) { return found }
+            skip.insert(pick.id)
+        }
+        return nil
     }
 
     /// Whether a source's heading is folded.

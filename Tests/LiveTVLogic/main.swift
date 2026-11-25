@@ -829,5 +829,29 @@ check(LiveTVMultiviewLayout.back(pickerOpen: true, fullScreen: true, overlaysSho
 check(LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 3, forward: true) == 0
       && LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 0, forward: false) == 3, "multiview: full screen goes round")
 
+// Step 15b: backup copies.
+check(LiveTVBackupNames.key("US: ESPN HD") == "espn" && LiveTVBackupNames.key("ESPN (Backup)") == "espn",
+      "backup: prefix, quality and backup notes left out")
+check(LiveTVBackupNames.key("UK | Sky Sports F1 FHD") == "sky sports f1", "backup: pipe prefix")
+check(LiveTVBackupNames.key("DE - Sky Cinema 4K 50fps") == "sky cinema", "backup: dash prefix, fps")
+check(LiveTVBackupNames.key("Discovery 5.1 RAW") == "discovery", "backup: sound layout")
+check(LiveTVBackupNames.stationNote("FOX (WNYW)") == "wnyw" && LiveTVBackupNames.stationNote("FOX (HD)") == nil,
+      "backup: station note, not quality")
+let copies = [
+    LiveTVBackupNames.Copy(id: 1, name: "US: ESPN HD", slot: 0),
+    LiveTVBackupNames.Copy(id: 2, name: "ESPN Backup", slot: 0),
+    LiveTVBackupNames.Copy(id: 3, name: "USA | ESPN FHD", slot: 1),
+    LiveTVBackupNames.Copy(id: 4, name: "FOX (WNYW)", slot: 0),
+    LiveTVBackupNames.Copy(id: 5, name: "FOX (KTTV)", slot: 1),
+    LiveTVBackupNames.Copy(id: 6, name: "FOX", slot: 1),
+    LiveTVBackupNames.Copy(id: 7, name: "A", slot: 1),
+]
+let backupIndex = LiveTVBackupNames.index(copies)
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1])?.id == 3, "backup: other source first")
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1, 3])?.id == 2, "backup: then the same source")
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1, 2, 3]) == nil, "backup: none left")
+check(LiveTVBackupNames.backup(for: copies[3], in: backupIndex, tried: [4])?.id == 6, "backup: never another local station")
+check(LiveTVBackupNames.backup(for: copies[6], in: backupIndex, tried: []) == nil, "backup: names too short")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

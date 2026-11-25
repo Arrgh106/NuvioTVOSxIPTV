@@ -41,6 +41,9 @@ final class LiveTVSettings: ObservableObject {
     @Published var rememberLastGroup = true { didSet { save(rememberLastGroup, Key.rememberLastGroup) } }
     @Published var infoBarOnZap = true { didSet { save(infoBarOnZap, Key.infoBarOnZap) } }
     @Published var reverseZap = false { didSet { save(reverseZap, Key.reverseZap) } }
+    /// A channel that won't play switches to another copy of it (step 15b,
+    /// Android's "Backup channel"; Multiview panes for now).
+    @Published var backupChannel = true { didSet { save(backupChannel, Key.backupChannel) } }
     /// Pause and rewind live TV (step 14, Android's "Pause and Rewind Live
     /// TV"): the channel playing is kept on the Apple TV for a while.
     @Published var timeshift = true { didSet { save(timeshift, Key.timeshift) } }
@@ -73,6 +76,7 @@ final class LiveTVSettings: ObservableObject {
         static let rememberLastGroup = prefix + "rememberLastGroup"
         static let infoBarOnZap = prefix + "infoBarOnZap"
         static let reverseZap = prefix + "reverseZap"
+        static let backupChannel = prefix + "backupChannel"
         static let timeshift = prefix + "timeshift"
         static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
@@ -121,6 +125,7 @@ final class LiveTVSettings: ObservableObject {
         assign(\.rememberLastGroup, bool(Key.rememberLastGroup, true))
         assign(\.infoBarOnZap, bool(Key.infoBarOnZap, true))
         assign(\.reverseZap, bool(Key.reverseZap, false))
+        assign(\.backupChannel, bool(Key.backupChannel, true))
         assign(\.timeshift, bool(Key.timeshift, true))
         let minutes = store.integer(forKey: Key.timeshiftMinutes)
         let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30

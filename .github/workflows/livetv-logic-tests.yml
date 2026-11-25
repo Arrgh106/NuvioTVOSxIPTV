@@ -26,6 +26,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVStalkerWire.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandStalker.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -48,6 +49,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVStalkerWire.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandStalker.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -85,6 +87,7 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVStalkerWire.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/OnDemandStalker.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests
