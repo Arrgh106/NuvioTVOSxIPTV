@@ -99,6 +99,12 @@ struct LiveTVSettingsView: View {
                     accentColor: accentColor
                 )
                 LiveTVSettingsRows.toggle(
+                    title: L10n.string("livetv_settings_backup", fallback: "Backup Channel"),
+                    subtitle: L10n.string("livetv_settings_backup_detail", fallback: "When a channel won't play, switch to another copy with the same name (other playlists first). For now in Multiview"),
+                    isOn: $settings.backupChannel,
+                    accentColor: accentColor
+                )
+                LiveTVSettingsRows.toggle(
                     title: L10n.string("livetv_settings_timeshift", fallback: "Pause and Rewind Live TV"),
                     subtitle: L10n.string("livetv_settings_timeshift_detail", fallback: "The channel playing is kept on this Apple TV: Play/Pause pauses it, ◀ / ▶ skip back and on once you're behind live. Deleted when you change channel or leave Live TV"),
                     isOn: $settings.timeshift,

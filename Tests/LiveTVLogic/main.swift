@@ -807,5 +807,51 @@ check(LiveTVStalkerWire.archiveCommand("100") == "auto /media/100.mpg", "stalker
 check(LiveTVStalkerWire.day(Date(timeIntervalSince1970: 1_800_000_000), zone: stalkerUTC) == "2027-01-15",
       "stalker catch-up: day in the portal's zone")
 
+// Step 15: Multiview layouts.
+check(LiveTVMultiviewLayout.allCases.allSatisfy { $0.frames.count == $0.paneCount }, "multiview: a frame per pane")
+check(LiveTVMultiviewLayout.allCases.allSatisfy { layout in
+    abs(layout.frames.reduce(0) { $0 + $1.width * $1.height } - 1) < 0.0001
+}, "multiview: panes fill the screen")
+check(LiveTVMultiviewLayout.fitting(3) == .three && LiveTVMultiviewLayout.fitting(9) == .four
+      && LiveTVMultiviewLayout.fitting(0) == .one, "multiview: layout for a count")
+check(LiveTVMultiviewLayout.four.next(from: 0, .right) == 1 && LiveTVMultiviewLayout.four.next(from: 1, .down) == 3
+      && LiveTVMultiviewLayout.four.next(from: 1, .right) == 1, "multiview: 2 x 2 arrows, no wrap")
+check(LiveTVMultiviewLayout.fourWideTop.next(from: 0, .down) == 2 && LiveTVMultiviewLayout.fourWideTop.next(from: 3, .up) == 0,
+      "multiview: wide top")
+check(LiveTVMultiviewLayout.threeBigLeft.next(from: 2, .left) == 0 && LiveTVMultiviewLayout.threeBigLeft.next(from: 1, .down) == 2,
+      "multiview: big left")
+check(LiveTVMultiviewLayout.three.isTop(1) && !LiveTVMultiviewLayout.three.isTop(2), "multiview: top row")
+check(LiveTVMultiviewLayout.back(pickerOpen: true, fullScreen: true, overlaysShown: true) == .closePicker
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: true, overlaysShown: true) == .allPanes
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: false, overlaysShown: true) == .hideOverlays
+      && LiveTVMultiviewLayout.back(pickerOpen: false, fullScreen: false, overlaysShown: false) == .leave,
+      "multiview: back one level at a time")
+check(LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 3, forward: true) == 0
+      && LiveTVMultiviewLayout.nextFull([0, 2, 3], from: 0, forward: false) == 3, "multiview: full screen goes round")
+
+// Step 15b: backup copies.
+check(LiveTVBackupNames.key("US: ESPN HD") == "espn" && LiveTVBackupNames.key("ESPN (Backup)") == "espn",
+      "backup: prefix, quality and backup notes left out")
+check(LiveTVBackupNames.key("UK | Sky Sports F1 FHD") == "sky sports f1", "backup: pipe prefix")
+check(LiveTVBackupNames.key("DE - Sky Cinema 4K 50fps") == "sky cinema", "backup: dash prefix, fps")
+check(LiveTVBackupNames.key("Discovery 5.1 RAW") == "discovery", "backup: sound layout")
+check(LiveTVBackupNames.stationNote("FOX (WNYW)") == "wnyw" && LiveTVBackupNames.stationNote("FOX (HD)") == nil,
+      "backup: station note, not quality")
+let copies = [
+    LiveTVBackupNames.Copy(id: 1, name: "US: ESPN HD", slot: 0),
+    LiveTVBackupNames.Copy(id: 2, name: "ESPN Backup", slot: 0),
+    LiveTVBackupNames.Copy(id: 3, name: "USA | ESPN FHD", slot: 1),
+    LiveTVBackupNames.Copy(id: 4, name: "FOX (WNYW)", slot: 0),
+    LiveTVBackupNames.Copy(id: 5, name: "FOX (KTTV)", slot: 1),
+    LiveTVBackupNames.Copy(id: 6, name: "FOX", slot: 1),
+    LiveTVBackupNames.Copy(id: 7, name: "A", slot: 1),
+]
+let backupIndex = LiveTVBackupNames.index(copies)
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1])?.id == 3, "backup: other source first")
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1, 3])?.id == 2, "backup: then the same source")
+check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1, 2, 3]) == nil, "backup: none left")
+check(LiveTVBackupNames.backup(for: copies[3], in: backupIndex, tried: [4])?.id == 6, "backup: never another local station")
+check(LiveTVBackupNames.backup(for: copies[6], in: backupIndex, tried: []) == nil, "backup: names too short")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -207,6 +207,12 @@ struct LiveTVView: View {
             } label: {
                 Label(L10n.string("livetv_groups_button", fallback: "Groups"), systemImage: "eye.slash")
             }
+            // Multiview (step 15): the channel playing in the first pane.
+            Button {
+                LiveTVMultiview.shared.open(with: [player.channel].compactMap { $0 })
+            } label: {
+                Label(L10n.string("livetv_multiview", fallback: "Multiview"), systemImage: "rectangle.split.2x2")
+            }
             Button {
                 store.refresh()
                 store.refreshGuide(force: true)

@@ -148,6 +148,14 @@ struct LiveTVGroup: Identifiable, Hashable {
     var isSpecial: Bool { id.hasPrefix("__") && id != LiveTVGroup.otherID }
     /// A source's heading (more than one source, step 13a): not a group.
     var isHeading: Bool { id.hasPrefix(LiveTVSourceIDs.headingPrefix) }
+
+    /// A source's own All channels (more than one source): under its
+    /// heading instead of one All on top.
+    static func allID(source: String) -> String { allID + ":" + source }
+    /// The source whose All channels this is.
+    var sourceOfAll: String? {
+        id.hasPrefix(LiveTVGroup.allID + ":") ? String(id.dropFirst(LiveTVGroup.allID.count + 1)) : nil
+    }
 }
 
 @MainActor
@@ -256,9 +264,16 @@ final class LiveTVStore: ObservableObject {
     private var channels: [XtreamLiveChannel] = []
     private var channelsByGroup: [String: [XtreamLiveChannel]] = [:]
     private var channelsByID: [Int: XtreamLiveChannel] = [:]
+    /// Backup copies by name (step 15b), worked out off the main thread
+    /// for the list of `backupRevision`.
+    private var backupIndex: [String: [LiveTVBackupNames.Copy]]?
+    private var backupRevision = -1
+    private var backupTask: Task<Void, Never>?
     private var knownCategoryIDs: Set<String> = []
     /// "All channels" without hidden groups; rebuilt when they change.
     private var allVisible: [XtreamLiveChannel] = []
+    /// Those per source (more than one source), by source id.
+    private var allBySource: [String: [XtreamLiveChannel]] = [:]
     private var searchResults: [XtreamLiveChannel] = []
     /// "##### …" heading rows of the provider's list (`isSeparator`).
     private var separatorIDs: Set<Int> = []
@@ -335,6 +350,8 @@ final class LiveTVStore: ObservableObject {
         if lockedGroupIDs.contains(groupID) { return [] }
         switch groupID {
         case LiveTVGroup.allID: return allVisible
+        case _ where groupID.hasPrefix(LiveTVGroup.allID + ":"):
+            return allBySource[String(groupID.dropFirst(LiveTVGroup.allID.count + 1))] ?? []
         case LiveTVGroup.favoritesID: return unlockedChannels(favoriteIDs)
         case LiveTVGroup.recentID: return unlockedChannels(recentIDs)
         case LiveTVGroup.searchID: return searchResults
@@ -458,9 +475,11 @@ final class LiveTVStore: ObservableObject {
     }
 
     /// Groups whose channels can be put in your order (not Search or
-    /// Recently watched, which have their own order).
+    /// Recently watched, which have their own order, nor a source's All
+    /// channels, which follows the source's groups).
     func canReorder(_ groupID: String) -> Bool {
         groupID != LiveTVGroup.searchID && groupID != LiveTVGroup.recentID
+            && !groupID.hasPrefix(LiveTVGroup.allID + ":")
     }
 
     /// Saves the order Reorder Channels left a group in. Favorites keep it
@@ -531,7 +550,7 @@ final class LiveTVStore: ObservableObject {
         searchQuery = trimmed
         if trimmed.isEmpty {
             searchResults = []
-            if selectedGroupID == LiveTVGroup.searchID { selectedGroupID = LiveTVGroup.allID }
+            if selectedGroupID == LiveTVGroup.searchID { selectedGroupID = defaultGroupID }
         } else {
             searchResults = allVisible.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
         }
@@ -561,6 +580,13 @@ final class LiveTVStore: ObservableObject {
             let group = groupID(of: channel)
             return !hiddenGroupIDs.contains(group) && !locked.contains(group)
         }
+        if sources.count > 1 {
+            var bySlot: [Int: [XtreamLiveChannel]] = [:]
+            for channel in allVisible { bySlot[LiveTVSourceIDs.slot(ofChannel: channel.streamID), default: []].append(channel) }
+            allBySource = Dictionary(sources.map { ($0.id, bySlot[$0.slot] ?? []) }, uniquingKeysWith: { first, _ in first })
+        } else {
+            allBySource = [:]
+        }
         if !searchQuery.isEmpty {
             searchResults = allVisible.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
         }
@@ -583,7 +609,8 @@ final class LiveTVStore: ObservableObject {
                 id: LiveTVGroup.recentID,
                 name: L10n.string("livetv_recent", fallback: "Recently watched"), count: recent))
         }
-        if !channels.isEmpty {
+        // More than one source: each has its own All under its heading.
+        if !channels.isEmpty, sources.count <= 1 {
             result.append(LiveTVGroup(id: LiveTVGroup.allID, name: groupNames.all, count: allVisible.count))
         }
         let provider = categoryGroups.filter { !hiddenGroupIDs.contains($0.id) }.map { group in
@@ -611,19 +638,89 @@ final class LiveTVStore: ObservableObject {
             for source in sources {
                 let list = bySlot[source.slot] ?? []
                 let folded = foldedSources.contains(source.id)
+                // The arrow (folded or not) is drawn by the cell.
                 result.append(LiveTVGroup(
                     id: LiveTVSourceIDs.heading(sourceID: source.id),
-                    name: (folded ? "\u{25B8}  " : "\u{25BE}  ") + source.displayName,
+                    name: source.displayName,
                     count: list.reduce(0) { $0 + $1.count }))
-                if !folded { result += list }
+                guard !folded else { continue }
+                if let all = allBySource[source.id], !all.isEmpty {
+                    result.append(LiveTVGroup(id: LiveTVGroup.allID(source: source.id), name: groupNames.all, count: all.count))
+                }
+                result += list
             }
         } else {
             result += ordered
         }
         groups = result
         if !channels.isEmpty, !result.contains(where: { $0.id == selectedGroupID }) || locked.contains(selectedGroupID) {
-            selectedGroupID = LiveTVGroup.allID
+            selectedGroupID = defaultGroupID
         }
+    }
+
+    /// Where Live TV falls back to: All channels, or with more than one
+    /// source the first source's All channels shown.
+    var defaultGroupID: String {
+        if groups.contains(where: { $0.id == LiveTVGroup.allID }) { return LiveTVGroup.allID }
+        return groups.first { $0.sourceOfAll != nil }?.id ?? LiveTVGroup.allID
+    }
+
+    /// The All channels a channel is in: its source's (more than one
+    /// source, while shown), else the default.
+    func allGroupID(for channel: XtreamLiveChannel?) -> String {
+        guard let channel, sources.count > 1,
+              let source = sources.first(where: { $0.slot == LiveTVSourceIDs.slot(ofChannel: channel.streamID) }),
+              groups.contains(where: { $0.id == LiveTVGroup.allID(source: source.id) }) else { return defaultGroupID }
+        return LiveTVGroup.allID(source: source.id)
+    }
+
+    // MARK: Backup copies (step 15b)
+
+    /// Works out the backup copies for the list now (once per list, in the
+    /// background): Multiview asks for one when a pane won't play.
+    func prepareBackups() {
+        guard backupRevision != listRevision || backupIndex == nil, backupTask == nil else { return }
+        let revision = listRevision
+        let locked = lockedGroupIDs
+        let copies = channels.filter { !locked.contains(groupID(of: $0)) }.map {
+            LiveTVBackupNames.Copy(id: $0.streamID, name: $0.name, slot: LiveTVSourceIDs.slot(ofChannel: $0.streamID))
+        }
+        backupTask = Task.detached(priority: .utility) { [weak self] in
+            let index = LiveTVBackupNames.index(copies)
+            await self?.setBackupIndex(index, revision: revision)
+        }
+    }
+
+    private func setBackupIndex(_ index: [String: [LiveTVBackupNames.Copy]], revision: Int) {
+        backupTask = nil
+        backupIndex = index
+        backupRevision = revision
+        // The list changed meanwhile: again for the new one.
+        if revision != listRevision { prepareBackups() }
+    }
+
+    /// Another copy of `channel` to play instead, skipping `tried` (other
+    /// sources first; channels of locked groups never). nil when there is
+    /// none, or the copies aren't worked out yet.
+    func backup(for channel: XtreamLiveChannel, tried: Set<Int>) -> XtreamLiveChannel? {
+        guard let index = backupIndex, backupRevision == listRevision else {
+            prepareBackups()
+            return nil
+        }
+        let failed = LiveTVBackupNames.Copy(
+            id: channel.streamID, name: channel.name, slot: LiveTVSourceIDs.slot(ofChannel: channel.streamID))
+        var skip = tried
+        // A copy whose group was locked since: on to the next.
+        while let pick = LiveTVBackupNames.backup(for: failed, in: index, tried: skip) {
+            if let found = channelsByID[pick.id], !lockedGroupIDs.contains(groupID(of: found)) { return found }
+            skip.insert(pick.id)
+        }
+        return nil
+    }
+
+    /// Whether a source's heading is folded.
+    func isFolded(headingID: String) -> Bool {
+        LiveTVSourceIDs.sourceID(ofHeading: headingID).map { foldedSources.contains($0) } ?? false
     }
 
     /// Picks up the sources of the active profile (profiles can switch while
@@ -1266,7 +1363,7 @@ final class LiveTVStore: ObservableObject {
            groups.contains(where: { $0.id == last }), !lockedGroupIDs.contains(last) {
             selectedGroupID = last
         } else if !groups.contains(where: { $0.id == selectedGroupID }) {
-            selectedGroupID = LiveTVGroup.allID
+            selectedGroupID = defaultGroupID
         }
     }
 

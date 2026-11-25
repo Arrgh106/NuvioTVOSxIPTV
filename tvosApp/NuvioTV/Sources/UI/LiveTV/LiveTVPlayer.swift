@@ -556,6 +556,8 @@ final class LiveTVPlayer: ObservableObject {
 final class LiveTVFullscreenState: ObservableObject {
     static let shared = LiveTVFullscreenState()
     @Published var isActive = false
+    /// Multiview (step 15) is open over the app.
+    @Published var multiviewActive = false
 }
 
 // MARK: - Video

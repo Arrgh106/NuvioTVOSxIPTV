@@ -99,11 +99,14 @@ final class LiveTVOverlayModel: ObservableObject {
     func open(playing: XtreamLiveChannel?) {
         guard let store else { return }
         // Locked groups (step 11) open only in the guide, with the PIN.
-        groups = store.groups.filter { !$0.locked && !$0.isHeading }
+        // As in Multiview's picker: each source's heading (it folds) with
+        // its own All channels and groups.
+        groups = Self.shownGroups(store)
         var group = store.selectedGroupID
+        if !groups.contains(where: { $0.id == group && !$0.isHeading }) { group = store.allGroupID(for: playing) }
         var list = store.channels(inGroup: group)
         if let playing, !list.contains(where: { $0.streamID == playing.streamID }) {
-            group = LiveTVGroup.allID
+            group = store.allGroupID(for: playing)
             list = store.channels(inGroup: group)
         }
         show(group: group, channels: list, landOn: playing)
@@ -161,6 +164,8 @@ final class LiveTVOverlayModel: ObservableObject {
         case (.groups, .up): moveGroup(by: -1)
         case (.groups, .down): moveGroup(by: 1)
         case (.groups, .right):
+            // A heading has no channels of its own.
+            guard groups.indices.contains(groupIndex), !groups[groupIndex].isHeading else { break }
             applyPendingGroup()
             level = .channels
         case (.channels, .right): openSchedule()
@@ -206,6 +211,11 @@ final class LiveTVOverlayModel: ObservableObject {
             }
             close()
         case .groups:
+            // OK on a source's heading folds or unfolds its groups.
+            if groups.indices.contains(groupIndex), groups[groupIndex].isHeading {
+                toggleFold(groups[groupIndex].id)
+                return
+            }
             applyPendingGroup()
             level = .channels
         case .schedule:
@@ -380,9 +390,25 @@ final class LiveTVOverlayModel: ObservableObject {
         }
     }
 
+    /// The groups shown: unlocked, no search.
+    private static func shownGroups(_ store: LiveTVStore) -> [LiveTVGroup] {
+        store.groups.filter { !$0.locked && $0.id != LiveTVGroup.searchID }
+    }
+
+    /// Folds a source (shared with Live TV and Multiview), the highlight
+    /// stays on its heading.
+    private func toggleFold(_ headingID: String) {
+        guard let store else { return }
+        store.toggleFold(headingID: headingID)
+        groups = Self.shownGroups(store)
+        groupIndex = groups.firstIndex { $0.id == headingID } ?? 0
+        groupWindow.follow(groupIndex, count: groups.count)
+    }
+
     private func applyPendingGroup() {
         groupTask?.cancel()
-        guard let store, groups.indices.contains(groupIndex), groups[groupIndex].id != groupID else { return }
+        guard let store, groups.indices.contains(groupIndex), !groups[groupIndex].isHeading,
+              groups[groupIndex].id != groupID else { return }
         let id = groups[groupIndex].id
         show(group: id, channels: store.channels(inGroup: id), landOn: LiveTVPlayer.shared.channel)
     }
@@ -631,23 +657,34 @@ struct LiveTVOverlayView: View {
             ForEach(Array(range), id: \.self) { index in
                 let group = overlay.groups[index]
                 let focused = index == overlay.groupIndex
-                HStack {
-                    Text(group.name)
-                        .font(.system(size: LiveTVTheme.Font.secondary, weight: focused ? .semibold : .regular))
+                let shown = group.id == overlay.groupID
+                // As Multiview's picker: an arrow, a source's heading in
+                // small capitals (down while unfolded), the group shown bold.
+                HStack(spacing: 12) {
+                    Image(systemName: group.isHeading
+                          ? (LiveTVStore.shared.isFolded(headingID: group.id) ? "chevron.right" : "chevron.down")
+                          : "chevron.right")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 22)
+                    Text(group.isHeading ? group.name.uppercased() : group.name)
+                        .font(group.isHeading
+                              ? .system(size: 20, weight: .heavy)
+                              : .system(size: LiveTVTheme.Font.secondary, weight: shown || focused ? .semibold : .regular))
+                        .opacity(group.isHeading ? 0.6 : 1)
                         .lineLimit(1)
                     Spacer(minLength: 12)
                     if LiveTVSettings.shared.showGroupCounts {
-                        Text(String(group.count))
-                            .font(.system(size: LiveTVTheme.Font.badge))
+                        Text(group.count.formatted())
+                            .font(.system(size: LiveTVTheme.Font.badge).monospacedDigit())
                             .opacity(0.6)
                     }
                 }
                 .foregroundColor(focused ? .black : LiveTVTheme.primaryText)
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 16)
                 .frame(height: Self.groupRowHeight - 6)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(focused ? Color.white : Color.clear)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(focused ? Color.white : (shown ? Color.white.opacity(0.12) : Color.clear))
                 )
                 .frame(height: Self.groupRowHeight)
             }
