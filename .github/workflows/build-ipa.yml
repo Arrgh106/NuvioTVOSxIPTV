@@ -2,6 +2,11 @@ name: Build unsigned IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      no_appgroup:
+        description: 'Also build the IPA without the App Group'
+        type: boolean
+        default: false
   push:
     branches: ['**']
     tags: ['v*']
@@ -69,6 +74,9 @@ jobs:
       - name: Build unsigned IPA
         env:
           NUVIO_IPA_OUTPUT_DIR: ${{ runner.temp }}/ipa
+          # The fallback without the App Group: release tags and manual runs
+          # that ask for it, not every push.
+          NUVIO_IPA_NO_APPGROUP: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.no_appgroup == true }}
         run: mise exec -- bash scripts/build-ipa.sh
 
       - name: Upload IPA artifact
@@ -83,6 +91,7 @@ jobs:
       # it with Apple. Artifact only: releases keep a single .ipa asset, which
       # the AltStore source and README links pick up.
       - name: Upload IPA artifact without App Group
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.no_appgroup == true
         uses: actions/upload-artifact@v6
         with:
           name: NuvioTVOSxIPTV-unsigned-ipa-no-appgroup

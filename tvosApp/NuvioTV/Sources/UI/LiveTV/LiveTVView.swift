@@ -119,6 +119,24 @@ struct LiveTVView: View {
         // Leaving Live TV frees the provider connection.
         .onDisappear { player.stop() }
         .onAppear(perform: connectPlayer)
+        // Android 1.2.0 (TiviMate): Play/Pause in the guide puts the channel
+        // playing in the preview full screen; so does 2 minutes without a
+        // press.
+        .onAppear {
+            installPlayPause()
+            LiveTVGuideIdle.shared.start { goFullScreen(idle: true) }
+        }
+        .onDisappear {
+            LiveTVGuideIdle.shared.stop()
+            LiveTVPlayPausePress.shared.remove()
+        }
+        .onChange(of: player.isFullscreen) { _, full in
+            guard !full else { return }
+            // After full screen's own Play/Pause has gone with it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if !player.isFullscreen, !LiveTVMultiview.shared.isOpen { installPlayPause() }
+            }
+        }
         // A guide channel chosen by hand whose programmes aren't stored yet
         // (or Automatic): the guide files from last time are read again once
         // the screen closes, without downloading.
@@ -427,6 +445,31 @@ struct LiveTVView: View {
         }
     }
 
+    private func installPlayPause() {
+        LiveTVPlayPausePress.shared.install { goFullScreen(idle: false) }
+    }
+
+    /// The channel playing in the preview, full screen (Play/Pause, or the
+    /// guide left alone). Full screen already: Play/Pause pauses.
+    private func goFullScreen(idle: Bool) {
+        if player.isFullscreen {
+            if !idle { player.togglePause() }
+            return
+        }
+        guard !LiveTVMultiview.shared.isOpen, player.channel != nil else { return }
+        switch player.status {
+        case .loading, .playing: break
+        case .idle, .failed: return
+        }
+        // Left alone: not over a menu, a sheet or a reorder.
+        if idle {
+            guard !showsQuickMenu, !isManagingGroups, !isReordering, assignEPGChannel == nil,
+                  !LiveTVGuideIdle.somethingPresented else { return }
+        }
+        LiveTVFocusLinks.beginReturn()
+        player.isFullscreen = true
+    }
+
     /// Watch from outside: the channel full screen, zapping through the
     /// request's channels (Home row) or the group shown when it's in it.
     private func watchReminder() {
@@ -568,5 +611,54 @@ private struct LiveTVNoSourceView: View {
         }
         .padding(80)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The guide left alone (Android 1.2.0): 2 minutes without the focus
+/// moving, the channel playing in the preview goes full screen.
+@MainActor
+final class LiveTVGuideIdle {
+    static let shared = LiveTVGuideIdle()
+
+    private static let wait: TimeInterval = 120
+    private var timer: Timer?
+    private var observer: NSObjectProtocol?
+    private var action: () -> Void = {}
+
+    func start(_ action: @escaping () -> Void) {
+        self.action = action
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(
+                forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { LiveTVGuideIdle.shared.touched() }
+            }
+        }
+        touched()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+    }
+
+    private func touched() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: Self.wait, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                LiveTVGuideIdle.shared.action()
+                LiveTVGuideIdle.shared.touched()
+            }
+        }
+    }
+
+    /// A sheet or alert is up over the app.
+    static var somethingPresented: Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .contains { $0.isKeyWindow && $0.rootViewController?.presentedViewController != nil }
     }
 }

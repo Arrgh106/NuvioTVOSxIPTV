@@ -59,11 +59,14 @@ cp -R "$APP_PATH" "$OUTPUT_DIR/Payload/"
 # Fallback for sideloaders that fail to register the App Group with Apple
 # ("An Application Group with Identifier ... is not available"): the same app
 # without any entitlements. Everything works except the Top Shelf rows.
-# Packaged before the App Group is embedded below.
-(
-  cd "$OUTPUT_DIR"
-  zip -qry "NuvioTV-unsigned-no-appgroup.ipa" Payload
-)
+# Packaged before the App Group is embedded below. Only when asked for
+# (NUVIO_IPA_NO_APPGROUP=true): release tags and manual runs.
+if [[ "${NUVIO_IPA_NO_APPGROUP:-false}" == "true" ]]; then
+  (
+    cd "$OUTPUT_DIR"
+    zip -qry "NuvioTV-unsigned-no-appgroup.ipa" Payload
+  )
+fi
 
 # The archive is built without entitlements, so a sideloader re-signing the IPA
 # finds no App Group to register, and the Top Shelf extension never sees the

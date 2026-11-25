@@ -78,6 +78,15 @@ final class OnDemandPreferences: ObservableObject {
         changed()
     }
 
+    /// These categories hidden in one go (Android 1.2.0's Deselect all).
+    func hide(_ lockIDs: [String]) {
+        let before = hidden.count
+        hidden.formUnion(lockIDs)
+        guard hidden.count != before else { return }
+        ProfileSettings.current.set(Array(hidden).sorted(), forKey: Self.hiddenKey)
+        changed()
+    }
+
     /// Every category of a kind shown again.
     func showAll(kind: OnDemandKind) {
         let prefix = OnDemandLookup.lockID(kind: kind, category: "")

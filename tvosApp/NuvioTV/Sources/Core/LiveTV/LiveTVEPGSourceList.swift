@@ -32,7 +32,8 @@ struct LiveTVGuideFeed: Sendable {
 /// have Linux tests (Tests/LiveTVLogic).
 enum LiveTVEPGSourceRules {
     /// Time shifts offered: −12 h to +12 h in half hours (Android: ±24 h).
-    static let shiftChoices = Array(stride(from: -12 * 60, through: 12 * 60, by: 30))
+    /// Up to a day either way, in half hours (Android 1.2.0).
+    static let shiftChoices = Array(stride(from: -24 * 60, through: 24 * 60, by: 30))
 
     /// "+1:30 h", "−0:30 h", "None".
     static func shiftLabel(_ minutes: Int, none: String = "None") -> String {

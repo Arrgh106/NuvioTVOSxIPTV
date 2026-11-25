@@ -47,7 +47,7 @@ On top of that, the fork syncs more of your [nuvio.tv](https://nuvio.tv) account
 1. Download the newest `.ipa`:
    - from [Releases](https://github.com/Arrgh106/NuvioTVOSxIPTV/releases), or
    - from the latest successful [IPA build](https://github.com/Arrgh106/NuvioTVOSxIPTV/actions/workflows/build-ipa.yml) (**Artifacts** at the bottom of the run, GitHub login required).
-     If your sideloading tool fails with *"An Application Group with Identifier … is not available"*, use the `…-no-appgroup` artifact instead: everything works except the Top Shelf rows.
+     If your sideloading tool fails with *"An Application Group with Identifier … is not available"*, use the `…-no-appgroup` artifact instead: everything works except the Top Shelf rows. It comes with release builds; for any other build, run the IPA build by hand (**Run workflow**) with *Also build the IPA without the App Group* ticked.
 2. Sideload it to your Apple TV with Sideloadly, AltStore/SideStore, atvloadly, Xcode or Apple Configurator. The IPA is unsigned and gets signed with your own Apple ID when you install it.
 
 > **AltStore / SideStore / Feather source:** `https://raw.githubusercontent.com/Arrgh106/NuvioTVOSxIPTV/main/apps.json`

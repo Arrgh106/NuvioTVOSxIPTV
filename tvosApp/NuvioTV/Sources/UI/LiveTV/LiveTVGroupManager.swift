@@ -18,6 +18,9 @@ struct LiveTVGroupManager: View {
     var body: some View {
         let groups = matching
         let ids = Set(groups.map(\.id))
+        // No filter: the buttons act on every group (Android 1.2.0's
+        // Select all / Clear).
+        let filtered = !filter.trimmingCharacters(in: .whitespaces).isEmpty
         VStack(alignment: .leading, spacing: 24) {
             HStack(alignment: .firstTextBaseline) {
                 Text(L10n.string("livetv_manage_groups", fallback: "Manage groups"))
@@ -38,10 +41,14 @@ struct LiveTVGroupManager: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .frame(maxWidth: 560)
-                Button(L10n.string("livetv_show_matching", fallback: "Show these")) {
+                Button(filtered
+                       ? L10n.string("livetv_show_matching", fallback: "Show these")
+                       : L10n.string("livetv_show_all_groups", fallback: "Show all")) {
                     store.setHidden(ids, hidden: false)
                 }
-                Button(L10n.string("livetv_hide_matching", fallback: "Hide these")) {
+                Button(filtered
+                       ? L10n.string("livetv_hide_matching", fallback: "Hide these")
+                       : L10n.string("livetv_hide_all_groups", fallback: "Hide all")) {
                     store.setHidden(ids, hidden: true)
                 }
                 Button(L10n.string("livetv_hide_others", fallback: "Only these")) {

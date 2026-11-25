@@ -554,19 +554,19 @@ final class LiveTVGuide: ObservableObject {
                 : L10n.string("livetv_epg_provider", fallback: "Provider's guide")
             if let account = source.xtream {
                 guard let url = xmltvURL(account: account, password: XtreamAccountStore.password(for: account)) else { return [] }
-                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: source.guideShiftMinutes, slot: source.slot)]
             }
             // Stalker (step 13e): the portal's guide.
             if source.kind == .stalker {
                 guard let url = LiveTVStalker.guideLink(sourceID: source.id) else { return [] }
-                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: 0, slot: source.slot)]
+                return [LiveTVGuideFeed(sourceID: builtInID(source), name: name, url: url, shiftMinutes: source.guideShiftMinutes, slot: source.slot)]
             }
             // M3U (step 13b): every guide linked in the playlist.
             return LiveTVStore.shared.guideLinks(sourceID: source.id).enumerated().compactMap { index, link in
                 guard let url = URL(string: link) else { return nil }
                 return LiveTVGuideFeed(
                     sourceID: builtInID(source) + (index == 0 ? "" : "#\(index + 1)"),
-                    name: name, url: url, shiftMinutes: 0, slot: source.slot)
+                    name: name, url: url, shiftMinutes: source.guideShiftMinutes, slot: source.slot)
             }
         }
     }
