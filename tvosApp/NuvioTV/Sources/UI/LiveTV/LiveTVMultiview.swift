@@ -383,7 +383,11 @@ struct LiveTVMultiviewHost: View {
                         pane: pane, model: model,
                         focused: model.focused == pane.id && model.fullPane == nil,
                         audible: model.audiblePane == pane.id,
-                        showsLabel: model.overlaysShown || model.fullPane == pane.id)
+                        showsLabel: model.overlaysShown || model.fullPane == pane.id,
+                        // The bar is over the top panes' names: below it.
+                        labelTop: model.overlaysShown
+                            && (model.fullPane == pane.id || (model.fullPane == nil && model.layout.isTop(pane.id)))
+                            ? 120 : 12)
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
                         // Full screen: the others play on underneath.
@@ -541,6 +545,8 @@ private struct LiveTVMultiviewPaneView: View {
     let focused: Bool
     let audible: Bool
     let showsLabel: Bool
+    /// How far down the name sits (below the bar while it's up).
+    var labelTop: CGFloat = 12
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -569,7 +575,10 @@ private struct LiveTVMultiviewPaneView: View {
             }
             // A pane that isn't playing keeps its name.
             if showsLabel || pane.status != .playing {
-                label.padding(12)
+                label
+                    .padding(12)
+                    .padding(.top, labelTop - 12)
+                    .animation(.easeInOut(duration: 0.2), value: labelTop)
             }
         }
         .clipped()
@@ -958,6 +967,20 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             view.topAnchor.constraint(equalTo: container.topAnchor),
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        // Search: an editor kept off screen (as Settings' fields), so OK
+        // opens the tvOS keyboard straight away, also typing on the iPhone.
+        let field = UITextField(frame: CGRect(x: -4_000, y: 0, width: 1, height: 1))
+        field.backgroundColor = .clear
+        field.textColor = .clear
+        field.tintColor = .clear
+        field.keyboardAppearance = .dark
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.returnKeyType = .search
+        field.placeholder = L10n.string("livetv_search_channels", fallback: "Search channels")
+        field.delegate = context.coordinator
+        container.addSubview(field)
+        context.coordinator.searchField = field
         context.coordinator.collection = view
         update(context.coordinator)
         return container
@@ -976,9 +999,11 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate,
+                             UITextFieldDelegate {
         let picker: LiveTVMultiviewPickerModel
         weak var collection: UICollectionView?
+        weak var searchField: UITextField?
         var pane = 0
         var paneOf: (Int) -> Int? = { _ in nil }
         var onPick: (XtreamLiveChannel) -> Void = { _ in }
@@ -1076,25 +1101,25 @@ private struct LiveTVMultiviewPickerList: UIViewRepresentable {
             if let channel = picker.select(indexPath.item) { onPick(channel) }
         }
 
-        /// The tvOS keyboard for the words to search (an alert: it brings
-        /// its own focus and Menu, and gives them back to the list).
+        /// The tvOS keyboard straight away (the off-screen editor), with
+        /// the words searched so far.
         private func askForSearch() {
-            guard var top = collection?.window?.rootViewController else { return }
-            while let presented = top.presentedViewController { top = presented }
-            let alert = UIAlertController(
-                title: L10n.string("livetv_search_channels", fallback: "Search channels"), message: nil, preferredStyle: .alert)
-            alert.addTextField { [picker] field in
-                field.text = picker.query
-                field.autocorrectionType = .no
-                field.autocapitalizationType = .none
-                field.returnKeyType = .search
-            }
-            alert.addAction(UIAlertAction(
-                title: L10n.string("livetv_search_go", fallback: "Search"), style: .default) { [weak self, weak alert] _ in
-                    self?.picker.search(alert?.textFields?.first?.text ?? "")
-                })
-            alert.addAction(UIAlertAction(title: L10n.string("common_cancel", fallback: "Cancel"), style: .cancel))
-            top.present(alert, animated: true)
+            guard let field = searchField else { return }
+            field.text = picker.query
+            field.becomeFirstResponder()
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
+            return true
+        }
+
+        /// The keyboard closed (Search, or Menu): the words are searched;
+        /// unchanged words leave the list as it is.
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            let words = (textField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard words != (picker.query ?? "") else { return }
+            picker.search(words)
         }
 
         /// What's on for the channels on screen, once the focus rests.
