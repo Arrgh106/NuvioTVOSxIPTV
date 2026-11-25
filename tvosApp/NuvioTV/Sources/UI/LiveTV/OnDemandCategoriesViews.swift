@@ -54,6 +54,11 @@ struct OnDemandCategoriesSheet: View {
                             preferences.showAll(kind: shownKind)
                         }
                     }
+                    if hiddenCount < categories.count {
+                        CategoryPill(title: L10n.string("livetv_vod_hide_all", fallback: "Hide All"), selected: false) {
+                            preferences.hide(categories.map { lockID($0.id) })
+                        }
+                    }
                     CategoryPill(title: L10n.string("action_done", fallback: "Done"), selected: false) {
                         dismiss()
                     }

@@ -24,6 +24,10 @@ struct LiveTVSource: Codable, Identifiable, Equatable, Sendable {
     /// The source's own guide (Xtream's `xmltv.php`, the playlist's
     /// `x-tvg-url`), as Android's "Load built-in guide".
     var builtInGuide = true
+    /// Minutes its own guide's listings are moved by (Android 1.2.0's
+    /// "Guide time shift"; nil before: none).
+    var guideShift: Int?
+    var guideShiftMinutes: Int { guideShift ?? 0 }
     /// Xtream: its movies and series read for VOD (asked when the login is
     /// added; nil before: on).
     var importVOD: Bool?

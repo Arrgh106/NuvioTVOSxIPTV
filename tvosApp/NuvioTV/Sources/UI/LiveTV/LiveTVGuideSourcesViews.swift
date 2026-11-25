@@ -28,6 +28,17 @@ struct LiveTVGuideSourcesGroup: View {
                     accentColor: accentColor,
                     enabled: source.enabled
                 )
+                if source.enabled, source.builtInGuide {
+                    LiveTVSettingsRows.stepper(
+                        title: L10n.string("livetv_epg_builtin_shift", fallback: "Guide Time Shift"),
+                        subtitle: L10n.string("livetv_epg_builtin_shift_detail", fallback: "Moves this playlist's own guide later (+) or earlier (−), for listings out of step with what's playing. Takes effect at the next guide update"),
+                        value: Binding(get: { source.guideShiftMinutes }, set: { sources.setBuiltInShift(source, $0) }),
+                        range: (LiveTVEPGSourceRules.shiftChoices.first ?? -1440)...(LiveTVEPGSourceRules.shiftChoices.last ?? 1440),
+                        step: 30,
+                        accentColor: accentColor,
+                        label: { LiveTVEPGSourceRules.shiftLabel($0, none: L10n.string("livetv_epg_source_shift_none", fallback: "None")) }
+                    )
+                }
             }
             ForEach(sources.sources) { source in
                 LiveTVSettingsRows.action(
@@ -170,7 +181,7 @@ struct LiveTVGuideSourceEditor: View {
                             title: L10n.string("livetv_epg_source_shift", fallback: "Time Shift"),
                             subtitle: L10n.string("livetv_epg_source_shift_detail", fallback: "Moves this guide's listings later (+) or earlier (−), for guides out of step with what's playing"),
                             value: $shift,
-                            range: (LiveTVEPGSourceRules.shiftChoices.first ?? -720)...(LiveTVEPGSourceRules.shiftChoices.last ?? 720),
+                            range: (LiveTVEPGSourceRules.shiftChoices.first ?? -1440)...(LiveTVEPGSourceRules.shiftChoices.last ?? 1440),
                             step: 30,
                             accentColor: accentColor,
                             label: { LiveTVEPGSourceRules.shiftLabel($0, none: L10n.string("livetv_epg_source_shift_none", fallback: "None")) }

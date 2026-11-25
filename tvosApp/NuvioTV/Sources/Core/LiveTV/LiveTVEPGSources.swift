@@ -69,6 +69,15 @@ final class LiveTVEPGSources: ObservableObject {
         LiveTVSourceStore.shared.save(changed, password: nil)
     }
 
+    /// How far a source's own guide is moved (Android 1.2.0). Takes effect
+    /// at the next update.
+    func setBuiltInShift(_ source: LiveTVSource, _ minutes: Int) {
+        guard source.guideShiftMinutes != minutes else { return }
+        var changed = source
+        changed.guideShift = minutes == 0 ? nil : minutes
+        LiveTVSourceStore.shared.save(changed, password: nil)
+    }
+
     /// Read all guides again now.
     func refreshNow() {
         changed(force: true)
