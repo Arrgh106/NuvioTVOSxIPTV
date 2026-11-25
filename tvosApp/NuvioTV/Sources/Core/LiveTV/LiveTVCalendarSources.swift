@@ -1,0 +1,312 @@
+import Foundation
+
+// Fork: where the calendar's dates come from (step 16), as Android's
+// `CalendarSources`: TVmaze for episodes (no key needed), TMDB for film
+// release dates and wide pictures (Nuvio's TMDB key, when TMDB is on).
+// Everything is kept on disk, so a calendar opens from what it knew.
+
+/// A show as the calendar keeps it.
+struct LiveTVCalendarShow: Codable, Sendable {
+    let id: Int
+    var name: String
+    var status: String?
+    var network: String?
+    var streaming: Bool
+    var image: String?
+    var background: String?
+    var imdb: String?
+    /// "HH:mm" in the network's zone (TVmaze `schedule.time`).
+    var scheduleTime: String?
+    var networkZone: String?
+    var episodes: [LiveTVCalendarEpisode]
+    var fetchedAt: Date
+
+    var ended: Bool { status == "Ended" }
+
+    /// Fetched again: ended shows after a week, shows with an episode
+    /// within a day and a half after 3 h, others after 20 h.
+    func isStale(now: Date) -> Bool {
+        let age = now.timeIntervalSince(fetchedAt)
+        if ended { return age > 7 * 86_400 }
+        let near = episodes.contains { episode in
+            guard let air = episode.airstamp else { return false }
+            return abs(air.timeIntervalSince(now)) < 36 * 3600
+        }
+        return age > (near ? 3 * 3600 : 20 * 3600)
+    }
+}
+
+actor LiveTVCalendarSources {
+    static let shared = LiveTVCalendarSources()
+
+    private let folder: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("livetv-calendar", isDirectory: true)
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.httpAdditionalHeaders = ["User-Agent": "NuvioTV"]
+        return URLSession(configuration: configuration)
+    }()
+
+    private struct IDRecord: Codable {
+        /// 0: TVmaze doesn't have it (asked again after a week).
+        var id: Int
+        var at: Date
+    }
+
+    private var ids: [String: IDRecord]?
+    private var movies: [String: MovieRecord]?
+    private var backdrops: [String: String]?
+
+    // MARK: Files
+
+    private func url(_ name: String) -> URL? {
+        guard let folder else { return nil }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(name)
+    }
+
+    private func read<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
+        guard let url = url(name), let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try? decoder.decode(type, from: data)
+    }
+
+    private func write<T: Encodable>(_ value: T, _ name: String) {
+        guard let url = url(name) else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        if let data = try? encoder.encode(value) { try? data.write(to: url, options: .atomic) }
+    }
+
+    // MARK: Requests
+
+    /// TVmaze, one request at a time with a pause between (it allows about
+    /// 20 in 10 s); a 429 waits 10 s and tries once more.
+    private func tvmaze(_ path: String) async -> Any? {
+        guard let url = URL(string: "https://api.tvmaze.com" + path) else { return nil }
+        for attempt in 0..<2 {
+            await CalendarTvmazeRateLimiter.shared.wait()
+            guard !Task.isCancelled, let (data, response) = try? await session.data(from: url),
+                  let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
+            if status == 429, attempt == 0 {
+                await CalendarTvmazeRateLimiter.shared.pause(seconds: 10)
+                continue
+            }
+            guard (200..<300).contains(status) else { return nil }
+            return try? JSONSerialization.jsonObject(with: data)
+        }
+        return nil
+    }
+
+    /// Nuvio's TMDB key while TMDB is on (as every TMDB feature).
+    @MainActor private static var tmdbKey: String? {
+        let store = ProfileSettings.current
+        let enabled = (store.object(forKey: SettingsKey.tmdbEnabled) as? Bool) ?? false
+        let key = (TmdbDetailsService.currentApiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return enabled && !key.isEmpty ? key : nil
+    }
+
+    private func tmdb(_ path: String) async -> [String: Any]? {
+        guard let key = await MainActor.run(body: { Self.tmdbKey }) else { return nil }
+        let joiner = path.contains("?") ? "&" : "?"
+        guard let url = URL(string: "https://api.themoviedb.org/3" + path + joiner + "api_key=" + key),
+              let (data, response) = try? await session.data(from: url),
+              let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func https(_ link: String?) -> String? {
+        guard let link, !link.isEmpty else { return nil }
+        return link.hasPrefix("http://") ? "https://" + link.dropFirst("http://".count) : link
+    }
+
+    // MARK: TVmaze ids
+
+    /// The TVmaze id of a show by its IMDb id (else TheTVDB's, through
+    /// TMDB). `fetch` false: only what's known.
+    func tvmazeID(imdb: String?, tmdb: Int?, fetch: Bool) async -> Int? {
+        if ids == nil { ids = read([String: IDRecord].self, "tvmaze_ids.json") ?? [:] }
+        let key = imdb ?? tmdb.map { "tmdb:\($0)" }
+        guard let key else { return nil }
+        if let known = ids?[key] {
+            if known.id > 0 { return known.id }
+            if !fetch || Date().timeIntervalSince(known.at) < 7 * 86_400 { return nil }
+        }
+        guard fetch else { return nil }
+        var found: Int?
+        if let imdb, let body = await tvmaze("/lookup/shows?imdb=\(imdb)") as? [String: Any] {
+            found = body["id"] as? Int
+        }
+        if found == nil, let tvdb = await tvdbID(imdb: imdb, tmdb: tmdb),
+           let body = await tvmaze("/lookup/shows?thetvdb=\(tvdb)") as? [String: Any] {
+            found = body["id"] as? Int
+        }
+        guard !Task.isCancelled else { return found }
+        ids?[key] = IDRecord(id: found ?? 0, at: Date())
+        if let ids { write(ids, "tvmaze_ids.json") }
+        return found
+    }
+
+    private func tvdbID(imdb: String?, tmdb: Int?) async -> Int? {
+        var show = tmdb
+        if show == nil, let imdb, let found = await self.tmdb("/find/\(imdb)?external_source=imdb_id"),
+           let first = (found["tv_results"] as? [[String: Any]])?.first {
+            show = first["id"] as? Int
+        }
+        guard let show, let external = await self.tmdb("/tv/\(show)/external_ids") else { return nil }
+        return external["tvdb_id"] as? Int
+    }
+
+    // MARK: Shows
+
+    /// A show's last two seasons that matter for the window; from the disk
+    /// while it's fresh (`force`: always asked again; a failed ask keeps
+    /// the old one).
+    func show(_ id: Int, fetch: Bool, force: Bool) async -> LiveTVCalendarShow? {
+        let name = "show_\(id).json"
+        let cached = read(LiveTVCalendarShow.self, name)
+        guard fetch, force || cached?.isStale(now: Date()) ?? true else { return cached }
+        guard let body = await tvmaze("/shows/\(id)?embed[]=images") as? [String: Any] else { return cached }
+        let network = body["network"] as? [String: Any]
+        let web = body["webChannel"] as? [String: Any]
+        let image = body["image"] as? [String: Any]
+        let images = ((body["_embedded"] as? [String: Any])?["images"] as? [[String: Any]]) ?? []
+        let backgrounds = images.filter { ($0["type"] as? String) == "background" }
+        let background = backgrounds.first { ($0["main"] as? Bool) == true } ?? backgrounds.first
+        let resolutions = background?["resolutions"] as? [String: Any]
+        let backgroundURL = ((resolutions?["original"] as? [String: Any])?["url"] as? String)
+            ?? ((resolutions?["medium"] as? [String: Any])?["url"] as? String)
+
+        // Seasons around the window (from 40 days back to 130 ahead).
+        let today = LiveTVCalendarLogic.day(of: Date(), in: .current)
+        let oldest = LiveTVCalendarLogic.day(today, plus: -40)
+        let newest = LiveTVCalendarLogic.day(today, plus: 130)
+        let seasons = ((await tvmaze("/shows/\(id)/seasons")) as? [[String: Any]] ?? []).filter { season in
+            let premiere = season["premiereDate"] as? String
+            let end = season["endDate"] as? String
+            return (end == nil || end! >= oldest) && (premiere == nil || premiere! <= newest) && (premiere != nil || end == nil)
+        }.suffix(2)
+        var episodes: [LiveTVCalendarEpisode] = []
+        let stamp = ISO8601DateFormatter()
+        for season in seasons {
+            guard let seasonID = season["id"] as? Int,
+                  let list = await tvmaze("/seasons/\(seasonID)/episodes") as? [[String: Any]] else { continue }
+            let order = season["episodeOrder"] as? Int
+            for item in list {
+                guard let number = item["number"] as? Int, let seasonNumber = item["season"] as? Int,
+                      let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
+                let airtime = (item["airtime"] as? String) ?? ""
+                episodes.append(LiveTVCalendarEpisode(
+                    season: seasonNumber, number: number,
+                    name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
+                    airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
+                    airdate: airdate,
+                    runtime: item["runtime"] as? Int,
+                    image: Self.https(((item["image"] as? [String: Any])?["original"] as? String)
+                        ?? ((item["image"] as? [String: Any])?["medium"] as? String)),
+                    summary: LiveTVCalendarLogic.plainText(item["summary"] as? String),
+                    seasonEpisodes: order))
+            }
+        }
+        let show = LiveTVCalendarShow(
+            id: id,
+            name: (body["name"] as? String) ?? "",
+            status: body["status"] as? String,
+            network: (network?["name"] as? String) ?? (web?["name"] as? String),
+            streaming: network == nil && web != nil,
+            image: Self.https((image?["original"] as? String) ?? (image?["medium"] as? String)),
+            background: Self.https(backgroundURL),
+            imdb: (body["externals"] as? [String: Any])?["imdb"] as? String,
+            scheduleTime: (body["schedule"] as? [String: Any])?["time"] as? String,
+            networkZone: ((network?["country"] as? [String: Any])?["timezone"] as? String),
+            episodes: episodes.sorted { ($0.season, $0.number) < ($1.season, $1.number) },
+            fetchedAt: Date())
+        guard !Task.isCancelled else { return cached ?? show }
+        write(show, name)
+        return show
+    }
+
+    // MARK: Films (TMDB)
+
+    struct MovieRecord: Codable, Sendable {
+        var at: Date
+        var dates: LiveTVCalendarLogic.MovieDates
+        var title: String?
+        var poster: String?
+        var background: String?
+        var about: String?
+    }
+
+    /// A film's release dates in `country` (US when it has none there),
+    /// with its title and pictures. Kept a day (a month once it's long out).
+    func movie(imdb: String?, tmdb: Int?, country: String, fetch: Bool) async -> MovieRecord? {
+        if movies == nil { movies = read([String: MovieRecord].self, "movies.json") ?? [:] }
+        guard let base = imdb ?? tmdb.map({ "tmdb:\($0)" }) else { return nil }
+        let key = base + "|" + country
+        let cached = movies?[key]
+        if let cached {
+            let longOut = cached.dates.digital.map { $0 < LiveTVCalendarLogic.day(LiveTVCalendarLogic.day(of: Date(), in: .current), plus: -60) } ?? false
+            let lifetime: TimeInterval = longOut ? 30 * 86_400 : 86_400
+            if !fetch || Date().timeIntervalSince(cached.at) < lifetime { return cached }
+        }
+        guard fetch else { return nil }
+        var id = tmdb
+        if id == nil, let imdb, let found = await self.tmdb("/find/\(imdb)?external_source=imdb_id") {
+            id = ((found["movie_results"] as? [[String: Any]])?.first)?["id"] as? Int
+        }
+        guard let id, let releases = await self.tmdb("/movie/\(id)/release_dates") else { return cached }
+        let detail = await self.tmdb("/movie/\(id)")
+        func dates(in country: String) -> LiveTVCalendarLogic.MovieDates {
+            var result = LiveTVCalendarLogic.MovieDates()
+            let entry = (releases["results"] as? [[String: Any]])?.first { ($0["iso_3166_1"] as? String) == country }
+            for release in (entry?["release_dates"] as? [[String: Any]]) ?? [] {
+                guard let type = release["type"] as? Int, let date = (release["release_date"] as? String)?.prefix(10) else { continue }
+                let day = String(date)
+                switch type {
+                case 2, 3: result.theatrical = min(result.theatrical ?? day, day)
+                case 4: result.digital = min(result.digital ?? day, day)
+                case 5: result.disc = min(result.disc ?? day, day)
+                default: break
+                }
+            }
+            return result
+        }
+        var found = dates(in: country)
+        if found.theatrical == nil, found.digital == nil, country != "US" { found = dates(in: "US") }
+        if found.theatrical == nil, let release = detail?["release_date"] as? String, release.count >= 10 {
+            found.theatrical = String(release.prefix(10))
+        }
+        let record = MovieRecord(
+            at: Date(), dates: found,
+            title: detail?["title"] as? String,
+            poster: (detail?["poster_path"] as? String).map { "https://image.tmdb.org/t/p/w342" + $0 },
+            background: (detail?["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 },
+            about: detail?["overview"] as? String)
+        movies?[key] = record
+        if let movies { write(movies, "movies.json") }
+        return record
+    }
+
+    /// A wide picture for a show that only has a poster (kept for good;
+    /// "" when TMDB has none).
+    func backdrop(imdb: String, fetch: Bool) async -> String? {
+        if backdrops == nil { backdrops = read([String: String].self, "backdrops.json") ?? [:] }
+        if let known = backdrops?[imdb] { return known.isEmpty ? nil : known }
+        guard fetch, let found = await tmdb("/find/\(imdb)?external_source=imdb_id") else { return nil }
+        let first = ((found["tv_results"] as? [[String: Any]])?.first) ?? ((found["movie_results"] as? [[String: Any]])?.first)
+        let link = (first?["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 } ?? ""
+        backdrops?[imdb] = link
+        if let backdrops { write(backdrops, "backdrops.json") }
+        return link.isEmpty ? nil : link
+    }
+
+    /// Everything the calendar kept (a profile's sources changed a lot).
+    func clear() {
+        ids = nil
+        movies = nil
+        backdrops = nil
+        if let folder { try? FileManager.default.removeItem(at: folder) }
+    }
+}
