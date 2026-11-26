@@ -354,6 +354,37 @@ actor LiveTVCalendarSources {
         return result
     }
 
+    /// TVmaze's schedule of a day in a country: TV and streaming (streaming
+    /// only from that country, or from no country). Kept 2 h; older days'
+    /// files go after 3 days.
+    func airingToday(country: String, date: String, force: Bool) async -> [[String: Any]] {
+        let name = "airing_\(country)_\(date).json"
+        if !force, let file = url(name), let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+           let modified = attributes[.modificationDate] as? Date, Date().timeIntervalSince(modified) < 2 * 3600,
+           let data = try? Data(contentsOf: file),
+           let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return list
+        }
+        let tv = (await tvmaze("/schedule?country=\(country)&date=\(date)") as? [[String: Any]]) ?? []
+        let web = ((await tvmaze("/schedule/web?date=\(date)") as? [[String: Any]]) ?? []).filter { item in
+            let show = (item["_embedded"] as? [String: Any])?["show"] as? [String: Any]
+            let code = ((show?["webChannel"] as? [String: Any])?["country"] as? [String: Any])?["code"] as? String
+            return code == nil || code == country
+        }
+        let list = tv + web
+        if !list.isEmpty, let file = url(name), let data = try? JSONSerialization.data(withJSONObject: list) {
+            try? data.write(to: file, options: .atomic)
+        }
+        // Old days' schedules go.
+        if let folder, let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            for file in files where file.lastPathComponent.hasPrefix("airing_") {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if Date().timeIntervalSince(modified) > 3 * 86_400 { try? FileManager.default.removeItem(at: file) }
+            }
+        }
+        return list
+    }
+
     /// Whether a show is kept on disk (any age).
     func isKept(_ id: Int) -> Bool {
         url("show_\(id).json").map { FileManager.default.fileExists(atPath: $0.path) } ?? false

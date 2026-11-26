@@ -17,6 +17,134 @@ final class LiveTVCalendarStore: ObservableObject {
     @Published private(set) var progress: (done: Int, total: Int)?
     /// No titles to follow yet.
     @Published private(set) var isEmptySource = false
+    /// Shows you took out of the calendar (16c, Hidden).
+    @Published private(set) var hidden: [LiveTVCalendarHidden] = []
+    /// Titles with the bell rung (16c, Following).
+    @Published private(set) var followed: [LiveTVCalendarFollowed] = []
+    /// Every show with a new episode today in your country (16c).
+    @Published private(set) var airing: [LiveTVCalendarEntry] = []
+    @Published private(set) var airingLoading = false
+    private var airingDay: String?
+    private var lastSeen: [String: Seen] = [:]
+    private var followObserver: NSObjectProtocol?
+    private var followTask: Task<Void, Never>?
+    private static let hiddenKey = "livetv.calendar.hidden"
+    /// Airing today leaves these out (as Android's "News & talk shows").
+    private static let skippedTypes: Set<String> = ["News", "Talk Show", "Sports", "Panel Show"]
+
+    init() {
+        hidden = Self.loadHidden()
+        // The bell rung or silenced (here, on a page, in Nuvio's calendar):
+        // the calendar follows.
+        followObserver = NotificationCenter.default.addObserver(
+            forName: CalendarManualFollowStore.changedNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { LiveTVCalendarStore.shared.followsChanged() }
+        }
+    }
+
+    private func followsChanged() {
+        guard builtOnce else { return }
+        followTask?.cancel()
+        followTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.build(fetch: true, force: false)
+        }
+    }
+
+    // MARK: Hidden (16c)
+
+    private static func loadHidden() -> [LiveTVCalendarHidden] {
+        guard let data = ProfileSettings.current.data(forKey: hiddenKey),
+              let list = try? JSONDecoder().decode([LiveTVCalendarHidden].self, from: data) else { return [] }
+        return list
+    }
+
+    private func saveHidden() {
+        if let data = try? JSONEncoder().encode(hidden) { ProfileSettings.current.set(data, forKey: Self.hiddenKey) }
+    }
+
+    /// "Hide this show from the Calendar" (it comes back from Hidden).
+    func hide(_ entry: LiveTVCalendarEntry) {
+        guard !hidden.contains(where: { $0.id == entry.contentID }) else { return }
+        hidden.append(LiveTVCalendarHidden(id: entry.contentID, name: entry.title))
+        saveHidden()
+        entries.removeAll { $0.contentID == entry.contentID }
+        airing.removeAll { $0.contentID == entry.contentID }
+    }
+
+    func unhide(_ id: String) {
+        hidden.removeAll { $0.id == id }
+        saveHidden()
+        build(fetch: false, force: false)
+        airingDay = nil
+    }
+
+    private func isHidden(_ id: String, imdb: String?) -> Bool {
+        hidden.contains { $0.id == id || (imdb != nil && $0.id == imdb) }
+    }
+
+    // MARK: Airing today (16c)
+
+    /// TVmaze's schedule of today in the calendar's country (TV and
+    /// streaming; kept 2 h), without news, talk, sports and panel shows.
+    func loadAiring(force: Bool = false) {
+        let zone = LiveTVCalendarSettings.timeZone
+        let now = Date()
+        let today = LiveTVCalendarLogic.day(of: now, in: zone)
+        if !force, airingDay == today, !airing.isEmpty || airingLoading { return }
+        airingLoading = true
+        let country = LiveTVCalendarSettings.country
+        Task { [weak self] in
+            let list = await LiveTVCalendarSources.shared.airingToday(country: country, date: today, force: force)
+            guard let self else { return }
+            let follows = Set(self.followed.map(\.id))
+            let stamp = ISO8601DateFormatter()
+            var result: [LiveTVCalendarEntry] = []
+            var seenShows = Set<String>()
+            for item in list {
+                guard let body = (item["show"] as? [String: Any]) ?? ((item["_embedded"] as? [String: Any])?["show"] as? [String: Any]),
+                      let id = body["id"] as? Int, let number = item["number"] as? Int, let season = item["season"] as? Int,
+                      let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
+                if let type = body["type"] as? String, Self.skippedTypes.contains(type) { continue }
+                let imdb = (body["externals"] as? [String: Any])?["imdb"] as? String
+                let contentID = imdb ?? "tvmaze:\(id)"
+                guard !self.isHidden(contentID, imdb: imdb), seenShows.insert("\(contentID)|\(season)|\(number)").inserted else { continue }
+                let network = body["network"] as? [String: Any]
+                let web = body["webChannel"] as? [String: Any]
+                let image = body["image"] as? [String: Any]
+                let picture = item["image"] as? [String: Any]
+                let airtime = (item["airtime"] as? String) ?? ""
+                let show = LiveTVCalendarShow(
+                    id: id, name: (body["name"] as? String) ?? "", status: body["status"] as? String,
+                    network: (network?["name"] as? String) ?? (web?["name"] as? String),
+                    streaming: network == nil && web != nil,
+                    image: (image?["original"] as? String) ?? (image?["medium"] as? String),
+                    background: nil, imdb: imdb,
+                    scheduleTime: (body["schedule"] as? [String: Any])?["time"] as? String,
+                    networkZone: (network?["country"] as? [String: Any])?["timezone"] as? String,
+                    episodes: [LiveTVCalendarEpisode(
+                        season: season, number: number,
+                        name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
+                        airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
+                        airdate: airdate, runtime: item["runtime"] as? Int,
+                        image: (picture?["original"] as? String) ?? (picture?["medium"] as? String),
+                        summary: LiveTVCalendarLogic.plainText(item["summary"] as? String), seasonEpisodes: nil)],
+                    fetchedAt: Date())
+                var reasons: Set<LiveTVCalendarReason> = [.airingToday]
+                if follows.contains(contentID) || (imdb.map { follows.contains($0) } ?? false) { reasons.insert(.bell) }
+                let candidate = Candidate(id: contentID, imdb: imdb, tmdb: nil, series: true, name: show.name,
+                                          poster: show.image, background: nil, year: nil, reasons: reasons)
+                let art = imdb == nil ? nil : await LiveTVCalendarSources.shared.art(imdb: imdb!, fetch: false)
+                result += self.cards(show: show, candidate: candidate, contentID: contentID, art: art, seen: self.lastSeen,
+                                     window: (airdate, airdate), today: today, now: now, zone: zone)
+            }
+            self.airing = result.sorted { ($0.air ?? .distantFuture) < ($1.air ?? .distantFuture) }
+            self.airingDay = today
+            self.airingLoading = false
+        }
+    }
 
     private var task: Task<Void, Never>?
     private var builtOnce = false
@@ -131,7 +259,13 @@ final class LiveTVCalendarStore: ObservableObject {
                           series: true, name: meta.name, poster: meta.posterUrl, background: meta.backgroundUrl,
                           reasons: [.watching], lastWatched: item.watchedAt))
         }
-        let all = order.compactMap { byKey[$0] }
+        // Shows you hid stay out; the ones with the bell make Following.
+        let all = order.compactMap { byKey[$0] }.filter { !isHidden($0.id, imdb: $0.imdb) }
+        followed = all.filter { $0.reasons.contains(.bell) }.map { candidate in
+            LiveTVCalendarFollowed(id: candidate.imdb ?? candidate.id, imdb: candidate.imdb, tmdb: candidate.tmdb,
+                                   series: candidate.series, title: candidate.name,
+                                   poster: candidate.poster, background: candidate.background)
+        }
         let shows = all.filter(\.series).sorted { a, b in
             let rank = { (c: Candidate) in c.reasons.contains(.bell) ? 0 : (c.reasons.contains(.watching) ? 1 : 2) }
             if rank(a) != rank(b) { return rank(a) < rank(b) }
@@ -175,6 +309,7 @@ final class LiveTVCalendarStore: ObservableObject {
             let watched = WatchedStore.visibleItems()
             let (shows, movies) = self.candidates(continueWatching: continueWatching, watched: watched)
             let seen = self.seen(continueWatching: continueWatching, watched: watched)
+            self.lastSeen = seen
             self.isEmptySource = shows.isEmpty && movies.isEmpty
             let built = await self.make(shows: shows, movies: movies, seen: seen, fetch: fetch, force: force)
             guard !Task.isCancelled else { return }
@@ -440,4 +575,21 @@ enum LiveTVCalendarSettings {
         get { (ProfileSettings.current.object(forKey: unwatchedOnlyKey) as? Bool) ?? false }
         set { ProfileSettings.current.set(newValue, forKey: unwatchedOnlyKey) }
     }
+}
+
+/// A show taken out of the calendar (16c).
+struct LiveTVCalendarHidden: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let name: String
+}
+
+/// A title with the bell rung (16c, Following).
+struct LiveTVCalendarFollowed: Identifiable, Equatable, Sendable {
+    let id: String
+    let imdb: String?
+    let tmdb: Int?
+    let series: Bool
+    let title: String
+    let poster: String?
+    let background: String?
 }
