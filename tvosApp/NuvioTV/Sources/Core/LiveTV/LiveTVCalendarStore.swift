@@ -422,6 +422,13 @@ enum LiveTVCalendarSettings {
         return id.isEmpty ? .current : TimeZone(identifier: id) ?? .current
     }
 
+    /// List, Week or Month (kept per profile, as Android's calendarView).
+    static var view: String {
+        get { ProfileSettings.current.string(forKey: viewKey) ?? "list" }
+        set { ProfileSettings.current.set(newValue, forKey: viewKey) }
+    }
+    static let viewKey = "livetv.calendar.view"
+
     static var unwatchedOnly: Bool {
         get { (ProfileSettings.current.object(forKey: unwatchedOnlyKey) as? Bool) ?? false }
         set { ProfileSettings.current.set(newValue, forKey: unwatchedOnlyKey) }

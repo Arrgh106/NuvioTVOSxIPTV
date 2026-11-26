@@ -1,10 +1,26 @@
 import SwiftUI
 import UIKit
 
-/// The calendar (step 16), as Android's: tabs on top, then a big picture of
-/// the card in focus and a row of wide cards per day. 16a: the List view
-/// with Upcoming and Recently aired.
+/// The calendar (step 16), as Android's: on top a big picture of the card
+/// in focus; below it the List (Upcoming / Recently aired, a row of wide
+/// cards per day), the Week (a column per day) or the Month (a grid of days,
+/// the chosen day's cards above it).
 struct LiveTVCalendarView: View {
+    enum Mode: String, CaseIterable, Identifiable {
+        case list
+        case week
+        case month
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .list: return L10n.string("livetv_cal_list", fallback: "List")
+            case .week: return L10n.string("livetv_cal_week", fallback: "Week")
+            case .month: return L10n.string("livetv_cal_month", fallback: "Month")
+            }
+        }
+    }
+
     enum Tab: String, CaseIterable, Identifiable {
         case upcoming
         case recent
@@ -25,6 +41,7 @@ struct LiveTVCalendarView: View {
     @State private var tab: Tab = .upcoming
     @State private var unwatchedOnly = LiveTVCalendarSettings.unwatchedOnly
     @State private var focusedKey: String?
+    @State private var mode = Mode(rawValue: LiveTVCalendarSettings.view) ?? .list
 
     private var shown: [LiveTVCalendarEntry] {
         let now = Date()
@@ -49,7 +66,7 @@ struct LiveTVCalendarView: View {
 
     var body: some View {
         let list = days
-        let focused = shown.first { $0.key == focusedKey } ?? list.first?.entries.first
+        let focused = (mode == .list ? shown : store.entries).first { $0.key == focusedKey } ?? list.first?.entries.first
         ZStack(alignment: .topLeading) {
             hero(focused)
             VStack(alignment: .leading, spacing: 0) {
@@ -66,10 +83,21 @@ struct LiveTVCalendarView: View {
                         .padding(.horizontal, 60)
                         .padding(.top, 8)
                 }
-                details(focused)
-                    .padding(.horizontal, 60)
-                    .frame(height: 230, alignment: .bottomLeading)
-                content(list)
+                switch mode {
+                case .list:
+                    details(focused)
+                        .padding(.horizontal, 60)
+                        .frame(height: 230, alignment: .bottomLeading)
+                    content(list)
+                case .week:
+                    details(focused)
+                        .padding(.horizontal, 60)
+                        .frame(height: 190, alignment: .bottomLeading)
+                    LiveTVCalendarWeek(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                case .month:
+                    LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                        .padding(.top, 16)
+                }
             }
         }
         .background(Color.black.ignoresSafeArea())
@@ -83,16 +111,19 @@ struct LiveTVCalendarView: View {
             Text(L10n.string("livetv_cal_title", fallback: "Calendar"))
                 .font(.system(size: 40, weight: .bold))
                 .padding(.trailing, 20)
-            ForEach(Tab.allCases) { item in
-                Button {
-                    tab = item
-                    focusedKey = nil
-                } label: {
-                    Text(item.title)
-                        .font(.system(size: 24, weight: tab == item ? .bold : .regular))
+            // Week and Month show everything: no tabs.
+            if mode == .list {
+                ForEach(Tab.allCases) { item in
+                    Button {
+                        tab = item
+                        focusedKey = nil
+                    } label: {
+                        Text(item.title)
+                            .font(.system(size: 24, weight: tab == item ? .bold : .regular))
+                    }
                 }
             }
-            if tab == .recent {
+            if mode == .list, tab == .recent {
                 Button {
                     unwatchedOnly.toggle()
                     LiveTVCalendarSettings.unwatchedOnly = unwatchedOnly
@@ -109,6 +140,17 @@ struct LiveTVCalendarView: View {
                     .foregroundColor(.white.opacity(0.6))
             } else if store.isLoading {
                 ProgressView()
+            }
+            // List / Week / Month.
+            ForEach(Mode.allCases) { item in
+                Button {
+                    mode = item
+                    focusedKey = nil
+                    LiveTVCalendarSettings.view = item.rawValue
+                } label: {
+                    Text(item.title)
+                        .font(.system(size: 22, weight: mode == item ? .bold : .regular))
+                }
             }
             Button {
                 store.refresh()
@@ -306,12 +348,11 @@ struct LiveTVCalendarView: View {
 /// episode below.
 private struct LiveTVCalendarCard: View {
     let entry: LiveTVCalendarEntry
+    var width: CGFloat = 400
     let onFocus: () -> Void
     let onOpen: () -> Void
 
     @FocusState private var focused: Bool
-
-    static let width: CGFloat = 400
 
     private var picture: URL? {
         let link = entry.spoiler ? (entry.background ?? entry.poster) : (entry.episodeImage ?? entry.background ?? entry.poster)
@@ -375,7 +416,7 @@ private struct LiveTVCalendarCard: View {
                     .foregroundColor(.white)
                     .padding(12)
                 }
-                .frame(width: Self.width, height: Self.width * 9 / 16)
+                .frame(width: width, height: width * 9 / 16)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -384,7 +425,7 @@ private struct LiveTVCalendarCard: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(.white.opacity(focused ? 1 : 0.7))
                     .lineLimit(1)
-                    .frame(width: Self.width, alignment: .leading)
+                    .frame(width: width, alignment: .leading)
             }
             .scaleEffect(focused ? 1.06 : 1)
             .animation(.easeOut(duration: 0.15), value: focused)
@@ -541,5 +582,298 @@ enum LiveTVCalendarLogoMaker {
         let crop = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
         guard let cut = whole?.cropping(to: crop) else { return nil }
         return UIImage(cgImage: cut)
+    }
+}
+
+// MARK: - Week and Month (16b)
+
+/// Days of the calendar in its time zone, the week starting as the Apple
+/// TV's region has it.
+private enum LiveTVCalendarDays {
+    @MainActor static var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = LiveTVCalendarSettings.timeZone
+        calendar.firstWeekday = Calendar.current.firstWeekday
+        calendar.locale = Locale.current
+        return calendar
+    }
+
+    @MainActor static func key(_ date: Date) -> String {
+        LiveTVCalendarLogic.day(of: date, in: LiveTVCalendarSettings.timeZone)
+    }
+
+    @MainActor static func format(_ date: Date, _ template: String) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = LiveTVCalendarSettings.timeZone
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
+    }
+
+    static func byDay(_ entries: [LiveTVCalendarEntry]) -> [String: [LiveTVCalendarEntry]] {
+        Dictionary(grouping: entries, by: \.day)
+    }
+}
+
+/// A row of pills to move by weeks or months.
+private struct LiveTVCalendarPager: View {
+    let title: String
+    let back: String
+    let now: String
+    let forward: String
+    let canBack: Bool
+    let canForward: Bool
+    let onMove: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.system(size: 30, weight: .bold))
+            Spacer()
+            Button { onMove(-1) } label: { Text("‹ " + back).font(.system(size: 22)) }
+                .disabled(!canBack)
+            Button { onMove(0) } label: { Text(now).font(.system(size: 22)) }
+            Button { onMove(1) } label: { Text(forward + " ›").font(.system(size: 22)) }
+                .disabled(!canForward)
+        }
+        .focusSection()
+    }
+}
+
+/// The Week: a column per day (today tinted), small cards in each.
+private struct LiveTVCalendarWeek: View {
+    let entries: [LiveTVCalendarEntry]
+    let onFocus: (LiveTVCalendarEntry) -> Void
+    let onOpen: (LiveTVCalendarEntry) -> Void
+
+    @State private var offset = 0
+    /// The loaded window: 30 days back, 120 ahead.
+    private static let range = -5...17
+
+    private var days: [Date] {
+        let calendar = LiveTVCalendarDays.calendar
+        let today = Date()
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: today),
+              let start = calendar.date(byAdding: .weekOfYear, value: offset, to: week.start) else { return [] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    var body: some View {
+        let byDay = LiveTVCalendarDays.byDay(entries)
+        let shown = days
+        let today = LiveTVCalendarDays.key(Date())
+        VStack(alignment: .leading, spacing: 14) {
+            LiveTVCalendarPager(
+                title: shown.first.map { LiveTVCalendarDays.format($0, "MMMd") + " – " } .map { $0 + (shown.last.map { LiveTVCalendarDays.format($0, "MMMd") } ?? "") } ?? "",
+                back: L10n.string("livetv_cal_week", fallback: "Week"),
+                now: L10n.string("livetv_cal_this_week", fallback: "This week"),
+                forward: L10n.string("livetv_cal_week", fallback: "Week"),
+                canBack: offset > Self.range.lowerBound, canForward: offset < Self.range.upperBound,
+                onMove: { step in offset = step == 0 ? 0 : min(max(offset + step, Self.range.lowerBound), Self.range.upperBound) })
+                .padding(.horizontal, 60)
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(shown, id: \.self) { date in
+                    let key = LiveTVCalendarDays.key(date)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(LiveTVCalendarDays.format(date, "EEEd"))
+                            .font(.system(size: 22, weight: key == today ? .bold : .semibold))
+                            .foregroundColor(key == today ? .black : .white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(key == today ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                        ScrollView(.vertical, showsIndicators: false) {
+                            LazyVStack(alignment: .leading, spacing: 18) {
+                                ForEach(byDay[key] ?? []) { entry in
+                                    LiveTVCalendarCard(entry: entry, width: 236,
+                                                       onFocus: { onFocus(entry) }, onOpen: { onOpen(entry) })
+                                }
+                            }
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                    .frame(width: 252, alignment: .topLeading)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .background(key == today ? Color.white.opacity(0.06) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 14))
+                    .focusSection()
+                }
+            }
+            .padding(.horizontal, 48)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// The Month: the chosen day's cards on top, a grid of days below (each
+/// with its first card's picture, the day and what's on); OK on a day goes
+/// up to its cards.
+private struct LiveTVCalendarMonth: View {
+    let entries: [LiveTVCalendarEntry]
+    let onFocus: (LiveTVCalendarEntry) -> Void
+    let onOpen: (LiveTVCalendarEntry) -> Void
+
+    @State private var offset = 0
+    @State private var chosen: String?
+    @State private var toCards = false
+    @Namespace private var space
+    @Environment(\.resetFocus) private var resetFocus
+    private static let range = -1...4
+
+    private var month: Date {
+        let calendar = LiveTVCalendarDays.calendar
+        let start = calendar.dateInterval(of: .month, for: Date())?.start ?? Date()
+        return calendar.date(byAdding: .month, value: offset, to: start) ?? start
+    }
+
+    /// Six weeks from the week the month starts in.
+    private var grid: [Date] {
+        let calendar = LiveTVCalendarDays.calendar
+        guard let first = calendar.dateInterval(of: .weekOfYear, for: month)?.start else { return [] }
+        return (0..<42).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
+    }
+
+    var body: some View {
+        let byDay = LiveTVCalendarDays.byDay(entries)
+        let calendar = LiveTVCalendarDays.calendar
+        let today = LiveTVCalendarDays.key(Date())
+        let day = chosen ?? today
+        let cards = byDay[day] ?? []
+        VStack(alignment: .leading, spacing: 12) {
+            LiveTVCalendarPager(
+                title: LiveTVCalendarDays.format(month, "yMMMM"),
+                back: L10n.string("livetv_cal_month", fallback: "Month"),
+                now: L10n.string("livetv_cal_this_month", fallback: "This month"),
+                forward: L10n.string("livetv_cal_month", fallback: "Month"),
+                canBack: offset > Self.range.lowerBound, canForward: offset < Self.range.upperBound,
+                onMove: { step in
+                    offset = step == 0 ? 0 : min(max(offset + step, Self.range.lowerBound), Self.range.upperBound)
+                    chosen = nil
+                })
+                .padding(.horizontal, 60)
+            // The chosen day's cards.
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 22) {
+                    if cards.isEmpty {
+                        Text(L10n.string("livetv_cal_day_empty", fallback: "Nothing on this day"))
+                            .font(.system(size: 22))
+                            .foregroundColor(.white.opacity(0.6))
+                            .frame(height: 170)
+                    }
+                    ForEach(Array(cards.enumerated()), id: \.element.key) { index, entry in
+                        LiveTVCalendarCard(entry: entry, width: 300,
+                                           onFocus: {
+                                               toCards = false
+                                               onFocus(entry)
+                                           },
+                                           onOpen: { onOpen(entry) })
+                            .prefersDefaultFocus(toCards && index == 0, in: space)
+                    }
+                }
+                .padding(.horizontal, 60)
+                .padding(.vertical, 14)
+            }
+            .frame(height: 230)
+            .focusSection()
+            // The days.
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 7)
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(Array(grid.prefix(7)), id: \.self) { date in
+                    Text(LiveTVCalendarDays.format(date, "EEE"))
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                ForEach(grid, id: \.self) { date in
+                    let key = LiveTVCalendarDays.key(date)
+                    LiveTVCalendarDayCell(
+                        date: date, entries: byDay[key] ?? [],
+                        isToday: key == today, isChosen: key == day,
+                        inMonth: calendar.isDate(date, equalTo: month, toGranularity: .month),
+                        onFocus: {
+                            chosen = key
+                            if let first = byDay[key]?.first { onFocus(first) }
+                        },
+                        onSelect: {
+                            guard !(byDay[key] ?? []).isEmpty else { return }
+                            chosen = key
+                            toCards = true
+                            resetFocus(in: space)
+                        })
+                }
+            }
+            .padding(.horizontal, 60)
+            .focusSection()
+        }
+        .focusScope(space)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// A day in the Month: its first card's picture darkened, the day, and the
+/// first title with how many more.
+private struct LiveTVCalendarDayCell: View {
+    let date: Date
+    let entries: [LiveTVCalendarEntry]
+    let isToday: Bool
+    let isChosen: Bool
+    let inMonth: Bool
+    let onFocus: () -> Void
+    let onSelect: () -> Void
+
+    @FocusState private var focused: Bool
+
+    private var picture: URL? {
+        guard let first = entries.first else { return nil }
+        let link = first.spoiler ? (first.background ?? first.poster) : (first.episodeImage ?? first.background ?? first.poster)
+        return link.flatMap(URL.init(string:))
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            ZStack(alignment: .topLeading) {
+                if let picture {
+                    AsyncImage(url: picture) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Color.white.opacity(0.06)
+                        }
+                    }
+                    Color.black.opacity(focused ? 0.35 : 0.55)
+                } else {
+                    Color.white.opacity(inMonth ? 0.06 : 0.03)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(LiveTVCalendarDays.format(date, date.isFirstOfMonth ? "MMMd" : "d"))
+                        .font(.system(size: 22, weight: isToday ? .heavy : .semibold))
+                    Spacer(minLength: 0)
+                    if let first = entries.first {
+                        Text(first.title + (entries.count > 1 ? "  +\(entries.count - 1)" : ""))
+                            .font(.system(size: 16, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                }
+                .foregroundColor(.white)
+                .padding(8)
+            }
+            .frame(height: 74)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(focused ? Color.white : (isToday ? LiveTVTheme.accent : (isChosen ? Color.white.opacity(0.4) : Color.clear)),
+                                  lineWidth: focused || isToday ? 3 : 2))
+            .opacity(inMonth ? 1 : 0.45)
+            .scaleEffect(focused ? 1.05 : 1)
+            .animation(.easeOut(duration: 0.12), value: focused)
+        }
+        .buttonStyle(LiveTVInvisibleButtonStyle())
+        .focused($focused)
+        .onChange(of: focused) { _, now in if now { onFocus() } }
+    }
+}
+
+private extension Date {
+    @MainActor var isFirstOfMonth: Bool {
+        LiveTVCalendarDays.calendar.component(.day, from: self) == 1
     }
 }
