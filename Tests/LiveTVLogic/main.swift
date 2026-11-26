@@ -922,5 +922,24 @@ let filmCards = LiveTVCalendarLogic.movieCards(
     label: { tag, day in "\(tag.rawValue) \(day)" })
 check(filmCards.map(\.tag) == [.inTheaters, .onDisc] && filmCards.first?.note == "atHome ", "calendar: film cards")
 
+// On my TV (16d).
+check(LiveTVCalendarGuideMatch.normalize("Grey's Anatomy!") == "greys anatomy", "guide: names folded")
+check(LiveTVCalendarGuideMatch.names("Tulsa King: Der Deal") == ["tulsa king der deal", "tulsa king"], "guide: title before a colon")
+let guideAir = Date(timeIntervalSince1970: 1_800_000_000)
+let guideHits = LiveTVCalendarGuideMatch.match(
+    [.init(key: "ep", title: "Tulsa King", network: "Paramount Network", air: guideAir)],
+    channels: [
+        "one": [.init(id: 1, name: "Some Channel", logo: nil, favorite: false)],
+        "two": [.init(id: 2, name: "Paramount Network HD", logo: nil, favorite: false)],
+        "far": [.init(id: 3, name: "Other", logo: nil, favorite: true)],
+    ],
+    rows: { each in
+        each("one", guideAir, guideAir.addingTimeInterval(3600), "Tulsa King")
+        each("two", guideAir.addingTimeInterval(600), guideAir.addingTimeInterval(4200), "Tulsa King - Folge 7")
+        each("far", guideAir.addingTimeInterval(6 * 3600), guideAir.addingTimeInterval(7 * 3600), "Tulsa King")
+        each("one", guideAir, guideAir.addingTimeInterval(3600), "Tulsa Kingdom")
+    })
+check(guideHits["ep"]?.channelID == 2 && guideHits["ep"]?.others == 1, "guide: the network's channel first, not a rerun hours later")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

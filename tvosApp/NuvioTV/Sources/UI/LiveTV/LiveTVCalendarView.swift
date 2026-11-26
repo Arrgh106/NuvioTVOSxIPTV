@@ -65,11 +65,15 @@ struct LiveTVCalendarView: View {
     @State private var focusedKey: String?
     @State private var mode = Mode(rawValue: LiveTVCalendarSettings.view) ?? .list
     @State private var airingFilter: AiringFilter = .all
+    /// Upcoming: only episodes in your Live TV guide (16d, Android's On my TV).
+    @State private var onMyTV = false
 
     private var shown: [LiveTVCalendarEntry] {
         let now = Date()
         switch tab {
-        case .upcoming: return LiveTVCalendarLogic.upcoming(store.entries, now: now, zone: LiveTVCalendarSettings.timeZone)
+        case .upcoming:
+            let list = LiveTVCalendarLogic.upcoming(store.entries, now: now, zone: LiveTVCalendarSettings.timeZone)
+            return onMyTV && mode == .list ? list.filter { store.onTV[$0.key] != nil } : list
         case .recent: return LiveTVCalendarLogic.recent(store.entries, now: now, zone: LiveTVCalendarSettings.timeZone, unwatchedOnly: unwatchedOnly)
         case .airing: return airingShown
         case .following: return followingCards
@@ -276,7 +280,7 @@ struct LiveTVCalendarView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 30) {
                     ForEach(entries) { entry in
-                        LiveTVCalendarCard(entry: entry, width: Self.cardWidth,
+                        LiveTVCalendarCard(entry: entry, width: Self.cardWidth, onTV: store.onTV[entry.key],
                                            onFocus: { focusedKey = entry.key }, onOpen: { onOpen(entry) })
                     }
                 }
@@ -321,6 +325,16 @@ struct LiveTVCalendarView: View {
                 } label: {
                     Text(tabTitle(item))
                         .font(.system(size: 22, weight: tab == item || (item == .upcoming && tab == .recent && mode != .list) ? .bold : .regular))
+                }
+            }
+            if tab == .upcoming, mode == .list, !store.onTV.isEmpty || onMyTV {
+                Button {
+                    onMyTV.toggle()
+                    focusedKey = nil
+                } label: {
+                    Label(L10n.string("livetv_cal_on_my_tv", fallback: "On my TV"),
+                          systemImage: onMyTV ? "checkmark.circle.fill" : "tv")
+                        .font(.system(size: 20))
                 }
             }
             if tab == .recent, mode == .list {
@@ -438,6 +452,9 @@ struct LiveTVCalendarView: View {
                         .id(logo)
                     }
                 }
+                if let onTV = store.onTV[entry.key], !compact {
+                    onTVLine(onTV)
+                }
                 if compact {
                     if let summary = entry.summary, !entry.spoiler {
                         Text(summary)
@@ -516,6 +533,29 @@ struct LiveTVCalendarView: View {
                 .font(.system(size: 18))
                 .foregroundColor(.white.opacity(0.55))
                 .lineLimit(1)
+        }
+    }
+
+    /// "On your TV: ProSieben HD · 20:15–21:10 (+2 channels)", and what
+    /// holding OK does.
+    private func onTVLine(_ onTV: LiveTVCalendarOnTV) -> some View {
+        let now = Date()
+        let live = now >= onTV.start && now < onTV.end
+        var text = L10n.format("livetv_cal_on_tv_format", fallback: "On your TV: %@ · %@–%@", onTV.channelName,
+                               Self.clock(onTV.start), Self.clock(onTV.end))
+        if onTV.others > 0 {
+            text += "  " + L10n.format("livetv_cal_on_tv_others_format", fallback: "(+%d channels)", onTV.others)
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(text, systemImage: live ? "dot.radiowaves.left.and.right" : "tv")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundColor(LiveTVTheme.accent)
+                .lineLimit(1)
+            Text(onTV.start.addingTimeInterval(-10 * 60) <= now
+                 ? L10n.string("livetv_cal_on_tv_hold_live", fallback: "Hold OK on the card to watch it live")
+                 : L10n.string("livetv_cal_on_tv_hold_remind", fallback: "Hold OK on the card for a reminder"))
+                .font(.system(size: 17))
+                .foregroundColor(.white.opacity(0.5))
         }
     }
 
@@ -625,7 +665,7 @@ struct LiveTVCalendarView: View {
                             // Two in a row, more go on the next row.
                             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 26) {
                                 ForEach(day.entries) { entry in
-                                    LiveTVCalendarCard(entry: entry, width: Self.cardWidth,
+                                    LiveTVCalendarCard(entry: entry, width: Self.cardWidth, onTV: store.onTV[entry.key],
                                                        onFocus: { focusedKey = entry.key },
                                                        onOpen: { onOpen(entry) })
                                 }
@@ -773,6 +813,8 @@ struct LiveTVCalendarView: View {
 private struct LiveTVCalendarCard: View {
     let entry: LiveTVCalendarEntry
     var width: CGFloat = 400
+    /// Where it's on in your Live TV guide (16d).
+    var onTV: LiveTVCalendarOnTV? = nil
     let onFocus: () -> Void
     let onOpen: () -> Void
 
@@ -853,6 +895,13 @@ private struct LiveTVCalendarCard: View {
                     .foregroundColor(.white.opacity(focused ? 1 : 0.7))
                     .lineLimit(1)
                     .frame(width: width, alignment: .leading)
+                if let onTV, width >= 300 {
+                    Label(onTV.channelName + " · " + LiveTVCalendarView.clock(onTV.start), systemImage: "tv")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(LiveTVTheme.accent)
+                        .lineLimit(1)
+                        .frame(width: width, alignment: .leading)
+                }
             }
             .scaleEffect(focused ? 1.06 : 1)
             .animation(.easeOut(duration: 0.15), value: focused)
@@ -862,6 +911,29 @@ private struct LiveTVCalendarCard: View {
         .onChange(of: focused) { _, now in if now { onFocus() } }
         // Hold OK: the bell, and hiding the show (16c, as Android's).
         .contextMenu {
+            if let onTV, let channel = LiveTVStore.shared.channel(id: onTV.channelID) {
+                let now = Date()
+                if now >= onTV.start.addingTimeInterval(-10 * 60), now < onTV.end {
+                    Button {
+                        LiveTVWatch.shared.watch(LiveTVWatchRequest(channelID: channel.streamID))
+                    } label: {
+                        Label(L10n.format("livetv_cal_watch_live_format", fallback: "Watch live on %@", channel.name),
+                              systemImage: "play.tv")
+                    }
+                } else if onTV.start > now {
+                    let programme = XtreamProgram(title: onTV.title, description: nil, start: onTV.start, end: onTV.end)
+                    let set = LiveTVReminders.shared.isSet(channelID: channel.streamID, start: onTV.start)
+                    Button {
+                        LiveTVReminders.shared.toggle(channel: channel, programme: programme)
+                    } label: {
+                        Label(set
+                              ? L10n.string("livetv_cal_remind_off", fallback: "Don't remind me")
+                              : L10n.format("livetv_cal_remind_format", fallback: "Remind me (%@, %@)",
+                                            channel.name, LiveTVCalendarView.clock(onTV.start)),
+                              systemImage: set ? "bell.slash" : "alarm")
+                    }
+                }
+            }
             let imdb = entry.contentID.hasPrefix("tt") ? entry.contentID : nil
             if LiveTVCalendarBell.canRing(id: entry.contentID, imdb: imdb, tmdb: nil) {
                 let ringing = LiveTVCalendarBell.isRinging(id: entry.contentID, imdb: imdb, tmdb: nil)

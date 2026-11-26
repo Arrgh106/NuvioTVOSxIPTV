@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// The calendar's cards (step 16), as Android's `CalendarRepository`: the
@@ -32,8 +33,21 @@ final class LiveTVCalendarStore: ObservableObject {
     /// Airing today leaves these out (as Android's "News & talk shows").
     private static let skippedTypes: Set<String> = ["News", "Talk Show", "Sports", "Panel Show"]
 
+    /// Episodes found in your Live TV guide (16d), by card key.
+    @Published private(set) var onTV: [String: LiveTVCalendarOnTV] = [:]
+    private var guideTask: Task<Void, Never>?
+    private var guideWatch: Set<AnyCancellable> = []
+
     init() {
         hidden = Self.loadHidden()
+        // A new guide or other channels: looked up again.
+        LiveTVGuide.shared.$updated.dropFirst().removeDuplicates()
+            .sink { _ in Task { @MainActor in LiveTVCalendarStore.shared.matchGuide() } }
+            .store(in: &guideWatch)
+        LiveTVStore.shared.$listRevision.dropFirst().removeDuplicates()
+            .debounce(for: .seconds(2), scheduler: RunLoop.main)
+            .sink { _ in Task { @MainActor in LiveTVCalendarStore.shared.matchGuide() } }
+            .store(in: &guideWatch)
         // The bell rung or silenced (here, on a page, in Nuvio's calendar):
         // the calendar follows.
         followObserver = NotificationCenter.default.addObserver(
@@ -177,6 +191,7 @@ final class LiveTVCalendarStore: ObservableObject {
             }
             self.airingDay = today
             self.airingLoading = false
+            self.matchGuide()
             // Then the pictures and logos TMDB has for shows not asked yet.
             guard LiveTVCalendarSources.tmdbReady else { return }
             var missing: [String] = []
@@ -404,6 +419,7 @@ final class LiveTVCalendarStore: ObservableObject {
             if fetch { self.updatedAt = Date() }
             self.isLoading = false
             self.progress = nil
+            self.matchGuide()
             if self.rebuildAfter {
                 self.rebuildAfter = false
                 self.build(fetch: true, force: false)
@@ -574,6 +590,44 @@ final class LiveTVCalendarStore: ObservableObject {
             result.append(entry)
         }
         return result
+    }
+
+    /// The calendar's episodes in your Live TV guide (16d): from three hours
+    /// ago to as far as the guide goes, read once in the background.
+    func matchGuide() {
+        guideTask?.cancel()
+        let guide = LiveTVGuide.shared
+        let live = LiveTVStore.shared
+        let all = live.channels(inGroup: LiveTVGroup.allID)
+        guard let database = guide.reader(), !all.isEmpty else { return }
+        let favorites = Set(live.favoriteIDs)
+        var byGuide: [String: [LiveTVCalendarGuideMatch.Channel]] = [:]
+        for channel in all {
+            guard let key = guide.guideID(for: channel)?.lowercased() else { continue }
+            byGuide[key, default: []].append(.init(id: channel.streamID, name: channel.name, logo: channel.logoURL,
+                                                   favorite: favorites.contains(channel.streamID)))
+        }
+        let now = Date()
+        let from = now.addingTimeInterval(-3 * 3600)
+        let to = now.addingTimeInterval(LiveTVGuide.futureWindow + 3600)
+        var keys = Set<String>()
+        let wanted = (entries + airing).compactMap { entry -> LiveTVCalendarGuideMatch.Wanted? in
+            guard entry.kind == .episode, !entry.streaming, let air = entry.air, air > from, air < to,
+                  keys.insert(entry.key).inserted else { return nil }
+            return .init(key: entry.key, title: entry.title, network: entry.network, air: air)
+        }
+        guard !wanted.isEmpty, !byGuide.isEmpty else {
+            onTV = [:]
+            return
+        }
+        let channels = byGuide
+        guideTask = Task.detached(priority: .utility) { [weak self] in
+            let found = LiveTVCalendarGuideMatch.match(wanted, channels: channels) { each in
+                database.scan(from: from, to: to, each)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.onTV = found }
+        }
     }
 
     /// TMDB's pictures and logos, a few at a time.

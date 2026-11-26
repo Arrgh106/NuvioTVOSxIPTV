@@ -299,3 +299,116 @@ enum LiveTVCalendarLogic {
         return cards
     }
 }
+
+// MARK: - On my TV (16d)
+
+/// An episode found in your Live TV guide: the channel that shows it best
+/// and when.
+struct LiveTVCalendarOnTV: Equatable, Sendable {
+    let channelID: Int
+    let channelName: String
+    let logo: String?
+    let start: Date
+    let end: Date
+    /// The guide's title.
+    let title: String
+    /// Other channels showing it then.
+    let others: Int
+}
+
+/// Episodes of the calendar matched in the guide, as Android's `withGuide`:
+/// the same show (its title, or the title followed by ": …", " - …",
+/// " (…)"), from 75 minutes before its air time to 200 after (a later feed);
+/// best first the channel named for the network, your favourites, HD, the
+/// time closest.
+enum LiveTVCalendarGuideMatch {
+    struct Wanted: Sendable {
+        let key: String
+        let title: String
+        let network: String?
+        let air: Date
+    }
+
+    struct Channel: Sendable {
+        let id: Int
+        let name: String
+        let logo: String?
+        let favorite: Bool
+    }
+
+    /// Lower case, no accents, letters and digits split by single spaces.
+    static func normalize(_ text: String) -> String {
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en"))
+        var result = ""
+        var space = false
+        for scalar in folded.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                if space, !result.isEmpty { result.append(" ") }
+                result.unicodeScalars.append(scalar)
+                space = false
+            } else if scalar != "'" && scalar != "\u{2019}" {
+                space = true
+            }
+        }
+        return result
+    }
+
+    /// The names a guide title may stand for a show by: itself, and what
+    /// comes before ": ", " - ", " – ", " (", " | ".
+    static func names(_ guideTitle: String) -> [String] {
+        var result = [normalize(guideTitle)]
+        for separator in [": ", " - ", " – ", " (", " | ", " / "] {
+            if let range = guideTitle.range(of: separator) {
+                let head = normalize(String(guideTitle[..<range.lowerBound]))
+                if head.count >= 3, !result.contains(head) { result.append(head) }
+            }
+        }
+        return result.filter { !$0.isEmpty }
+    }
+
+    /// For every wanted episode the best airing among `rows` (guide channel
+    /// key, start, stop, title), read once from the guide.
+    static func match(_ wanted: [Wanted], channels: [String: [Channel]],
+                      rows: (_ each: (String, Date, Date, String) -> Void) -> Void) -> [String: LiveTVCalendarOnTV] {
+        var byName: [String: [Wanted]] = [:]
+        for item in wanted {
+            let name = normalize(item.title)
+            if name.count >= 2 { byName[name, default: []].append(item) }
+        }
+        guard !byName.isEmpty else { return [:] }
+        var hits: [String: [(score: Int, channel: Channel, start: Date, end: Date, title: String)]] = [:]
+        rows { key, start, end, title in
+            guard let list = channels[key] else { return }
+            for name in names(title) {
+                guard let items = byName[name] else { continue }
+                for item in items {
+                    let offset = start.timeIntervalSince(item.air)
+                    guard offset >= -75 * 60, offset <= 200 * 60 else { continue }
+                    let network = item.network.map(normalize) ?? ""
+                    for channel in list {
+                        let channelName = normalize(channel.name)
+                        var score = 0
+                        if !network.isEmpty, channelName.hasPrefix(network) || channelName.contains(network) { score += 100 }
+                        if channel.favorite { score += 40 }
+                        if channelName.split(separator: " ").contains(where: { ["hd", "fhd", "uhd", "4k", "1080"].contains($0) }) {
+                            score += 5
+                        }
+                        score -= min(75, Int(abs(offset) / 60))
+                        hits[item.key, default: []].append((score, channel, start, end, title))
+                    }
+                }
+                break
+            }
+        }
+        var result: [String: LiveTVCalendarOnTV] = [:]
+        for (key, list) in hits {
+            let sorted = list.sorted { $0.score != $1.score ? $0.score > $1.score : $0.start < $1.start }
+            guard let best = sorted.first else { continue }
+            let channels = Set(list.map(\.channel.id))
+            result[key] = LiveTVCalendarOnTV(
+                channelID: best.channel.id, channelName: best.channel.name, logo: best.channel.logo,
+                start: best.start, end: best.end, title: best.title, others: channels.count - 1)
+        }
+        return result
+    }
+}
