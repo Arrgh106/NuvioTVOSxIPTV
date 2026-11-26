@@ -36,7 +36,50 @@ struct LiveTVCalendarSettingsView: View {
                     accentColor: accentColor,
                     optionLabel: { Self.countryLabel($0) }
                 )
+                LiveTVSettingsRows.option(
+                    title: L10n.string("livetv_settings_calendar_languages", fallback: "Airing Today: Streaming Languages"),
+                    subtitle: L10n.string("livetv_settings_calendar_languages_detail", fallback: "TV in your country is always shown. Streaming from elsewhere only in these languages"),
+                    selection: $settings.calendarAiringLanguages,
+                    options: LiveTVSettings.calendarAiringLanguageChoices,
+                    accentColor: accentColor,
+                    optionLabel: { Self.languagesLabel($0) }
+                )
             }
+            LiveTVSettingsRows.group(
+                title: L10n.string("livetv_settings_calendar_ratings", fallback: "Ratings"),
+                subtitle: L10n.string("livetv_settings_calendar_ratings_detail", fallback: "Shown for the card in focus, always in the same places, in the order of Settings → Rating Providers & Order")
+            ) {
+                ForEach(TvRatingVisual.all, id: \.source) { visual in
+                    LiveTVSettingsRows.toggle(
+                        title: visual.displayName,
+                        subtitle: "",
+                        isOn: rating(visual.source),
+                        accentColor: accentColor
+                    )
+                }
+            }
+        }
+    }
+
+    /// One rating on or off.
+    private func rating(_ source: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.calendarRatings.split(separator: ",").contains { $0 == source } },
+            set: { on in
+                var list = settings.calendarRatings.split(separator: ",").map(String.init).filter { $0 != source }
+                if on { list.append(source) }
+                settings.calendarRatings = list.joined(separator: ",")
+            })
+    }
+
+    /// "German", "German and English", "All languages".
+    @MainActor static func languagesLabel(_ choice: String) -> String {
+        let code = LiveTVCalendarSettings.mainLanguageCode
+        let main = Locale.current.localizedString(forLanguageCode: code) ?? code
+        switch choice {
+        case "all": return L10n.string("livetv_settings_calendar_lang_all", fallback: "All languages")
+        case "local": return main
+        default: return L10n.format("livetv_cal_lang_and_english_format", fallback: "%@ and English", main)
         }
     }
 

@@ -110,7 +110,10 @@ final class LiveTVCalendarStore: ObservableObject {
         let zone = LiveTVCalendarSettings.timeZone
         let now = Date()
         let today = LiveTVCalendarLogic.day(of: now, in: zone)
-        if !force, airingDay == today, !airing.isEmpty || airingLoading { return }
+        let languages = LiveTVCalendarSettings.airingLanguages
+        let made = LiveTVSettings.shared.calendarAiringLanguages + "|" + LiveTVCalendarSettings.country
+        if !force, airingDay == today, airingMadeWith == made, !airing.isEmpty || airingLoading { return }
+        airingMadeWith = made
         airingLoading = true
         let country = LiveTVCalendarSettings.country
         Task { [weak self] in
@@ -125,6 +128,13 @@ final class LiveTVCalendarStore: ObservableObject {
                       let id = body["id"] as? Int, let number = item["number"] as? Int, let season = item["season"] as? Int,
                       let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
                 if let type = body["type"] as? String, Self.skippedTypes.contains(type) { continue }
+                // TV in your country is shown (it's dubbed there); streaming
+                // from elsewhere only in your languages.
+                if let languages, let language = body["language"] as? String, !languages.contains(language) {
+                    let local = ((body["network"] as? [String: Any])?["country"] as? [String: Any])?["code"] as? String
+                    let web = ((body["webChannel"] as? [String: Any])?["country"] as? [String: Any])?["code"] as? String
+                    if local != country, web != country { continue }
+                }
                 let imdb = (body["externals"] as? [String: Any])?["imdb"] as? String
                 let contentID = imdb ?? "tvmaze:\(id)"
                 guard !self.isHidden(contentID, imdb: imdb), seenShows.insert("\(contentID)|\(season)|\(number)").inserted else { continue }
@@ -194,6 +204,7 @@ final class LiveTVCalendarStore: ObservableObject {
     }
 
     private var task: Task<Void, Never>?
+    private var airingMadeWith: String?
     private var builtOnce = false
     /// The settings the cards were made with (a change in Settings: made
     /// again).
@@ -632,6 +643,59 @@ enum LiveTVCalendarSettings {
     @MainActor static var country: String {
         let chosen = LiveTVSettings.shared.calendarCountry
         return chosen.isEmpty ? Locale.current.region?.identifier ?? "US" : chosen
+    }
+
+    /// The ratings shown on the card in focus, in the app's rating order.
+    @MainActor static var ratingVisuals: [TvRatingVisual] {
+        let chosen = Set(LiveTVSettings.shared.calendarRatings.split(separator: ",").map(String.init))
+        return AddonRatingsService.sortRatings(TvRatingVisual.all.filter { chosen.contains($0.source) }, by: { $0.source })
+    }
+
+    /// The languages a country's people speak, in TVmaze's words
+    /// ("German"); English for none known.
+    static func languages(of country: String) -> Set<String> {
+        let english = Locale(identifier: "en")
+        var result = Set<String>()
+        for id in Locale.availableIdentifiers {
+            let locale = Locale(identifier: id)
+            guard locale.region?.identifier == country, let code = locale.language.languageCode?.identifier,
+                  let name = english.localizedString(forLanguageCode: code) else { continue }
+            result.insert(name)
+        }
+        return result.isEmpty ? ["English"] : result
+    }
+
+    /// Airing today's streaming in these languages (nil: all).
+    @MainActor static var airingLanguages: Set<String>? {
+        switch LiveTVSettings.shared.calendarAiringLanguages {
+        case "all": return nil
+        case "local": return languages(of: country)
+        default: return languages(of: country).union(["English"])
+        }
+    }
+
+    /// "German", "German and English", "all languages", in the app's language.
+    @MainActor static var airingLanguagesLabel: String {
+        let main = Locale.current.localizedString(forLanguageCode: mainLanguageCode) ?? mainLanguageCode
+        switch LiveTVSettings.shared.calendarAiringLanguages {
+        case "all": return L10n.string("livetv_cal_lang_all", fallback: "all languages")
+        case "local": return main
+        default:
+            return L10n.format("livetv_cal_lang_and_english_format", fallback: "%@ and English", main)
+        }
+    }
+
+    /// The country's first language ("de" for DE).
+    @MainActor static var mainLanguageCode: String {
+        let country = country
+        if Locale.current.region?.identifier == country, let code = Locale.current.language.languageCode?.identifier {
+            return code
+        }
+        for id in Locale.availableIdentifiers.sorted() {
+            let locale = Locale(identifier: id)
+            if locale.region?.identifier == country, let code = locale.language.languageCode?.identifier { return code }
+        }
+        return "en"
     }
 
     /// What the cards depend on in Settings: a change makes them again.

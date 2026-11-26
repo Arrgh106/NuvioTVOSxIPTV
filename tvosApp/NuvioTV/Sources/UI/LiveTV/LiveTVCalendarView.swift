@@ -176,11 +176,13 @@ struct LiveTVCalendarView: View {
                 case .list:
                     twoPane(focused) { content(list) }
                 case .week:
-                    details(focused, compact: true)
-                        .padding(.horizontal, 60)
-                        .padding(.top, 12)
-                        .frame(height: 170, alignment: .topLeading)
-                    LiveTVCalendarWeek(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                    LiveTVCalendarWeek(
+                        entries: store.entries,
+                        details: AnyView(details(focused, compact: true)
+                            .padding(.horizontal, 60)
+                            .frame(height: 150, alignment: .topLeading)),
+                        onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                        .padding(.top, 16)
                 case .month:
                     LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
                         .padding(.top, 16)
@@ -246,8 +248,9 @@ struct LiveTVCalendarView: View {
             .padding(.top, 14)
             // Not your calendar: everything new on TV today.
             Text(L10n.format("livetv_cal_airing_detail_format",
-                             fallback: "Everything with a new episode today, on TV in %@ and streaming, not only your shows. Following shows only the ones you follow.",
-                             Self.countryName(LiveTVCalendarSettings.country)))
+                             fallback: "Everything with a new episode today on TV in %@, and streaming in %@, not only your shows. Following shows only the ones you follow.",
+                             Self.countryName(LiveTVCalendarSettings.country),
+                             LiveTVCalendarSettings.airingLanguagesLabel))
                 .font(.system(size: 19))
                 .foregroundColor(.white.opacity(0.6))
                 .lineLimit(2)
@@ -339,17 +342,18 @@ struct LiveTVCalendarView: View {
                 ProgressView()
             }
             if ownCalendar {
-                Picker(L10n.string("livetv_cal_view", fallback: "View"), selection: $mode) {
-                    ForEach(Mode.allCases) { item in
-                        Text(item.title).tag(item)
+                // The same buttons as the tabs on the left.
+                ForEach(Mode.allCases) { item in
+                    Button {
+                        guard mode != item else { return }
+                        mode = item
+                        focusedKey = nil
+                        LiveTVCalendarSettings.view = item.rawValue
+                        if item != .list, tab == .recent { tab = .upcoming }
+                    } label: {
+                        Text(item.title)
+                            .font(.system(size: 22, weight: mode == item ? .bold : .regular))
                     }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 380)
-                .onChange(of: mode) { _, now in
-                    focusedKey = nil
-                    LiveTVCalendarSettings.view = now.rawValue
-                    if now != .list, tab == .recent { tab = .upcoming }
                 }
             }
             Button {
@@ -419,9 +423,21 @@ struct LiveTVCalendarView: View {
                         .foregroundColor(.white.opacity(0.85))
                         .lineLimit(1)
                 }
-                Text(Self.when(entry))
-                    .font(.system(size: 22))
-                    .foregroundColor(LiveTVTheme.accent)
+                HStack(spacing: 10) {
+                    let logo = entry.networkLogo.flatMap(URL.init(string:))
+                    Text(Self.when(entry, network: logo == nil))
+                        .font(.system(size: 22))
+                        .foregroundColor(LiveTVTheme.accent)
+                        .lineLimit(1)
+                    if let logo, let network = entry.network {
+                        Text("·").font(.system(size: 22)).foregroundColor(LiveTVTheme.accent)
+                        LiveTVCalendarLogo(url: logo, style: .network, box: CGSize(width: 120, height: 30), area: 1_900,
+                                           alignment: .leading) {
+                            Text(network).font(.system(size: 22)).foregroundColor(LiveTVTheme.accent)
+                        }
+                        .id(logo)
+                    }
+                }
                 if compact {
                     if let summary = entry.summary, !entry.spoiler {
                         Text(summary)
@@ -447,10 +463,7 @@ struct LiveTVCalendarView: View {
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundColor(.white.opacity(0.75))
         }
-        let badges = TvRatingBadge.badges(from: about.shownRatings(entry))
-        if !badges.isEmpty {
-            TvHeroRatingsRow(badges: badges, iconHeight: 26, fontSize: 22, maxCount: 5)
-        }
+        ratingsRow(entry)
         if let facts = meta.flatMap(Self.facts) {
             Text(facts)
                 .font(.system(size: 20))
@@ -481,7 +494,9 @@ struct LiveTVCalendarView: View {
             }
             .padding(.top, 4)
         }
-        if let cast = meta?.cast?.filter({ !$0.isEmpty }), !cast.isEmpty {
+        if let people = about.people[entry.contentID], !people.isEmpty {
+            castRow(people)
+        } else if let cast = meta?.cast?.filter({ !$0.isEmpty }), !cast.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n.string("livetv_cal_cast", fallback: "Cast"))
                     .font(.system(size: 18, weight: .semibold))
@@ -502,6 +517,71 @@ struct LiveTVCalendarView: View {
                 .foregroundColor(.white.opacity(0.55))
                 .lineLimit(1)
         }
+    }
+
+    /// The ratings chosen in Settings → Calendar, in the app's rating
+    /// order; one not known (yet) shows "–", so none ever moves.
+    @ViewBuilder
+    private func ratingsRow(_ entry: LiveTVCalendarEntry) -> some View {
+        let chosen = LiveTVCalendarSettings.ratingVisuals
+        if !chosen.isEmpty, about.meta(entry) != nil || entry.contentID.hasPrefix("tt") {
+            let values = about.ratingValues(entry)
+            HStack(spacing: 20) {
+                ForEach(chosen, id: \.source) { visual in
+                    HStack(spacing: 7) {
+                        TvRatingIcon(visual: visual, height: 26)
+                        Text(values[visual.source].map { visual.format($0.value) } ?? "–")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundColor(.white.opacity(values[visual.source] == nil ? 0.35 : 0.85))
+                            .lineLimit(1)
+                            .frame(width: 62, alignment: .leading)
+                    }
+                }
+            }
+            .frame(height: 30, alignment: .leading)
+        }
+    }
+
+    /// Who's in it: a picture and a name each.
+    private func castRow(_ people: [TmdbPersonMetadata]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("livetv_cal_cast", fallback: "Cast"))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.white.opacity(0.5))
+            HStack(alignment: .top, spacing: 16) {
+                ForEach(people.prefix(7)) { person in
+                    VStack(spacing: 6) {
+                        ZStack {
+                            Circle().fill(Color.white.opacity(0.12))
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 26))
+                                .foregroundColor(.white.opacity(0.35))
+                            if let url = person.profileURL.flatMap(URL.init(string:)) {
+                                AsyncImage(url: url) { phase in
+                                    if case .success(let image) = phase {
+                                        image.resizable().aspectRatio(contentMode: .fill)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(width: 72, height: 72)
+                        .clipShape(Circle())
+                        Text(person.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .lineLimit(1)
+                        if let role = person.role, !role.isEmpty {
+                            Text(role)
+                                .font(.system(size: 13))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(width: 96)
+                }
+            }
+        }
+        .padding(.top, 4)
     }
 
     /// "2024 · Drama, Crime · 45 min · Continuing".
@@ -619,15 +699,16 @@ struct LiveTVCalendarView: View {
     /// 5 → "05", 12 → "12".
     static func two(_ number: Int) -> String { number < 10 && number >= 0 ? "0\(number)" : String(number) }
 
-    /// "Today 20:15 · NBC", "Tomorrow · time not announced · Paramount+".
-    static func when(_ entry: LiveTVCalendarEntry) -> String {
+    /// "Today · 20:15 · NBC", "Tomorrow · time not announced · Paramount+"
+    /// (`network` false: its logo stands after it).
+    static func when(_ entry: LiveTVCalendarEntry, network: Bool = true) -> String {
         var parts = [dayTitle(entry.day)]
         if let air = entry.air {
-            parts[0] += " " + clock(air)
+            parts.append(clock(air))
         } else if entry.kind == .episode {
             parts.append(L10n.string("livetv_cal_no_time", fallback: "time not announced"))
         }
-        if let network = entry.network { parts.append(network) }
+        if network, let name = entry.network { parts.append(name) }
         return parts.joined(separator: " · ")
     }
 
@@ -914,15 +995,19 @@ enum LiveTVCalendarLogoMaker {
         if white {
             // On a box or a dark disc: only the light parts (the lettering);
             // standing free: the whole shape.
-            var opaque = 0, light = 0, dark = 0
+            var opaque = 0, light = 0, dark = 0, colour = 0
             for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i + 3] > 128 {
                 opaque += 1
                 let lum = luminance(i)
                 if lum > 0.7 { light += 1 } else if lum < 0.3 { dark += 1 }
+                // Strongly coloured (a box behind letters: RTL's squares).
+                let high = max(pixels[i], pixels[i + 1], pixels[i + 2]), low = min(pixels[i], pixels[i + 1], pixels[i + 2])
+                if lum <= 0.7, high > 0, Double(high - low) / Double(high) > 0.45 { colour += 1 }
             }
             let cover = Double(opaque) / Double(width * height)
             let share = { (count: Int) -> Double in opaque > 0 ? Double(count) / Double(opaque) : 0 }
             let lettering = cover > 0.85 || (share(light) > 0.12 && share(dark) > 0.2)
+                || (share(light) > 0.05 && share(colour) > 0.45)
             for i in stride(from: 0, to: pixels.count, by: 4) {
                 var alpha = Double(pixels[i + 3]) / 255
                 if lettering { alpha *= min(1, max(0, (luminance(i) - 0.55) / 0.25)) }
@@ -1010,6 +1095,8 @@ private struct LiveTVCalendarPager: View {
 /// The Week: a column per day (today tinted), small cards in each.
 private struct LiveTVCalendarWeek: View {
     let entries: [LiveTVCalendarEntry]
+    /// The card in focus, between the pager and the days.
+    let details: AnyView
     let onFocus: (LiveTVCalendarEntry) -> Void
     let onOpen: (LiveTVCalendarEntry) -> Void
 
@@ -1038,6 +1125,7 @@ private struct LiveTVCalendarWeek: View {
                 canBack: offset > Self.range.lowerBound, canForward: offset < Self.range.upperBound,
                 onMove: { step in offset = step == 0 ? 0 : min(max(offset + step, Self.range.lowerBound), Self.range.upperBound) })
                 .padding(.horizontal, 60)
+            details
             GeometryReader { room in
             let column = max(120, (room.size.width - 2 * 48 - 6 * 12) / 7)
             HStack(alignment: .top, spacing: 12) {

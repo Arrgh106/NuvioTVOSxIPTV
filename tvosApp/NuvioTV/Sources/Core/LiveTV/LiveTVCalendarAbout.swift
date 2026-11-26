@@ -10,6 +10,8 @@ final class LiveTVCalendarAbout: ObservableObject {
 
     @Published private(set) var metas: [String: NuvioMeta] = [:]
     @Published private(set) var ratings: [String: [NuvioExternalRating]] = [:]
+    /// TMDB's cast with pictures (TMDB on).
+    @Published private(set) var people: [String: [TmdbPersonMetadata]] = [:]
 
     private var asking: Set<String> = []
     private var failedAt: [String: Date] = [:]
@@ -23,6 +25,26 @@ final class LiveTVCalendarAbout: ObservableObject {
         guard let meta = metas[entry.contentID] else { return [] }
         return AddonRatingsService.heroDisplayRatings(
             for: meta, fetched: ratings[entry.contentID] ?? AddonRatingsService.cachedHeroRatings(for: meta))
+    }
+
+    /// Every rating known for a card's title, by source ("imdb", "tmdb"…).
+    func ratingValues(_ entry: LiveTVCalendarEntry) -> [String: NuvioExternalRating] {
+        var result: [String: NuvioExternalRating] = [:]
+        func add(_ rating: NuvioExternalRating) {
+            guard rating.value.isFinite, rating.value > 0 else { return }
+            let key = AddonRatingsService.normalizedSourceKey(rating.source)
+            if result[key] == nil { result[key] = rating }
+        }
+        let id = entry.contentID
+        (ratings[id] ?? []).forEach(add)
+        if let meta = metas[id] {
+            (AddonRatingsService.cachedHeroRatings(for: meta) ?? []).forEach(add)
+            (meta.externalRatings ?? []).forEach(add)
+            if let imdb = meta.rating, imdb > 0 {
+                add(NuvioExternalRating(source: MdbListDetailsService.providerIMDb, value: imdb, max: 10))
+            }
+        }
+        return result
     }
 
     /// The card in focus changed: its title is asked after a short pause,
@@ -52,7 +74,16 @@ final class LiveTVCalendarAbout: ObservableObject {
             return
         }
         metas[id] = meta
-        let found = await AddonRatingsService.fetchHeroRatings(for: meta)
+        let found: [NuvioExternalRating]
+        if AddonRatingsService.isHomeHeroRatingsEnabled() {
+            found = await AddonRatingsService.fetchHeroRatings(for: meta)
+        } else {
+            async let addons = AddonRatingsService.fetchRatings(forOptional: meta)
+            async let mdblist = MdbListDetailsService.fetchRatings(forOptional: meta)
+            found = await mdblist + addons
+        }
         if !found.isEmpty { ratings[id] = found }
+        let cast = (await TmdbDetailsService.fetchCredits(for: meta))?.people.filter { $0.role != "Director" && $0.role != "Creator" } ?? []
+        if !cast.isEmpty { people[id] = cast }
     }
 }

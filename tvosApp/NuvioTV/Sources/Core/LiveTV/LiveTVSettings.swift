@@ -55,6 +55,16 @@ final class LiveTVSettings: ObservableObject {
     @Published var calendarCountry = "" {
         didSet { if !loading { ProfileSettings.current.set(calendarCountry, forKey: Key.calendarCountry) } }
     }
+    /// The ratings the calendar shows (sources, comma separated).
+    @Published var calendarRatings = "imdb,tmdb,tomatoes,metacritic" {
+        didSet { if !loading { ProfileSettings.current.set(calendarRatings, forKey: Key.calendarRatings) } }
+    }
+    /// Airing today's streaming: "local" (the country's languages),
+    /// "localEnglish" (and English), "all".
+    @Published var calendarAiringLanguages = "localEnglish" {
+        didSet { if !loading { ProfileSettings.current.set(calendarAiringLanguages, forKey: Key.calendarAiringLanguages) } }
+    }
+    static let calendarAiringLanguageChoices = ["local", "localEnglish", "all"]
     static let calendarCountries = [
         "", "US", "GB", "IE", "CA", "AU", "NZ", "DE", "AT", "CH", "FR", "BE", "NL", "LU", "ES", "PT", "IT",
         "DK", "SE", "NO", "FI", "PL", "CZ", "GR", "TR", "BR", "MX", "AR", "IN", "JP", "KR", "ZA",
@@ -106,6 +116,8 @@ final class LiveTVSettings: ObservableObject {
         static let calendarTimeZone = prefix + "calendarTimeZone"
         static let calendarHideSpoilers = prefix + "calendarHideSpoilers"
         static let calendarCountry = prefix + "calendarCountry"
+        static let calendarRatings = prefix + "calendarRatings"
+        static let calendarAiringLanguages = prefix + "calendarAiringLanguages"
         static let timeshift = prefix + "timeshift"
         static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
@@ -160,6 +172,10 @@ final class LiveTVSettings: ObservableObject {
         assign(\.calendarHideSpoilers, bool(Key.calendarHideSpoilers, true))
         let country = store.string(forKey: Key.calendarCountry) ?? ""
         if country != calendarCountry { calendarCountry = country }
+        let ratings = store.string(forKey: Key.calendarRatings) ?? "imdb,tmdb,tomatoes,metacritic"
+        if ratings != calendarRatings { calendarRatings = ratings }
+        let languages = store.string(forKey: Key.calendarAiringLanguages) ?? "localEnglish"
+        if languages != calendarAiringLanguages { calendarAiringLanguages = languages }
         assign(\.timeshift, bool(Key.timeshift, true))
         let minutes = store.integer(forKey: Key.timeshiftMinutes)
         let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30
