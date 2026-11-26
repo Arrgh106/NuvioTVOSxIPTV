@@ -48,6 +48,18 @@ final class LiveTVSettings: ObservableObject {
     @Published var calendarTimeZone = "" {
         didSet { if !loading { ProfileSettings.current.set(calendarTimeZone, forKey: Key.calendarTimeZone) } }
     }
+    /// The calendar hides titles, pictures and text of episodes past the
+    /// next one you'd watch (on, as Android).
+    @Published var calendarHideSpoilers = true { didSet { save(calendarHideSpoilers, Key.calendarHideSpoilers) } }
+    /// The country of films' release dates ("": the Apple TV's region).
+    @Published var calendarCountry = "" {
+        didSet { if !loading { ProfileSettings.current.set(calendarCountry, forKey: Key.calendarCountry) } }
+    }
+    static let calendarCountries = [
+        "", "US", "GB", "IE", "CA", "AU", "NZ", "DE", "AT", "CH", "FR", "BE", "NL", "LU", "ES", "PT", "IT",
+        "DK", "SE", "NO", "FI", "PL", "CZ", "GR", "TR", "BR", "MX", "AR", "IN", "JP", "KR", "ZA",
+    ]
+
     /// The calendar's choices: the Apple TV's, then zones around the world.
     static let calendarTimeZones = [
         "", "Europe/London", "Europe/Lisbon", "Europe/Berlin", "Europe/Paris", "Europe/Madrid", "Europe/Rome",
@@ -92,6 +104,8 @@ final class LiveTVSettings: ObservableObject {
         static let reverseZap = prefix + "reverseZap"
         static let backupChannel = prefix + "backupChannel"
         static let calendarTimeZone = prefix + "calendarTimeZone"
+        static let calendarHideSpoilers = prefix + "calendarHideSpoilers"
+        static let calendarCountry = prefix + "calendarCountry"
         static let timeshift = prefix + "timeshift"
         static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
@@ -143,6 +157,9 @@ final class LiveTVSettings: ObservableObject {
         assign(\.backupChannel, bool(Key.backupChannel, true))
         let zone = store.string(forKey: Key.calendarTimeZone) ?? ""
         if zone != calendarTimeZone { calendarTimeZone = zone }
+        assign(\.calendarHideSpoilers, bool(Key.calendarHideSpoilers, true))
+        let country = store.string(forKey: Key.calendarCountry) ?? ""
+        if country != calendarCountry { calendarCountry = country }
         assign(\.timeshift, bool(Key.timeshift, true))
         let minutes = store.integer(forKey: Key.timeshiftMinutes)
         let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30

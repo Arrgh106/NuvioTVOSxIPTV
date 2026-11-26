@@ -150,34 +150,8 @@ struct LiveTVSettingsView: View {
                 )
             }
 
-            LiveTVSettingsRows.group(
-                title: L10n.string("livetv_settings_calendar", fallback: "Calendar"),
-                subtitle: L10n.string("livetv_settings_calendar_subtitle", fallback: "The days and times of your shows and films")
-            ) {
-                LiveTVSettingsRows.option(
-                    title: L10n.string("livetv_settings_calendar_zone", fallback: "Time Zone"),
-                    subtitle: L10n.string("livetv_settings_calendar_zone_detail", fallback: "The calendar shows days and air times in this time zone"),
-                    selection: $settings.calendarTimeZone,
-                    options: LiveTVSettings.calendarTimeZones,
-                    accentColor: accentColor,
-                    optionLabel: { Self.zoneLabel($0) }
-                )
-            }
-
             reminderList
         }
-    }
-
-    /// "Apple TV (Berlin, GMT+1)", "New York (GMT-5)".
-    static func zoneLabel(_ id: String) -> String {
-        let zone = id.isEmpty ? TimeZone.current : TimeZone(identifier: id) ?? .current
-        let city = zone.identifier.split(separator: "/").last.map { $0.replacingOccurrences(of: "_", with: " ") } ?? zone.identifier
-        let seconds = zone.secondsFromGMT()
-        let offset = seconds % 3600 == 0
-            ? String(format: "GMT%+d", seconds / 3600)
-            : String(format: "GMT%+d:%02d", seconds / 3600, abs(seconds / 60 % 60))
-        let place = "\(city) (\(offset))"
-        return id.isEmpty ? L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@", place) : place
     }
 }
 

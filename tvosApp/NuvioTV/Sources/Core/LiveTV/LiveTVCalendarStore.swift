@@ -20,9 +20,9 @@ final class LiveTVCalendarStore: ObservableObject {
 
     private var task: Task<Void, Never>?
     private var builtOnce = false
-    /// The time zone the cards were made for (a change in Settings: made
+    /// The settings the cards were made with (a change in Settings: made
     /// again).
-    private var builtZone: String?
+    private var builtWith: String?
 
     /// At most this many shows and films, as Android.
     private static let maxShows = 400
@@ -33,7 +33,11 @@ final class LiveTVCalendarStore: ObservableObject {
     /// The calendar screen opened: what's on disk at once, then fresh data
     /// when it's older than 30 minutes.
     func opened() {
-        if !builtOnce || builtZone != LiveTVCalendarSettings.timeZone.identifier { build(fetch: false, force: false) }
+        let country = builtWith?.split(separator: "|").last.map(String.init)
+        if !builtOnce || builtWith != LiveTVCalendarSettings.signature {
+            // Another country: its film dates are asked for.
+            build(fetch: country != nil && country != LiveTVCalendarSettings.country, force: false)
+        }
         if updatedAt.map({ Date().timeIntervalSince($0) > 30 * 60 }) ?? true { build(fetch: true, force: false) }
     }
 
@@ -162,7 +166,7 @@ final class LiveTVCalendarStore: ObservableObject {
         if isLoading, !force { return }
         task?.cancel()
         builtOnce = true
-        builtZone = LiveTVCalendarSettings.timeZone.identifier
+        builtWith = LiveTVCalendarSettings.signature
         isLoading = fetch
         task = Task { [weak self] in
             guard let self else { return }
@@ -405,15 +409,18 @@ enum LiveTVCalendarSettings {
     static let unwatchedOnlyKey = "livetv.calendar.unwatchedOnly"
 
     /// Titles, pictures and text of episodes past what you've watched stay
-    /// hidden (on by default, as Android).
-    static var hideSpoilers: Bool {
-        (ProfileSettings.current.object(forKey: hideSpoilersKey) as? Bool) ?? true
+    /// hidden (Settings → Calendar; on by default, as Android).
+    @MainActor static var hideSpoilers: Bool { LiveTVSettings.shared.calendarHideSpoilers }
+
+    /// The country for film release dates (Settings → Calendar; the Apple
+    /// TV's region by default).
+    @MainActor static var country: String {
+        let chosen = LiveTVSettings.shared.calendarCountry
+        return chosen.isEmpty ? Locale.current.region?.identifier ?? "US" : chosen
     }
 
-    /// The country for film release dates: the Apple TV's region.
-    static var country: String {
-        ProfileSettings.current.string(forKey: countryKey) ?? Locale.current.region?.identifier ?? "US"
-    }
+    /// What the cards depend on in Settings: a change makes them again.
+    @MainActor static var signature: String { "\(timeZone.identifier)|\(hideSpoilers)|\(country)" }
 
     /// The time zone of the calendar's days and times: the Apple TV's, or
     /// the one chosen in Settings → Live TV → Calendar.
