@@ -121,6 +121,9 @@ actor LiveTVCalendarSources {
         return nil
     }
 
+    /// TMDB is on with a key: film dates, pictures and logos come.
+    @MainActor static var tmdbReady: Bool { tmdbKey != nil }
+
     /// Nuvio's TMDB key while TMDB is on (as every TMDB feature).
     @MainActor private static var tmdbKey: String? {
         let store = ProfileSettings.current

@@ -56,6 +56,15 @@ struct LiveTVCalendarView: View {
                     .padding(.horizontal, 60)
                     .padding(.top, 30)
                     .focusSection()
+                // Without TMDB: no films, wide pictures or logos.
+                if !LiveTVCalendarSources.tmdbReady {
+                    Label(L10n.string("livetv_cal_tmdb_off", fallback: "Films, pictures and logos need TMDB: turn it on and add your API key in Settings → TMDB"),
+                          systemImage: "info.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 60)
+                        .padding(.top, 8)
+                }
                 details(focused)
                     .padding(.horizontal, 60)
                     .frame(height: 230, alignment: .bottomLeading)
