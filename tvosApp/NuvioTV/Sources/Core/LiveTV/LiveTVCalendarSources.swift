@@ -286,6 +286,79 @@ actor LiveTVCalendarSources {
         return show
     }
 
+    /// TVmaze's schedule of coming episodes worldwide (one request, kept
+    /// 12 h): the shows in it by IMDb id with their coming episodes. Their
+    /// TVmaze ids are kept too, so they need no lookup. For a first load:
+    /// coming episodes at once, before each show is asked.
+    func comingShows() async -> [String: LiveTVCalendarShow] {
+        let file = url("schedule_full.json")
+        var data: Data?
+        if let file, let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+           let modified = attributes[.modificationDate] as? Date, Date().timeIntervalSince(modified) < 12 * 3600 {
+            data = try? Data(contentsOf: file)
+        }
+        if data == nil, let link = URL(string: "https://api.tvmaze.com/schedule/full") {
+            await CalendarTvmazeRateLimiter.shared.wait()
+            if let (body, response) = try? await session.data(from: link),
+               let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) {
+                data = body
+                if let file { try? body.write(to: file, options: .atomic) }
+            }
+        }
+        guard let data, let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [:] }
+        if ids == nil { ids = read([String: IDRecord].self, "tvmaze_ids.json") ?? [:] }
+        let stamp = ISO8601DateFormatter()
+        var shows: [Int: LiveTVCalendarShow] = [:]
+        var imdbOf: [Int: String] = [:]
+        for item in list {
+            guard let body = (item["_embedded"] as? [String: Any])?["show"] as? [String: Any],
+                  let id = body["id"] as? Int,
+                  let imdb = (body["externals"] as? [String: Any])?["imdb"] as? String, imdb.hasPrefix("tt"),
+                  let number = item["number"] as? Int, let season = item["season"] as? Int,
+                  let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
+            if shows[id] == nil {
+                let network = body["network"] as? [String: Any]
+                let web = body["webChannel"] as? [String: Any]
+                let image = body["image"] as? [String: Any]
+                shows[id] = LiveTVCalendarShow(
+                    id: id, name: (body["name"] as? String) ?? "", status: body["status"] as? String,
+                    network: (network?["name"] as? String) ?? (web?["name"] as? String),
+                    streaming: network == nil && web != nil,
+                    image: Self.https((image?["original"] as? String) ?? (image?["medium"] as? String)),
+                    background: nil, imdb: imdb,
+                    scheduleTime: (body["schedule"] as? [String: Any])?["time"] as? String,
+                    networkZone: (network?["country"] as? [String: Any])?["timezone"] as? String,
+                    episodes: [], fetchedAt: .distantPast)
+                imdbOf[id] = imdb
+                if (ids?[imdb]?.id ?? 0) == 0 { ids?[imdb] = IDRecord(id: id, at: Date()) }
+            }
+            let airtime = (item["airtime"] as? String) ?? ""
+            let picture = item["image"] as? [String: Any]
+            shows[id]?.episodes.append(LiveTVCalendarEpisode(
+                season: season, number: number,
+                name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
+                airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
+                airdate: airdate, runtime: item["runtime"] as? Int,
+                image: Self.https((picture?["original"] as? String) ?? (picture?["medium"] as? String)),
+                summary: LiveTVCalendarLogic.plainText(item["summary"] as? String),
+                seasonEpisodes: nil))
+        }
+        if let ids { write(ids, "tvmaze_ids.json") }
+        var result: [String: LiveTVCalendarShow] = [:]
+        for (id, show) in shows {
+            guard let imdb = imdbOf[id] else { continue }
+            var sorted = show
+            sorted.episodes.sort { ($0.season, $0.number) < ($1.season, $1.number) }
+            result[imdb] = sorted
+        }
+        return result
+    }
+
+    /// Whether a show is kept on disk (any age).
+    func isKept(_ id: Int) -> Bool {
+        url("show_\(id).json").map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
     /// Asked again: not kept, changed on TVmaze since it was kept, or (no
     /// list of changes) old by the lifetimes above. A show kept before the
     /// week of changes is asked again too.

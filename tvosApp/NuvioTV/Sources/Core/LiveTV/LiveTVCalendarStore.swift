@@ -204,15 +204,39 @@ final class LiveTVCalendarStore: ObservableObject {
         let today = LiveTVCalendarLogic.day(of: now, in: zone)
         let from = LiveTVCalendarLogic.day(today, plus: -Self.daysBack)
         let to = LiveTVCalendarLogic.day(today, plus: Self.daysAhead)
-        let hideSpoilers = LiveTVCalendarSettings.hideSpoilers
         var result: [LiveTVCalendarEntry] = []
         var usedShows = Set<Int>()
 
-        for (index, candidate) in shows.enumerated() {
+        // A first load: TVmaze's schedule of coming episodes gives the
+        // shows on air at once (cards in seconds, no lookup for them); each
+        // show is still asked after, those on air first.
+        var ordered = shows
+        var provisional: [LiveTVCalendarEntry] = []
+        if fetch {
+            var unknown = 0
+            for candidate in shows {
+                if await sources.tvmazeID(imdb: candidate.imdb, tmdb: candidate.tmdb, fetch: false) == nil { unknown += 1 }
+            }
+            if unknown > 20 {
+                let coming = await sources.comingShows()
+                for candidate in shows {
+                    guard let imdb = candidate.imdb, let show = coming[imdb], !(await sources.isKept(show.id)) else { continue }
+                    provisional += cards(show: show, candidate: candidate, contentID: imdb, art: arts[imdb],
+                                         seen: seen, window: (from, to), today: today, now: now, zone: zone)
+                }
+                ordered = shows.filter { $0.imdb.map { coming[$0] != nil } ?? false }
+                    + shows.filter { !($0.imdb.map { coming[$0] != nil } ?? false) }
+                if !provisional.isEmpty { entries = Self.merged(provisional + previous) }
+            }
+        }
+
+        for (index, candidate) in ordered.enumerated() {
             if Task.isCancelled { return result }
             if fetch, index % 5 == 0 {
-                progress = (index, shows.count)
-                if index > 0 { entries = Self.merged(result + previous.filter { !asked.contains($0.contentID) }) }
+                progress = (index, ordered.count)
+                if index > 0 {
+                    entries = Self.merged(result + (provisional + previous).filter { !asked.contains($0.contentID) })
+                }
             }
             let tvmazeID: Int?
             if candidate.id.hasPrefix("tvmaze:") {
@@ -224,7 +248,6 @@ final class LiveTVCalendarStore: ObservableObject {
                   let show = await sources.show(tvmazeID, fetch: fetch, force: force) else { continue }
             let contentID = candidate.imdb ?? Self.imdb(show.imdb) ?? candidate.id
             asked.insert(contentID)
-            let watchedOf = seen[candidate.id] ?? candidate.imdb.flatMap { seen[$0] }
             // TMDB's picture and logo: what's known now, the rest asked for
             // after TVmaze (side by side, not one by one in between).
             var art = arts[contentID]
@@ -232,40 +255,12 @@ final class LiveTVCalendarStore: ObservableObject {
             if art == nil, contentID.hasPrefix("tt"), fetch, !early.contains(contentID), artToAsk.count < 300 {
                 artToAsk.append(contentID)
             }
-            let background = candidate.background ?? show.background ?? art?.backdrop
-            let highest = show.episodes.map(\.season).max() ?? 0
-            let inside = show.episodes.filter { $0.airdate >= from && $0.airdate <= to }
-            for group in LiveTVCalendarLogic.grouped(inside, streaming: show.streaming) {
-                guard let first = group.first, let last = group.last else { continue }
-                let air = LiveTVCalendarLogic.localAir(
-                    listed: first.airstamp, networkZone: show.networkZone, scheduleTime: show.scheduleTime,
-                    streaming: show.streaming, local: zone)
-                let day = air.map { LiveTVCalendarLogic.day(of: $0, in: zone) } ?? first.airdate
-                let watched = LiveTVCalendarLogic.isWatched(
-                    season: last.season, episode: last.number,
-                    marked: watchedOf?.marked ?? [], furthest: watchedOf?.furthest)
-                var tags = LiveTVCalendarLogic.tags(first: first, last: last, showEnded: show.ended, highestSeason: highest)
-                let aired = (air ?? LiveTVCalendarLogic.start(of: day, in: zone) ?? now) <= now
-                if LiveTVCalendarLogic.isNew(aired: aired, watched: watched, day: day, today: today) { tags.insert(.new, at: 0) }
-                let single = group.count == 1
-                var entry = LiveTVCalendarEntry(
-                    key: "ep|\(contentID)|\(first.season)|\(first.number)",
-                    kind: .episode, contentID: contentID, title: candidate.name.isEmpty ? show.name : candidate.name,
-                    poster: candidate.poster ?? show.image, background: background,
-                    season: first.season, episode: first.number,
-                    lastEpisode: single ? nil : last.number,
-                    episodeTitle: single ? first.name : nil,
-                    episodeImage: first.image,
-                    summary: single ? first.summary : nil,
-                    air: air, day: day, network: show.network, networkLogo: art?.logo, titleLogo: art?.titleLogo,
-                    streaming: show.streaming,
-                    tags: tags, reasons: candidate.reasons, watched: watched, runtime: first.runtime)
-                if hideSpoilers, let furthest = watchedOf?.furthest, !watched {
-                    entry.spoiler = LiveTVCalendarLogic.isAhead(season: first.season, episode: first.number, furthest: furthest)
-                }
-                result.append(entry)
-            }
+            result += cards(show: show, candidate: candidate, contentID: contentID, art: art,
+                            seen: seen, window: (from, to), today: today, now: now, zone: zone)
         }
+        // Shows that weren't asked (cancelled, no id): their cards from the
+        // schedule stay.
+        result += provisional.filter { !asked.contains($0.contentID) }
 
         let country = LiveTVCalendarSettings.country
         for candidate in movies {
@@ -305,6 +300,50 @@ final class LiveTVCalendarStore: ObservableObject {
             }
         }
         return Self.merged(result)
+    }
+
+    /// A show's cards in the window: one per episode, or per drop of
+    /// several.
+    private func cards(show: LiveTVCalendarShow, candidate: Candidate, contentID: String,
+                       art: LiveTVCalendarSources.Art?, seen: [String: Seen], window: (from: String, to: String),
+                       today: String, now: Date, zone: TimeZone) -> [LiveTVCalendarEntry] {
+        let watchedOf = seen[candidate.id] ?? candidate.imdb.flatMap { seen[$0] }
+        let hideSpoilers = LiveTVCalendarSettings.hideSpoilers
+        let background = candidate.background ?? show.background ?? art?.backdrop
+        let highest = show.episodes.map(\.season).max() ?? 0
+        let inside = show.episodes.filter { $0.airdate >= window.from && $0.airdate <= window.to }
+        var result: [LiveTVCalendarEntry] = []
+        for group in LiveTVCalendarLogic.grouped(inside, streaming: show.streaming) {
+            guard let first = group.first, let last = group.last else { continue }
+            let air = LiveTVCalendarLogic.localAir(
+                listed: first.airstamp, networkZone: show.networkZone, scheduleTime: show.scheduleTime,
+                streaming: show.streaming, local: zone)
+            let day = air.map { LiveTVCalendarLogic.day(of: $0, in: zone) } ?? first.airdate
+            let watched = LiveTVCalendarLogic.isWatched(
+                season: last.season, episode: last.number,
+                marked: watchedOf?.marked ?? [], furthest: watchedOf?.furthest)
+            var tags = LiveTVCalendarLogic.tags(first: first, last: last, showEnded: show.ended, highestSeason: highest)
+            let aired = (air ?? LiveTVCalendarLogic.start(of: day, in: zone) ?? now) <= now
+            if LiveTVCalendarLogic.isNew(aired: aired, watched: watched, day: day, today: today) { tags.insert(.new, at: 0) }
+            let single = group.count == 1
+            var entry = LiveTVCalendarEntry(
+                key: "ep|\(contentID)|\(first.season)|\(first.number)",
+                kind: .episode, contentID: contentID, title: candidate.name.isEmpty ? show.name : candidate.name,
+                poster: candidate.poster ?? show.image, background: background,
+                season: first.season, episode: first.number,
+                lastEpisode: single ? nil : last.number,
+                episodeTitle: single ? first.name : nil,
+                episodeImage: first.image,
+                summary: single ? first.summary : nil,
+                air: air, day: day, network: show.network, networkLogo: art?.logo, titleLogo: art?.titleLogo,
+                streaming: show.streaming,
+                tags: tags, reasons: candidate.reasons, watched: watched, runtime: first.runtime)
+            if hideSpoilers, let furthest = watchedOf?.furthest, !watched {
+                entry.spoiler = LiveTVCalendarLogic.isAhead(season: first.season, episode: first.number, furthest: furthest)
+            }
+            result.append(entry)
+        }
+        return result
     }
 
     /// TMDB's pictures and logos, a few at a time.

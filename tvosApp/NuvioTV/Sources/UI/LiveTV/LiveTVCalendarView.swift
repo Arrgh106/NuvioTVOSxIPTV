@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The calendar (step 16), as Android's: tabs on top, then a big picture of
 /// the card in focus and a row of wide cards per day. 16a: the List view
@@ -371,18 +372,8 @@ private struct LiveTVCalendarCard: View {
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                // The network's logo in white (as Apple TV's
-                                // apps): the same on every picture.
-                                AsyncImage(url: logo) { phase in
-                                    if case .success(let image) = phase {
-                                        image.renderingMode(.template).resizable().aspectRatio(contentMode: .fit)
-                                            .foregroundColor(.white)
-                                            .shadow(color: .black.opacity(0.9), radius: 3)
-                                    } else if let network = entry.network {
-                                        chip(network, fill: .white.opacity(0.2))
-                                    }
-                                }
-                                .frame(maxWidth: 96, maxHeight: 30, alignment: .bottomTrailing)
+                                LiveTVNetworkLogo(url: logo, fallback: entry.network)
+                                    .frame(maxWidth: 100, maxHeight: 32, alignment: .bottomTrailing)
                             } else if let network = entry.network {
                                 chip(network, fill: .white.opacity(0.2))
                             }
@@ -418,5 +409,97 @@ private struct LiveTVCalendarCard: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(fill, in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// A network's logo, drawn by what it is (looked at once): dark ones
+/// without colour (ABC, Discovery) turned light so they read on a picture,
+/// ones on their own box (TF1) and coloured ones (Paramount+) as they are.
+struct LiveTVNetworkLogo: View {
+    let url: URL
+    let fallback: String?
+
+    private enum Look { case asIs, light }
+
+    private final class Kept {
+        let image: UIImage
+        let look: Look
+        init(image: UIImage, look: Look) {
+            self.image = image
+            self.look = look
+        }
+    }
+
+    @MainActor private static let cache = NSCache<NSURL, Kept>()
+    @State private var kept: Kept?
+
+    var body: some View {
+        Group {
+            if let kept {
+                let image = Image(uiImage: kept.image).resizable().aspectRatio(contentMode: .fit)
+                if kept.look == .light {
+                    image.colorInvert().shadow(color: .black.opacity(0.8), radius: 3)
+                } else {
+                    image.clipShape(RoundedRectangle(cornerRadius: 4)).shadow(color: .black.opacity(0.6), radius: 3)
+                }
+            } else if let fallback {
+                Text(fallback)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .task(id: url) {
+            if let known = Self.cache.object(forKey: url as NSURL) {
+                kept = known
+                return
+            }
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let image = UIImage(data: data) else { return }
+            let look = Self.look(of: image)
+            let made = Kept(image: image, look: look)
+            Self.cache.setObject(made, forKey: url as NSURL)
+            kept = made
+        }
+    }
+
+    /// Light when its visible pixels are dark and without colour and it has
+    /// a see-through background; as it is otherwise.
+    private static func look(of image: UIImage) -> Look {
+        guard let cgImage = image.cgImage else { return .asIs }
+        let side = 24
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        guard drawn else { return .asIs }
+        var visible = 0
+        var light = 0.0
+        var colour = 0.0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Double(pixels[index + 3]) / 255
+            guard alpha > 0.5 else { continue }
+            let r = Double(pixels[index]) / 255 / alpha
+            let g = Double(pixels[index + 1]) / 255 / alpha
+            let b = Double(pixels[index + 2]) / 255 / alpha
+            visible += 1
+            light += 0.2126 * r + 0.7152 * g + 0.0722 * b
+            colour += max(r, g, b) - min(r, g, b)
+        }
+        guard visible > 0 else { return .asIs }
+        let cover = Double(visible) / Double(side * side)
+        let average = light / Double(visible)
+        let saturation = colour / Double(visible)
+        // A logo on its own box keeps its colours.
+        if cover > 0.9 { return .asIs }
+        return average < 0.45 && saturation < 0.25 ? .light : .asIs
     }
 }
