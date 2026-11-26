@@ -43,8 +43,25 @@ final class LiveTVCalendarStore: ObservableObject {
         }
     }
 
+    /// Asked again once the build running now is done (a change came in).
+    private var rebuildAfter = false
+
     private func followsChanged() {
+        // Following shows the change at once; the episodes come with the
+        // next build (after the one running now, if any).
+        followed = CalendarManualFollowStore.items().values
+            .map { item in
+                let imdb = NuvioMeta.canonicalImdbID(from: item.imdbId ?? item.id)
+                return LiveTVCalendarFollowed(id: imdb ?? item.id, imdb: imdb, tmdb: item.tmdbId, series: item.kind == .series,
+                                              title: item.name ?? item.id, poster: item.posterURL, background: nil)
+            }
+            .filter { !isHidden($0.id, imdb: $0.imdb) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         guard builtOnce else { return }
+        if isLoading {
+            rebuildAfter = true
+            return
+        }
         followTask?.cancel()
         followTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
@@ -346,6 +363,10 @@ final class LiveTVCalendarStore: ObservableObject {
             if fetch { self.updatedAt = Date() }
             self.isLoading = false
             self.progress = nil
+            if self.rebuildAfter {
+                self.rebuildAfter = false
+                self.build(fetch: true, force: false)
+            }
         }
     }
 
