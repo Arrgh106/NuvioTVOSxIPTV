@@ -20,6 +20,9 @@ final class LiveTVCalendarStore: ObservableObject {
 
     private var task: Task<Void, Never>?
     private var builtOnce = false
+    /// The time zone the cards were made for (a change in Settings: made
+    /// again).
+    private var builtZone: String?
 
     /// At most this many shows and films, as Android.
     private static let maxShows = 400
@@ -30,7 +33,7 @@ final class LiveTVCalendarStore: ObservableObject {
     /// The calendar screen opened: what's on disk at once, then fresh data
     /// when it's older than 30 minutes.
     func opened() {
-        if !builtOnce { build(fetch: false, force: false) }
+        if !builtOnce || builtZone != LiveTVCalendarSettings.timeZone.identifier { build(fetch: false, force: false) }
         if updatedAt.map({ Date().timeIntervalSince($0) > 30 * 60 }) ?? true { build(fetch: true, force: false) }
     }
 
@@ -158,6 +161,7 @@ final class LiveTVCalendarStore: ObservableObject {
         if isLoading, !force { return }
         task?.cancel()
         builtOnce = true
+        builtZone = LiveTVCalendarSettings.timeZone.identifier
         isLoading = fetch
         task = Task { [weak self] in
             guard let self else { return }
@@ -179,7 +183,12 @@ final class LiveTVCalendarStore: ObservableObject {
     private func make(shows: [Candidate], movies: [Candidate], seen: [String: Seen],
                       fetch: Bool, force: Bool) async -> [LiveTVCalendarEntry] {
         let sources = LiveTVCalendarSources.shared
-        let zone = TimeZone.current
+        let zone = LiveTVCalendarSettings.timeZone
+        // Asking TVmaze: what's done shows at once, the cards of shows not
+        // asked yet stay as they were.
+        let previous = fetch ? entries : []
+        var asked = Set<String>()
+        var artToAsk: [String] = []
         let now = Date()
         let today = LiveTVCalendarLogic.day(of: now, in: zone)
         let from = LiveTVCalendarLogic.day(today, plus: -Self.daysBack)
@@ -187,11 +196,13 @@ final class LiveTVCalendarStore: ObservableObject {
         let hideSpoilers = LiveTVCalendarSettings.hideSpoilers
         var result: [LiveTVCalendarEntry] = []
         var usedShows = Set<Int>()
-        var backdropsAsked = 0
 
         for (index, candidate) in shows.enumerated() {
             if Task.isCancelled { return result }
-            if fetch, index % 5 == 0 { progress = (index, shows.count) }
+            if fetch, index % 5 == 0 {
+                progress = (index, shows.count)
+                if index > 0 { entries = Self.merged(result + previous.filter { !asked.contains($0.contentID) }) }
+            }
             let tvmazeID: Int?
             if candidate.id.hasPrefix("tvmaze:") {
                 tvmazeID = Int(candidate.id.dropFirst("tvmaze:".count))
@@ -201,12 +212,13 @@ final class LiveTVCalendarStore: ObservableObject {
             guard let tvmazeID, usedShows.insert(tvmazeID).inserted,
                   let show = await sources.show(tvmazeID, fetch: fetch, force: force) else { continue }
             let contentID = candidate.imdb ?? Self.imdb(show.imdb) ?? candidate.id
+            asked.insert(contentID)
             let watchedOf = seen[candidate.id] ?? candidate.imdb.flatMap { seen[$0] }
-            var background = candidate.background ?? show.background
-            if background == nil, contentID.hasPrefix("tt"), backdropsAsked < 150 {
-                backdropsAsked += 1
-                background = await sources.backdrop(imdb: contentID, fetch: fetch)
-            }
+            // TMDB's picture and logo: what's known now, the rest asked for
+            // after TVmaze (side by side, not one by one in between).
+            let art = contentID.hasPrefix("tt") ? await sources.art(imdb: contentID, fetch: false) : nil
+            if art == nil, contentID.hasPrefix("tt"), fetch, artToAsk.count < 300 { artToAsk.append(contentID) }
+            let background = candidate.background ?? show.background ?? art?.backdrop
             let highest = show.episodes.map(\.season).max() ?? 0
             let inside = show.episodes.filter { $0.airdate >= from && $0.airdate <= to }
             for group in LiveTVCalendarLogic.grouped(inside, streaming: show.streaming) {
@@ -231,7 +243,7 @@ final class LiveTVCalendarStore: ObservableObject {
                     episodeTitle: single ? first.name : nil,
                     episodeImage: first.image,
                     summary: single ? first.summary : nil,
-                    air: air, day: day, network: show.network, streaming: show.streaming,
+                    air: air, day: day, network: show.network, networkLogo: art?.logo, streaming: show.streaming,
                     tags: tags, reasons: candidate.reasons, watched: watched, runtime: first.runtime)
                 if hideSpoilers, let furthest = watchedOf?.furthest, !watched {
                     entry.spoiler = LiveTVCalendarLogic.isAhead(season: first.season, episode: first.number, furthest: furthest)
@@ -257,25 +269,62 @@ final class LiveTVCalendarStore: ObservableObject {
                     reasons: candidate.reasons))
             }
         }
-        // One card per key (a title in two lists), every reason kept.
-        var merged: [String: LiveTVCalendarEntry] = [:]
-        for entry in result {
-            if var known = merged[entry.key] {
-                known.reasons.formUnion(entry.reasons)
-                merged[entry.key] = known
-            } else {
-                merged[entry.key] = entry
+        if !artToAsk.isEmpty, !Task.isCancelled {
+            entries = Self.merged(result)
+            let found = await Self.askArt(artToAsk)
+            result = result.map { entry in
+                guard let art = found[entry.contentID] else { return entry }
+                var changed = entry
+                if changed.background == nil { changed.background = art.backdrop }
+                if changed.kind == .episode { changed.networkLogo = art.logo }
+                return changed
             }
         }
-        return LiveTVCalendarLogic.sorted(Array(merged.values))
+        return Self.merged(result)
+    }
+
+    /// TMDB's pictures and logos, a few at a time.
+    private static func askArt(_ ids: [String]) async -> [String: LiveTVCalendarSources.Art] {
+        await withTaskGroup(of: (String, LiveTVCalendarSources.Art?).self) { group in
+            var found: [String: LiveTVCalendarSources.Art] = [:]
+            var next = 0
+            func start() {
+                guard next < ids.count else { return }
+                let id = ids[next]
+                next += 1
+                group.addTask { (id, await LiveTVCalendarSources.shared.art(imdb: id, fetch: true)) }
+            }
+            for _ in 0..<6 { start() }
+            while let (id, art) = await group.next() {
+                if let art { found[id] = art }
+                start()
+            }
+            return found
+        }
+    }
+
+    /// One card per key (a title in two lists), every reason kept, in the
+    /// calendar's order.
+    private static func merged(_ entries: [LiveTVCalendarEntry]) -> [LiveTVCalendarEntry] {
+        var byKey: [String: LiveTVCalendarEntry] = [:]
+        for entry in entries {
+            if var known = byKey[entry.key] {
+                known.reasons.formUnion(entry.reasons)
+                byKey[entry.key] = known
+            } else {
+                byKey[entry.key] = entry
+            }
+        }
+        return LiveTVCalendarLogic.sorted(Array(byKey.values))
     }
 
     /// "At home Oct 2", "In theaters Oct 2"; no home date yet: says so.
     private static func movieNote(_ tag: LiveTVCalendarTag, _ day: String) -> String {
-        guard let date = LiveTVCalendarLogic.start(of: day, in: .current) else {
+        guard let date = LiveTVCalendarLogic.start(of: day, in: LiveTVCalendarSettings.timeZone) else {
             return L10n.string("livetv_cal_not_home_yet", fallback: "Not out to watch at home yet")
         }
         let formatter = DateFormatter()
+        formatter.timeZone = LiveTVCalendarSettings.timeZone
         formatter.setLocalizedDateFormatFromTemplate("MMMd")
         let when = formatter.string(from: date)
         switch tag {
@@ -301,6 +350,13 @@ enum LiveTVCalendarSettings {
     /// The country for film release dates: the Apple TV's region.
     static var country: String {
         ProfileSettings.current.string(forKey: countryKey) ?? Locale.current.region?.identifier ?? "US"
+    }
+
+    /// The time zone of the calendar's days and times: the Apple TV's, or
+    /// the one chosen in Settings → Live TV → Calendar.
+    @MainActor static var timeZone: TimeZone {
+        let id = LiveTVSettings.shared.calendarTimeZone
+        return id.isEmpty ? .current : TimeZone(identifier: id) ?? .current
     }
 
     static var unwatchedOnly: Bool {

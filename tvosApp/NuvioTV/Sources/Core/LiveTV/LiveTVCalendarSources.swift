@@ -56,7 +56,7 @@ actor LiveTVCalendarSources {
 
     private var ids: [String: IDRecord]?
     private var movies: [String: MovieRecord]?
-    private var backdrops: [String: String]?
+    private var arts: [String: Art]?
 
     // MARK: Files
 
@@ -161,54 +161,57 @@ actor LiveTVCalendarSources {
 
     // MARK: Shows
 
-    /// A show's last two seasons that matter for the window; from the disk
-    /// while it's fresh (`force`: always asked again; a failed ask keeps
-    /// the old one).
+    /// A show's last two seasons that matter for the window, in one
+    /// request (seasons and episodes embedded); from the disk while it's
+    /// fresh (`force`: always asked again; a failed ask keeps the old one).
     func show(_ id: Int, fetch: Bool, force: Bool) async -> LiveTVCalendarShow? {
         let name = "show_\(id).json"
         let cached = read(LiveTVCalendarShow.self, name)
         guard fetch, force || cached?.isStale(now: Date()) ?? true else { return cached }
-        guard let body = await tvmaze("/shows/\(id)?embed[]=images") as? [String: Any] else { return cached }
+        guard let body = await tvmaze("/shows/\(id)?embed[]=images&embed[]=seasons&embed[]=episodes") as? [String: Any]
+        else { return cached }
+        let embedded = body["_embedded"] as? [String: Any]
         let network = body["network"] as? [String: Any]
         let web = body["webChannel"] as? [String: Any]
         let image = body["image"] as? [String: Any]
-        let images = ((body["_embedded"] as? [String: Any])?["images"] as? [[String: Any]]) ?? []
+        let images = (embedded?["images"] as? [[String: Any]]) ?? []
         let backgrounds = images.filter { ($0["type"] as? String) == "background" }
         let background = backgrounds.first { ($0["main"] as? Bool) == true } ?? backgrounds.first
         let resolutions = background?["resolutions"] as? [String: Any]
         let backgroundURL = ((resolutions?["original"] as? [String: Any])?["url"] as? String)
             ?? ((resolutions?["medium"] as? [String: Any])?["url"] as? String)
 
-        // Seasons around the window (from 40 days back to 130 ahead).
+        // Seasons around the window (from 40 days back to 130 ahead), the
+        // last two of them.
         let today = LiveTVCalendarLogic.day(of: Date(), in: .current)
         let oldest = LiveTVCalendarLogic.day(today, plus: -40)
         let newest = LiveTVCalendarLogic.day(today, plus: 130)
-        let seasons = ((await tvmaze("/shows/\(id)/seasons")) as? [[String: Any]] ?? []).filter { season in
+        let seasons = ((embedded?["seasons"] as? [[String: Any]]) ?? []).filter { season in
             let premiere = season["premiereDate"] as? String
             let end = season["endDate"] as? String
             return (end == nil || end! >= oldest) && (premiere == nil || premiere! <= newest) && (premiere != nil || end == nil)
         }.suffix(2)
+        var orders: [Int: Int?] = [:]
+        for season in seasons {
+            if let number = season["number"] as? Int { orders[number] = season["episodeOrder"] as? Int }
+        }
         var episodes: [LiveTVCalendarEpisode] = []
         let stamp = ISO8601DateFormatter()
-        for season in seasons {
-            guard let seasonID = season["id"] as? Int,
-                  let list = await tvmaze("/seasons/\(seasonID)/episodes") as? [[String: Any]] else { continue }
-            let order = season["episodeOrder"] as? Int
-            for item in list {
-                guard let number = item["number"] as? Int, let seasonNumber = item["season"] as? Int,
-                      let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
-                let airtime = (item["airtime"] as? String) ?? ""
-                episodes.append(LiveTVCalendarEpisode(
-                    season: seasonNumber, number: number,
-                    name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
-                    airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
-                    airdate: airdate,
-                    runtime: item["runtime"] as? Int,
-                    image: Self.https(((item["image"] as? [String: Any])?["original"] as? String)
-                        ?? ((item["image"] as? [String: Any])?["medium"] as? String)),
-                    summary: LiveTVCalendarLogic.plainText(item["summary"] as? String),
-                    seasonEpisodes: order))
-            }
+        for item in (embedded?["episodes"] as? [[String: Any]]) ?? [] {
+            guard let number = item["number"] as? Int, let seasonNumber = item["season"] as? Int,
+                  let order = orders[seasonNumber],
+                  let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
+            let airtime = (item["airtime"] as? String) ?? ""
+            let picture = item["image"] as? [String: Any]
+            episodes.append(LiveTVCalendarEpisode(
+                season: seasonNumber, number: number,
+                name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
+                airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
+                airdate: airdate,
+                runtime: item["runtime"] as? Int,
+                image: Self.https((picture?["original"] as? String) ?? (picture?["medium"] as? String)),
+                summary: LiveTVCalendarLogic.plainText(item["summary"] as? String),
+                seasonEpisodes: order))
         }
         let show = LiveTVCalendarShow(
             id: id,
@@ -289,24 +292,40 @@ actor LiveTVCalendarSources {
         return record
     }
 
-    /// A wide picture for a show that only has a poster (kept for good;
-    /// "" when TMDB has none).
-    func backdrop(imdb: String, fetch: Bool) async -> String? {
-        if backdrops == nil { backdrops = read([String: String].self, "backdrops.json") ?? [:] }
-        if let known = backdrops?[imdb] { return known.isEmpty ? nil : known }
+    /// What TMDB adds to a show: a wide picture (for shows with only a
+    /// poster) and its network's logo (CBS, Netflix…). Kept for good.
+    struct Art: Codable, Sendable {
+        var backdrop: String?
+        var logo: String?
+    }
+
+    /// `fetch` false: only what's known.
+    func art(imdb: String, fetch: Bool) async -> Art? {
+        if arts == nil { arts = read([String: Art].self, "art.json") ?? [:] }
+        if let known = arts?[imdb] { return known }
         guard fetch, let found = await tmdb("/find/\(imdb)?external_source=imdb_id") else { return nil }
-        let first = ((found["tv_results"] as? [[String: Any]])?.first) ?? ((found["movie_results"] as? [[String: Any]])?.first)
-        let link = (first?["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 } ?? ""
-        backdrops?[imdb] = link
-        if let backdrops { write(backdrops, "backdrops.json") }
-        return link.isEmpty ? nil : link
+        var art = Art()
+        if let show = (found["tv_results"] as? [[String: Any]])?.first {
+            art.backdrop = (show["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 }
+            if let id = show["id"] as? Int, let detail = await tmdb("/tv/\(id)"),
+               let networks = detail["networks"] as? [[String: Any]],
+               let logo = networks.lazy.compactMap({ $0["logo_path"] as? String }).first {
+                art.logo = "https://image.tmdb.org/t/p/w154" + logo
+            }
+        } else if let movie = (found["movie_results"] as? [[String: Any]])?.first {
+            art.backdrop = (movie["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 }
+        }
+        guard !Task.isCancelled else { return art }
+        arts?[imdb] = art
+        if let arts { write(arts, "art.json") }
+        return art
     }
 
     /// Everything the calendar kept (a profile's sources changed a lot).
     func clear() {
         ids = nil
         movies = nil
-        backdrops = nil
+        arts = nil
         if let folder { try? FileManager.default.removeItem(at: folder) }
     }
 }

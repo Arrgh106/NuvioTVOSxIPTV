@@ -28,8 +28,8 @@ struct LiveTVCalendarView: View {
     private var shown: [LiveTVCalendarEntry] {
         let now = Date()
         switch tab {
-        case .upcoming: return LiveTVCalendarLogic.upcoming(store.entries, now: now, zone: .current)
-        case .recent: return LiveTVCalendarLogic.recent(store.entries, now: now, zone: .current, unwatchedOnly: unwatchedOnly)
+        case .upcoming: return LiveTVCalendarLogic.upcoming(store.entries, now: now, zone: LiveTVCalendarSettings.timeZone)
+        case .recent: return LiveTVCalendarLogic.recent(store.entries, now: now, zone: LiveTVCalendarSettings.timeZone, unwatchedOnly: unwatchedOnly)
         }
     }
 
@@ -237,19 +237,33 @@ struct LiveTVCalendarView: View {
     /// "Today 20:15 · NBC", "Fri, Nov 27 · Netflix".
     static func when(_ entry: LiveTVCalendarEntry) -> String {
         var parts = [dayTitle(entry.day)]
-        if let air = entry.air { parts[0] += " " + LiveTVSettings.shared.time(air) }
+        if let air = entry.air { parts[0] += " " + clock(air) }
         if let network = entry.network { parts.append(network) }
         return parts.joined(separator: " · ")
     }
 
     static func dayTitle(_ day: String) -> String {
-        let today = LiveTVCalendarLogic.day(of: Date(), in: .current)
+        let zone = LiveTVCalendarSettings.timeZone
+        let today = LiveTVCalendarLogic.day(of: Date(), in: zone)
         if day == today { return L10n.string("livetv_info_today", fallback: "Today") }
         if day == LiveTVCalendarLogic.day(today, plus: 1) { return L10n.string("livetv_info_tomorrow", fallback: "Tomorrow") }
         if day == LiveTVCalendarLogic.day(today, plus: -1) { return L10n.string("livetv_info_yesterday", fallback: "Yesterday") }
-        guard let date = LiveTVCalendarLogic.start(of: day, in: .current) else { return day }
+        guard let date = LiveTVCalendarLogic.start(of: day, in: zone) else { return day }
         let formatter = DateFormatter()
+        formatter.timeZone = zone
         formatter.setLocalizedDateFormatFromTemplate("EEEMMMd")
+        return formatter.string(from: date)
+    }
+
+    /// An air time in the calendar's time zone, in Live TV's clock style.
+    static func clock(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = LiveTVCalendarSettings.timeZone
+        switch LiveTVSettings.shared.clock {
+        case .hours24: formatter.dateFormat = "HH:mm"
+        case .hours12: formatter.dateFormat = "h:mm a"
+        case .system: formatter.setLocalizedDateFormatFromTemplate("jmm")
+        }
         return formatter.string(from: date)
     }
 
@@ -305,7 +319,7 @@ private struct LiveTVCalendarCard: View {
                     VStack(alignment: .leading) {
                         HStack(alignment: .top) {
                             if let air = entry.air {
-                                chip(LiveTVSettings.shared.time(air), fill: .black.opacity(0.7))
+                                chip(LiveTVCalendarView.clock(air), fill: .black.opacity(0.7))
                             }
                             Spacer()
                             if entry.watched {
@@ -320,7 +334,20 @@ private struct LiveTVCalendarCard: View {
                                 .font(.system(size: 20, weight: .heavy))
                                 .lineLimit(2)
                             Spacer(minLength: 8)
-                            if let network = entry.network {
+                            if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
+                                // The network's logo on a light chip (most are dark).
+                                AsyncImage(url: logo) { phase in
+                                    if case .success(let image) = phase {
+                                        image.resizable().aspectRatio(contentMode: .fit)
+                                    } else if let network = entry.network {
+                                        Text(network).font(.system(size: 15, weight: .bold)).foregroundColor(.black)
+                                    }
+                                }
+                                .frame(maxWidth: 110, maxHeight: 26)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 6))
+                            } else if let network = entry.network {
                                 chip(network, fill: .white.opacity(0.2))
                             }
                         }

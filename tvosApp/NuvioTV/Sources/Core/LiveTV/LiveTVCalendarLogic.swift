@@ -66,6 +66,8 @@ struct LiveTVCalendarEntry: Identifiable, Equatable, Sendable {
     /// "yyyy-MM-dd" in the Apple TV's time zone.
     var day: String
     var network: String?
+    /// The network's logo (TMDB), shown in place of its name.
+    var networkLogo: String?
     var streaming = false
     var tags: [LiveTVCalendarTag] = []
     /// Films: the other release ("At home Oct 2").

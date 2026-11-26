@@ -44,6 +44,20 @@ final class LiveTVSettings: ObservableObject {
     /// A channel that won't play switches to another copy of it (step 15b,
     /// Android's "Backup channel"; Multiview panes for now).
     @Published var backupChannel = true { didSet { save(backupChannel, Key.backupChannel) } }
+    /// The calendar's time zone ("": the Apple TV's), step 16.
+    @Published var calendarTimeZone = "" {
+        didSet { if !loading { ProfileSettings.current.set(calendarTimeZone, forKey: Key.calendarTimeZone) } }
+    }
+    /// The calendar's choices: the Apple TV's, then zones around the world.
+    static let calendarTimeZones = [
+        "", "Europe/London", "Europe/Lisbon", "Europe/Berlin", "Europe/Paris", "Europe/Madrid", "Europe/Rome",
+        "Europe/Amsterdam", "Europe/Vienna", "Europe/Zurich", "Europe/Stockholm", "Europe/Warsaw", "Europe/Athens",
+        "Europe/Istanbul", "Europe/Moscow", "Asia/Dubai", "Asia/Kolkata", "Asia/Bangkok", "Asia/Singapore",
+        "Asia/Tokyo", "Australia/Perth", "Australia/Sydney", "Pacific/Auckland", "America/St_Johns",
+        "America/Halifax", "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix",
+        "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "America/Mexico_City", "America/Bogota",
+        "America/Sao_Paulo", "America/Argentina/Buenos_Aires", "Africa/Johannesburg", "Africa/Lagos", "Africa/Cairo",
+    ]
     /// Pause and rewind live TV (step 14, Android's "Pause and Rewind Live
     /// TV"): the channel playing is kept on the Apple TV for a while.
     @Published var timeshift = true { didSet { save(timeshift, Key.timeshift) } }
@@ -77,6 +91,7 @@ final class LiveTVSettings: ObservableObject {
         static let infoBarOnZap = prefix + "infoBarOnZap"
         static let reverseZap = prefix + "reverseZap"
         static let backupChannel = prefix + "backupChannel"
+        static let calendarTimeZone = prefix + "calendarTimeZone"
         static let timeshift = prefix + "timeshift"
         static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
@@ -126,6 +141,8 @@ final class LiveTVSettings: ObservableObject {
         assign(\.infoBarOnZap, bool(Key.infoBarOnZap, true))
         assign(\.reverseZap, bool(Key.reverseZap, false))
         assign(\.backupChannel, bool(Key.backupChannel, true))
+        let zone = store.string(forKey: Key.calendarTimeZone) ?? ""
+        if zone != calendarTimeZone { calendarTimeZone = zone }
         assign(\.timeshift, bool(Key.timeshift, true))
         let minutes = store.integer(forKey: Key.timeshiftMinutes)
         let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30
