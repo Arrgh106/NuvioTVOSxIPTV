@@ -155,14 +155,10 @@ struct LiveTVCalendarView: View {
             if let entry {
                 // The show's own logo when TMDB has one, else its title.
                 if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                    AsyncImage(url: logo) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().aspectRatio(contentMode: .fit)
-                        } else {
-                            Text(entry.title).font(.system(size: 44, weight: .bold)).lineLimit(1)
-                        }
+                    LiveTVLogo(url: logo, style: .title, box: CGSize(width: 520, height: 110), area: 24_000,
+                               alignment: .bottomLeading) {
+                        Text(entry.title).font(.system(size: 44, weight: .bold)).lineLimit(1)
                     }
-                    .frame(maxWidth: 520, maxHeight: 100, alignment: .leading)
                     .id(logo)
                 } else {
                     Text(entry.title)
@@ -356,15 +352,10 @@ private struct LiveTVCalendarCard: View {
                         Spacer()
                         HStack(alignment: .bottom) {
                             if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                                AsyncImage(url: logo) { phase in
-                                    if case .success(let image) = phase {
-                                        image.resizable().aspectRatio(contentMode: .fit)
-                                            .shadow(color: .black.opacity(0.8), radius: 4)
-                                    } else {
-                                        Text(entry.title.uppercased()).font(.system(size: 20, weight: .heavy)).lineLimit(2)
-                                    }
+                                LiveTVLogo(url: logo, style: .title, box: CGSize(width: 220, height: 64), area: 7_000,
+                                           alignment: .bottomLeading) {
+                                    Text(entry.title.uppercased()).font(.system(size: 20, weight: .heavy)).lineLimit(2)
                                 }
-                                .frame(maxWidth: 220, maxHeight: 56, alignment: .bottomLeading)
                             } else {
                                 Text(entry.title.uppercased())
                                     .font(.system(size: 20, weight: .heavy))
@@ -372,8 +363,10 @@ private struct LiveTVCalendarCard: View {
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                LiveTVNetworkLogo(url: logo, fallback: entry.network)
-                                    .frame(maxWidth: 100, maxHeight: 32, alignment: .bottomTrailing)
+                                LiveTVLogo(url: logo, style: .network, box: CGSize(width: 96, height: 30), area: 1_500,
+                                           alignment: .bottomTrailing) {
+                                    if let network = entry.network { chip(network, fill: .white.opacity(0.2)) }
+                                }
                             } else if let network = entry.network {
                                 chip(network, fill: .white.opacity(0.2))
                             }
@@ -412,94 +405,136 @@ private struct LiveTVCalendarCard: View {
     }
 }
 
-/// A network's logo, drawn by what it is (looked at once): dark ones
-/// without colour (ABC, Discovery) turned light so they read on a picture,
-/// ones on their own box (TF1) and coloured ones (Paramount+) as they are.
-struct LiveTVNetworkLogo: View {
+/// A logo, made to look alike on every card: its empty edges cut off and
+/// sized to the same area whether it is wide or tall. Network logos are
+/// drawn in white: their shape when they stand free (FOX, CBS), their light
+/// parts when they sit on a box or a dark disc (TF1, ABC), so none turns
+/// into a white blot. Title logos keep their colours.
+struct LiveTVLogo<Fallback: View>: View {
+    enum Style { case title, network }
+
     let url: URL
-    let fallback: String?
+    let style: Style
+    /// The most room it may take.
+    let box: CGSize
+    /// The area every logo gets (points²), within `box`.
+    let area: CGFloat
+    let alignment: Alignment
+    @ViewBuilder let fallback: () -> Fallback
 
-    private enum Look { case asIs, light }
-
-    private final class Kept {
-        let image: UIImage
-        let look: Look
-        init(image: UIImage, look: Look) {
-            self.image = image
-            self.look = look
-        }
-    }
-
-    @MainActor private static let cache = NSCache<NSURL, Kept>()
-    @State private var kept: Kept?
+    @State private var image: UIImage?
+    @State private var failed = false
 
     var body: some View {
         Group {
-            if let kept {
-                let image = Image(uiImage: kept.image).resizable().aspectRatio(contentMode: .fit)
-                if kept.look == .light {
-                    image.colorInvert().shadow(color: .black.opacity(0.8), radius: 3)
-                } else {
-                    image.clipShape(RoundedRectangle(cornerRadius: 4)).shadow(color: .black.opacity(0.6), radius: 3)
-                }
-            } else if let fallback {
-                Text(fallback)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
+            if let image {
+                let size = Self.size(of: image.size, box: box, area: area)
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: size.width, height: size.height)
+                    .shadow(color: .black.opacity(0.75), radius: style == .network ? 3 : 4)
+            } else if failed {
+                fallback()
+            } else {
+                Color.clear.frame(width: 1, height: 1)
             }
         }
+        .frame(maxWidth: box.width, maxHeight: box.height, alignment: alignment)
         .task(id: url) {
-            if let known = Self.cache.object(forKey: url as NSURL) {
-                kept = known
+            let key = "\(style == .network ? "n" : "t")|\(url.absoluteString)" as NSString
+            if let known = LiveTVLogoCache.shared.object(forKey: key) {
+                image = known
                 return
             }
             guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let image = UIImage(data: data) else { return }
-            let look = Self.look(of: image)
-            let made = Kept(image: image, look: look)
-            Self.cache.setObject(made, forKey: url as NSURL)
-            kept = made
+                  let loaded = UIImage(data: data),
+                  let made = await Task.detached(priority: .utility, operation: {
+                      LiveTVLogoMaker.make(loaded, white: style == .network)
+                  }).value else {
+                failed = true
+                return
+            }
+            LiveTVLogoCache.shared.setObject(made, forKey: key)
+            image = made
         }
     }
 
-    /// Light when its visible pixels are dark and without colour and it has
-    /// a see-through background; as it is otherwise.
-    private static func look(of image: UIImage) -> Look {
-        guard let cgImage = image.cgImage else { return .asIs }
-        let side = 24
-        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+    /// The same area for every logo, as wide or tall as it is, inside the box.
+    static func size(of picture: CGSize, box: CGSize, area: CGFloat) -> CGSize {
+        guard picture.width > 0, picture.height > 0 else { return .zero }
+        let aspect = picture.width / picture.height
+        var width = (area * aspect).squareRoot()
+        var height = width / aspect
+        if width > box.width { width = box.width; height = width / aspect }
+        if height > box.height { height = box.height; width = height * aspect }
+        return CGSize(width: width, height: height)
+    }
+}
+
+enum LiveTVLogoCache {
+    @MainActor static let shared = NSCache<NSString, UIImage>()
+}
+
+/// Makes a logo alike: cut to what's drawn; for networks, white.
+enum LiveTVLogoMaker {
+    static func make(_ image: UIImage, white: Bool) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = cgImage.width, height = cgImage.height
+        guard width > 0, height > 0, width * height <= 4_000_000 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let space = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
         let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            else { return false }
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: space, bitmapInfo: info) else { return false }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
-        guard drawn else { return .asIs }
-        var visible = 0
-        var light = 0.0
-        var colour = 0.0
-        for index in stride(from: 0, to: pixels.count, by: 4) {
-            let alpha = Double(pixels[index + 3]) / 255
-            guard alpha > 0.5 else { continue }
-            let r = Double(pixels[index]) / 255 / alpha
-            let g = Double(pixels[index + 1]) / 255 / alpha
-            let b = Double(pixels[index + 2]) / 255 / alpha
-            visible += 1
-            light += 0.2126 * r + 0.7152 * g + 0.0722 * b
-            colour += max(r, g, b) - min(r, g, b)
+        guard drawn else { return nil }
+
+        func luminance(_ i: Int) -> Double {
+            let alpha = Double(pixels[i + 3])
+            guard alpha > 0 else { return 0 }
+            return (0.2126 * Double(pixels[i]) + 0.7152 * Double(pixels[i + 1]) + 0.0722 * Double(pixels[i + 2])) / alpha
         }
-        guard visible > 0 else { return .asIs }
-        let cover = Double(visible) / Double(side * side)
-        let average = light / Double(visible)
-        let saturation = colour / Double(visible)
-        // A logo on its own box keeps its colours.
-        if cover > 0.9 { return .asIs }
-        return average < 0.45 && saturation < 0.25 ? .light : .asIs
+
+        if white {
+            // On a box or a dark disc: only its light parts (the lettering).
+            var opaque = 0, light = 0, dark = 0
+            for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i + 3] > 128 {
+                opaque += 1
+                let lum = luminance(i)
+                if lum > 0.7 { light += 1 } else if lum < 0.3 { dark += 1 }
+            }
+            let cover = Double(opaque) / Double(width * height)
+            let share = { (count: Int) in opaque > 0 ? Double(count) / Double(opaque) : 0 }
+            let lettering = cover > 0.85 || (share(light) > 0.12 && share(dark) > 0.2)
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                var alpha = Double(pixels[i + 3]) / 255
+                if lettering {
+                    let lum = luminance(i)
+                    alpha *= min(1, max(0, (lum - 0.55) / 0.25))
+                }
+                let value = UInt8(alpha * 255)
+                pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value; pixels[i + 3] = value
+            }
+        }
+
+        // Cut to what's drawn.
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 24 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        let made: CGImage? = pixels.withUnsafeMutableBytes { buffer in
+            CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                      bytesPerRow: width * 4, space: space, bitmapInfo: info)?.makeImage()
+        }
+        let crop = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        guard let cut = made?.cropping(to: crop) else { return nil }
+        return UIImage(cgImage: cut)
     }
 }
