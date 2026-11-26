@@ -157,9 +157,39 @@ final class LiveTVCalendarStore: ObservableObject {
                 result += self.cards(show: show, candidate: candidate, contentID: contentID, art: art, seen: self.lastSeen,
                                      window: (airdate, airdate), today: today, now: now, zone: zone)
             }
-            self.airing = result.sorted { ($0.air ?? .distantFuture) < ($1.air ?? .distantFuture) }
+            // As Android: TV by time first, streaming after it.
+            self.airing = result.sorted {
+                if $0.streaming != $1.streaming { return !$0.streaming }
+                if ($0.air ?? .distantFuture) != ($1.air ?? .distantFuture) {
+                    return ($0.air ?? .distantFuture) < ($1.air ?? .distantFuture)
+                }
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
             self.airingDay = today
             self.airingLoading = false
+            // Then the pictures and logos TMDB has for shows not asked yet.
+            guard LiveTVCalendarSources.tmdbReady else { return }
+            var missing: [String] = []
+            for entry in self.airing where entry.contentID.hasPrefix("tt") && entry.titleLogo == nil && entry.networkLogo == nil {
+                if !missing.contains(entry.contentID) { missing.append(entry.contentID) }
+            }
+            // In the list's order, shown each dozen (the first cards at once).
+            var start = 0
+            while start < missing.count {
+                let part = Array(missing[start..<min(start + 12, missing.count)])
+                start += part.count
+                let found = await Self.askArt(part)
+                guard self.airingDay == today, !Task.isCancelled else { return }
+                if found.isEmpty { continue }
+                self.airing = self.airing.map { entry in
+                    guard let art = found[entry.contentID] else { return entry }
+                    var entry = entry
+                    entry.background = entry.background ?? art.backdrop
+                    entry.networkLogo = entry.networkLogo ?? art.logo
+                    entry.titleLogo = entry.titleLogo ?? art.titleLogo
+                    return entry
+                }
+            }
         }
     }
 

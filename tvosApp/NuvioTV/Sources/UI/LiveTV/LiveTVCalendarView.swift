@@ -59,6 +59,7 @@ struct LiveTVCalendarView: View {
     let onOpen: (LiveTVCalendarEntry) -> Void
 
     @ObservedObject private var store = LiveTVCalendarStore.shared
+    @ObservedObject private var about = LiveTVCalendarAbout.shared
     @State private var tab: Tab = .upcoming
     @State private var unwatchedOnly = LiveTVCalendarSettings.unwatchedOnly
     @State private var focusedKey: String?
@@ -191,6 +192,8 @@ struct LiveTVCalendarView: View {
         // it made the page wider than the screen.
         .background(alignment: .top) { hero(focused) }
         .background(Color.black.ignoresSafeArea())
+        // The text, ratings and cast of the card in focus.
+        .task(id: focused?.key) { about.want(focused) }
         .onAppear {
             store.opened()
             if tab == .airing { store.loadAiring() }
@@ -241,6 +244,14 @@ struct LiveTVCalendarView: View {
             .padding(.horizontal, 60)
             .focusSection()
             .padding(.top, 14)
+            // Not your calendar: everything new on TV today.
+            Text(L10n.format("livetv_cal_airing_detail_format",
+                             fallback: "Everything with a new episode today, on TV in %@ and streaming, not only your shows. Following shows only the ones you follow.",
+                             Self.countryName(LiveTVCalendarSettings.country)))
+                .font(.system(size: 19))
+                .foregroundColor(.white.opacity(0.6))
+                .lineLimit(2)
+                .padding(.horizontal, 60)
             twoPane(focused) {
                 grid(airingShown, empty: store.airingLoading
                      ? L10n.string("livetv_cal_loading", fallback: "Getting the dates of your shows and films…")
@@ -367,12 +378,14 @@ struct LiveTVCalendarView: View {
                 .id(url)
                 .transition(.opacity)
             }
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.85), .black],
+            // The whole screen: darker under the cards on the left and
+            // towards the bottom, so text reads on any picture.
+            LinearGradient(colors: [.black.opacity(0.3), .black.opacity(0.55), .black.opacity(0.8)],
                            startPoint: .top, endPoint: .bottom)
-            LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.45), .black.opacity(0.15)],
+                           startPoint: .leading, endPoint: .trailing)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 620)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.3), value: entry?.key)
@@ -409,20 +422,102 @@ struct LiveTVCalendarView: View {
                 Text(Self.when(entry))
                     .font(.system(size: 22))
                     .foregroundColor(LiveTVTheme.accent)
-                if !entry.tags.isEmpty, !compact {
-                    Text(entry.tags.map(Self.tagTitle).joined(separator: "  ·  "))
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.75))
-                }
-                if let summary = entry.summary, !entry.spoiler {
-                    Text(summary)
-                        .font(.system(size: compact ? 19 : 22))
-                        .foregroundColor(.white.opacity(0.75))
-                        .lineLimit(compact ? 1 : 8)
-                        .frame(maxWidth: compact ? 1100 : CGFloat.infinity, alignment: .leading)
+                if compact {
+                    if let summary = entry.summary, !entry.spoiler {
+                        Text(summary)
+                            .font(.system(size: 19))
+                            .foregroundColor(.white.opacity(0.75))
+                            .lineLimit(1)
+                            .frame(maxWidth: 1100, alignment: .leading)
+                    }
+                } else {
+                    aboutBlock(entry)
                 }
             }
         }
+    }
+
+    /// Below the dates: tags, ratings, year and genres, the episode's text
+    /// (the show's when the episode has none), then who's in it.
+    @ViewBuilder
+    private func aboutBlock(_ entry: LiveTVCalendarEntry) -> some View {
+        let meta = about.meta(entry)
+        if !entry.tags.isEmpty {
+            Text(entry.tags.map(Self.tagTitle).joined(separator: "  ·  "))
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white.opacity(0.75))
+        }
+        let badges = TvRatingBadge.badges(from: about.shownRatings(entry))
+        if !badges.isEmpty {
+            TvHeroRatingsRow(badges: badges, iconHeight: 26, fontSize: 22, maxCount: 5)
+        }
+        if let facts = meta.flatMap(Self.facts) {
+            Text(facts)
+                .font(.system(size: 20))
+                .foregroundColor(.white.opacity(0.6))
+                .lineLimit(1)
+        }
+        let episodeText = entry.spoiler ? nil : entry.summary
+        let showText = meta?.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let episodeText {
+            Text(episodeText)
+                .font(.system(size: 22))
+                .foregroundColor(.white.opacity(0.8))
+                .lineLimit(5)
+                .padding(.top, 4)
+        }
+        if let showText, !showText.isEmpty, showText != episodeText {
+            VStack(alignment: .leading, spacing: 4) {
+                if episodeText != nil {
+                    Text(L10n.string(entry.kind == .movie ? "livetv_cal_about_film" : "livetv_cal_about_show",
+                                     fallback: entry.kind == .movie ? "About the film" : "About the show"))
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                Text(showText)
+                    .font(.system(size: episodeText == nil ? 22 : 20))
+                    .foregroundColor(.white.opacity(episodeText == nil ? 0.8 : 0.65))
+                    .lineLimit(episodeText == nil ? 7 : 3)
+            }
+            .padding(.top, 4)
+        }
+        if let cast = meta?.cast?.filter({ !$0.isEmpty }), !cast.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n.string("livetv_cal_cast", fallback: "Cast"))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.5))
+                Text(cast.prefix(6).joined(separator: ", "))
+                    .font(.system(size: 20))
+                    .foregroundColor(.white.opacity(0.75))
+                    .lineLimit(2)
+            }
+            .padding(.top, 4)
+        }
+        let makers = Array((meta?.director ?? []).filter { !$0.isEmpty }.prefix(3))
+        if !makers.isEmpty {
+            Text(L10n.string(entry.kind == .movie ? "livetv_cal_director" : "livetv_cal_creators",
+                             fallback: entry.kind == .movie ? "Director" : "Created by")
+                 + ": " + makers.joined(separator: ", "))
+                .font(.system(size: 18))
+                .foregroundColor(.white.opacity(0.55))
+                .lineLimit(1)
+        }
+    }
+
+    /// "2024 · Drama, Crime · 45 min · Continuing".
+    private static func facts(_ meta: NuvioMeta) -> String? {
+        var parts: [String] = []
+        if let info = meta.releaseInfo?.trimmingCharacters(in: .whitespaces), !info.isEmpty {
+            parts.append(info)
+        } else if let year = meta.year {
+            parts.append(String(year))
+        }
+        if let genres = meta.genres?.prefix(3), !genres.isEmpty { parts.append(genres.joined(separator: ", ")) }
+        if let runtime = meta.runtime?.trimmingCharacters(in: .whitespaces), !runtime.isEmpty { parts.append(runtime) }
+        if let certification = meta.certification?.trimmingCharacters(in: .whitespaces), !certification.isEmpty {
+            parts.append(certification)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     // MARK: Days
@@ -443,12 +538,10 @@ struct LiveTVCalendarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 34) {
+                LazyVStack(alignment: .leading, spacing: 44) {
                     ForEach(list, id: \.day) { day in
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text(Self.dayTitle(day.day) + "  ·  " + String(day.entries.count))
-                                .font(.system(size: 26, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.85))
+                        VStack(alignment: .leading, spacing: 16) {
+                            dayHeader(day.day, count: day.entries.count)
                             // Two in a row, more go on the next row.
                             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 26) {
                                 ForEach(day.entries) { entry in
@@ -465,6 +558,37 @@ struct LiveTVCalendarView: View {
                 .padding(.bottom, 60)
             }
         }
+    }
+
+    /// A day's start: its name (today in the accent colour), the date when
+    /// the name is "Tomorrow", how many, and a line across.
+    private func dayHeader(_ day: String, count: Int) -> some View {
+        let today = LiveTVCalendarLogic.day(of: Date(), in: LiveTVCalendarSettings.timeZone)
+        let title = Self.dayTitle(day)
+        let date = Self.dayDate(day)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
+                Text(title)
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(day == today ? LiveTVTheme.accent : .white)
+                if date != title {
+                    Text(date)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                Spacer(minLength: 10)
+                Text(String(count))
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.white.opacity(0.75))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.15), in: Capsule())
+            }
+            Rectangle()
+                .fill(Color.white.opacity(day == today ? 0.5 : 0.25))
+                .frame(height: 2)
+        }
+        .frame(width: 2 * Self.cardWidth + 28)
     }
 
     private static let columns = [GridItem(.fixed(cardWidth), spacing: 28, alignment: .topLeading),
@@ -484,20 +608,42 @@ struct LiveTVCalendarView: View {
 
     // MARK: Text
 
-    /// "S2 · E5 · Title" (several: "S2 · E5–E8"); a film's other release.
+    /// "S02 · E05 · Title" (several: "S02 · E05–E08"); a film's other release.
     static func subtitle(_ entry: LiveTVCalendarEntry) -> String? {
         guard entry.kind == .episode, let season = entry.season, let episode = entry.episode else { return entry.note }
-        var parts = ["S\(season)", entry.lastEpisode.map { "E\(episode)–E\($0)" } ?? "E\(episode)"]
+        var parts = ["S" + two(season), entry.lastEpisode.map { "E\(two(episode))–E\(two($0))" } ?? "E" + two(episode)]
         if let title = entry.episodeTitle, !entry.spoiler { parts.append(title) }
         return parts.joined(separator: " · ")
     }
 
-    /// "Today 20:15 · NBC", "Fri, Nov 27 · Netflix".
+    /// 5 → "05", 12 → "12".
+    static func two(_ number: Int) -> String { number < 10 && number >= 0 ? "0\(number)" : String(number) }
+
+    /// "Today 20:15 · NBC", "Tomorrow · time not announced · Paramount+".
     static func when(_ entry: LiveTVCalendarEntry) -> String {
         var parts = [dayTitle(entry.day)]
-        if let air = entry.air { parts[0] += " " + clock(air) }
+        if let air = entry.air {
+            parts[0] += " " + clock(air)
+        } else if entry.kind == .episode {
+            parts.append(L10n.string("livetv_cal_no_time", fallback: "time not announced"))
+        }
         if let network = entry.network { parts.append(network) }
         return parts.joined(separator: " · ")
+    }
+
+    /// "DE" → "Germany", in the app's language.
+    static func countryName(_ code: String) -> String {
+        Locale.current.localizedString(forRegionCode: code) ?? code
+    }
+
+    /// "Fri, Nov 27" (never "Tomorrow").
+    static func dayDate(_ day: String) -> String {
+        let zone = LiveTVCalendarSettings.timeZone
+        guard let date = LiveTVCalendarLogic.start(of: day, in: zone) else { return day }
+        let formatter = DateFormatter()
+        formatter.timeZone = zone
+        formatter.setLocalizedDateFormatFromTemplate("EEEMMMd")
+        return formatter.string(from: date)
     }
 
     static func dayTitle(_ day: String) -> String {
