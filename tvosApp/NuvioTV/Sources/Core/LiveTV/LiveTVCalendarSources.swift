@@ -48,6 +48,27 @@ actor LiveTVCalendarSources {
         return URLSession(configuration: configuration)
     }()
 
+    /// TVmaze's lookups answer with a redirect to the show: its id is in
+    /// the address, so the redirect isn't followed (one request, not two).
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
+    private let lookupSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.httpAdditionalHeaders = ["User-Agent": "NuvioTV"]
+        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+    }()
+
+    /// TVmaze's shows changed in the last week (id → when), asked once per
+    /// build: a kept show that hasn't changed isn't asked again.
+    private var updated: [Int: Date]?
+    private var updatedAt: Date?
+
     private struct IDRecord: Codable {
         /// 0: TVmaze doesn't have it (asked again after a week).
         var id: Int
@@ -136,17 +157,48 @@ actor LiveTVCalendarSources {
         }
         guard fetch else { return nil }
         var found: Int?
-        if let imdb, let body = await tvmaze("/lookup/shows?imdb=\(imdb)") as? [String: Any] {
-            found = body["id"] as? Int
-        }
-        if found == nil, let tvdb = await tvdbID(imdb: imdb, tmdb: tmdb),
-           let body = await tvmaze("/lookup/shows?thetvdb=\(tvdb)") as? [String: Any] {
-            found = body["id"] as? Int
-        }
+        if let imdb { found = await lookup("imdb=\(imdb)") }
+        if found == nil, let tvdb = await tvdbID(imdb: imdb, tmdb: tmdb) { found = await lookup("thetvdb=\(tvdb)") }
         guard !Task.isCancelled else { return found }
         ids?[key] = IDRecord(id: found ?? 0, at: Date())
         if let ids { write(ids, "tvmaze_ids.json") }
         return found
+    }
+
+    /// A show's id from TVmaze's lookup: the redirect's address
+    /// (".../shows/123"), or the body when it answers directly.
+    private func lookup(_ query: String) async -> Int? {
+        guard let url = URL(string: "https://api.tvmaze.com/lookup/shows?" + query) else { return nil }
+        for attempt in 0..<2 {
+            await CalendarTvmazeRateLimiter.shared.wait()
+            guard !Task.isCancelled, let (data, response) = try? await lookupSession.data(from: url),
+                  let http = response as? HTTPURLResponse else { return nil }
+            if http.statusCode == 429, attempt == 0 {
+                await CalendarTvmazeRateLimiter.shared.pause(seconds: 10)
+                continue
+            }
+            if (300..<400).contains(http.statusCode), let location = http.value(forHTTPHeaderField: "Location"),
+               let range = location.range(of: #"/shows/(\d+)"#, options: .regularExpression) {
+                return Int(location[range].dropFirst("/shows/".count))
+            }
+            guard (200..<300).contains(http.statusCode),
+                  let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return body["id"] as? Int
+        }
+        return nil
+    }
+
+    /// Asks TVmaze once which shows changed in the last week (kept for the
+    /// build; again after an hour).
+    func loadUpdates() async {
+        if let updatedAt, Date().timeIntervalSince(updatedAt) < 3600 { return }
+        guard let body = await tvmaze("/updates/shows?since=week") as? [String: Any] else { return }
+        var result: [Int: Date] = [:]
+        for (key, value) in body {
+            if let id = Int(key), let time = value as? Double { result[id] = Date(timeIntervalSince1970: time) }
+        }
+        updated = result
+        updatedAt = Date()
     }
 
     private func tvdbID(imdb: String?, tmdb: Int?) async -> Int? {
@@ -167,7 +219,7 @@ actor LiveTVCalendarSources {
     func show(_ id: Int, fetch: Bool, force: Bool) async -> LiveTVCalendarShow? {
         let name = "show_\(id).json"
         let cached = read(LiveTVCalendarShow.self, name)
-        guard fetch, force || cached?.isStale(now: Date()) ?? true else { return cached }
+        guard fetch, force || needsAsking(cached) else { return cached }
         guard let body = await tvmaze("/shows/\(id)?embed[]=images&embed[]=seasons&embed[]=episodes") as? [String: Any]
         else { return cached }
         let embedded = body["_embedded"] as? [String: Any]
@@ -229,6 +281,17 @@ actor LiveTVCalendarSources {
         guard !Task.isCancelled else { return cached ?? show }
         write(show, name)
         return show
+    }
+
+    /// Asked again: not kept, changed on TVmaze since it was kept, or (no
+    /// list of changes) old by the lifetimes above. A show kept before the
+    /// week of changes is asked again too.
+    private func needsAsking(_ cached: LiveTVCalendarShow?) -> Bool {
+        guard let cached else { return true }
+        guard let updated, let updatedAt else { return cached.isStale(now: Date()) }
+        if updatedAt.timeIntervalSince(cached.fetchedAt) > 6 * 86_400 { return true }
+        guard let changed = updated[cached.id] else { return false }
+        return changed > cached.fetchedAt
     }
 
     // MARK: Films (TMDB)
@@ -296,24 +359,43 @@ actor LiveTVCalendarSources {
     /// poster) and its network's logo (CBS, Netflix…). Kept for good.
     struct Art: Codable, Sendable {
         var backdrop: String?
+        /// The network's logo.
         var logo: String?
+        /// The show's or film's own logo.
+        var titleLogo: String?
+        /// 2: with the title logo (older ones are asked again).
+        var version: Int?
     }
 
     /// `fetch` false: only what's known.
     func art(imdb: String, fetch: Bool) async -> Art? {
         if arts == nil { arts = read([String: Art].self, "art.json") ?? [:] }
-        if let known = arts?[imdb] { return known }
+        if let known = arts?[imdb], known.version == 2 || !fetch { return known }
         guard fetch, let found = await tmdb("/find/\(imdb)?external_source=imdb_id") else { return nil }
-        var art = Art()
+        var art = Art(version: 2)
+        let language = Locale.current.language.languageCode?.identifier ?? "en"
+        let images = "append_to_response=images&include_image_language=\(language),en,null"
+        // The logo in your language, else English, else one without text.
+        func titleLogo(_ detail: [String: Any]) -> String? {
+            let logos = ((detail["images"] as? [String: Any])?["logos"] as? [[String: Any]]) ?? []
+            let pick = logos.first { ($0["iso_639_1"] as? String) == language }
+                ?? logos.first { ($0["iso_639_1"] as? String) == "en" }
+                ?? logos.first
+            return (pick?["file_path"] as? String).map { "https://image.tmdb.org/t/p/w500" + $0 }
+        }
         if let show = (found["tv_results"] as? [[String: Any]])?.first {
             art.backdrop = (show["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 }
-            if let id = show["id"] as? Int, let detail = await tmdb("/tv/\(id)"),
-               let networks = detail["networks"] as? [[String: Any]],
-               let logo = networks.lazy.compactMap({ $0["logo_path"] as? String }).first {
-                art.logo = "https://image.tmdb.org/t/p/w154" + logo
+            if let id = show["id"] as? Int, let detail = await tmdb("/tv/\(id)?\(images)") {
+                let networks = (detail["networks"] as? [[String: Any]]) ?? []
+                art.logo = networks.lazy.compactMap { $0["logo_path"] as? String }.first
+                    .map { "https://image.tmdb.org/t/p/w154" + $0 }
+                art.titleLogo = titleLogo(detail)
             }
         } else if let movie = (found["movie_results"] as? [[String: Any]])?.first {
             art.backdrop = (movie["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 }
+            if let id = movie["id"] as? Int, let detail = await tmdb("/movie/\(id)?\(images)") {
+                art.titleLogo = titleLogo(detail)
+            }
         }
         guard !Task.isCancelled else { return art }
         arts?[imdb] = art

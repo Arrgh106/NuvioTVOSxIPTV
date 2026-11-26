@@ -874,7 +874,8 @@ check(LiveTVCalendarLogic.grouped([calEpisode(2, 1), calEpisode(2, 2), calEpisod
 check(LiveTVCalendarLogic.isNew(aired: true, watched: false, day: "2026-11-19", today: "2026-11-20")
       && !LiveTVCalendarLogic.isNew(aired: true, watched: false, day: "2026-11-18", today: "2026-11-20")
       && !LiveTVCalendarLogic.isNew(aired: false, watched: false, day: "2026-11-20", today: "2026-11-20"), "calendar: new")
-check(LiveTVCalendarLogic.episodeName("Episode 4") == nil && LiveTVCalendarLogic.episodeName("Pilot") == "Pilot", "calendar: placeholder names")
+check(LiveTVCalendarLogic.episodeName("Episode 4") == nil && LiveTVCalendarLogic.episodeName("TBA") == nil
+      && LiveTVCalendarLogic.episodeName("Pilot") == "Pilot", "calendar: placeholder names")
 check(LiveTVCalendarLogic.plainText("<p>Tom &amp; Jerry&#39;s day</p>") == "Tom & Jerry's day", "calendar: summary text")
 check(!LiveTVCalendarLogic.isAhead(season: 2, episode: 4, furthest: (2, 3))
       && !LiveTVCalendarLogic.isAhead(season: 3, episode: 1, furthest: (2, 9))

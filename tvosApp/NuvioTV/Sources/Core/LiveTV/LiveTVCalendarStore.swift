@@ -37,7 +37,8 @@ final class LiveTVCalendarStore: ObservableObject {
         if updatedAt.map({ Date().timeIntervalSince($0) > 30 * 60 }) ?? true { build(fetch: true, force: false) }
     }
 
-    func refresh() { build(fetch: true, force: true) }
+    /// Refresh: what changed on TVmaze (its list of changes says which).
+    func refresh() { build(fetch: true, force: false) }
 
     // MARK: Candidates
 
@@ -189,6 +190,16 @@ final class LiveTVCalendarStore: ObservableObject {
         let previous = fetch ? entries : []
         var asked = Set<String>()
         var artToAsk: [String] = []
+        var arts: [String: LiveTVCalendarSources.Art] = [:]
+        if fetch { await sources.loadUpdates() }
+        // TMDB's pictures and logos while TVmaze is asked (another server).
+        var known: [String] = []
+        for imdb in (shows + movies).compactMap(\.imdb) {
+            if let art = await sources.art(imdb: imdb, fetch: false), art.version == 2 { arts[imdb] = art } else { known.append(imdb) }
+        }
+        let early = known
+        let artTask: Task<[String: LiveTVCalendarSources.Art], Never>? = fetch && !early.isEmpty
+            ? Task { await Self.askArt(early) } : nil
         let now = Date()
         let today = LiveTVCalendarLogic.day(of: now, in: zone)
         let from = LiveTVCalendarLogic.day(today, plus: -Self.daysBack)
@@ -216,8 +227,11 @@ final class LiveTVCalendarStore: ObservableObject {
             let watchedOf = seen[candidate.id] ?? candidate.imdb.flatMap { seen[$0] }
             // TMDB's picture and logo: what's known now, the rest asked for
             // after TVmaze (side by side, not one by one in between).
-            let art = contentID.hasPrefix("tt") ? await sources.art(imdb: contentID, fetch: false) : nil
-            if art == nil, contentID.hasPrefix("tt"), fetch, artToAsk.count < 300 { artToAsk.append(contentID) }
+            var art = arts[contentID]
+            if art == nil, contentID.hasPrefix("tt") { art = await sources.art(imdb: contentID, fetch: false) }
+            if art == nil, contentID.hasPrefix("tt"), fetch, !early.contains(contentID), artToAsk.count < 300 {
+                artToAsk.append(contentID)
+            }
             let background = candidate.background ?? show.background ?? art?.backdrop
             let highest = show.episodes.map(\.season).max() ?? 0
             let inside = show.episodes.filter { $0.airdate >= from && $0.airdate <= to }
@@ -243,7 +257,8 @@ final class LiveTVCalendarStore: ObservableObject {
                     episodeTitle: single ? first.name : nil,
                     episodeImage: first.image,
                     summary: single ? first.summary : nil,
-                    air: air, day: day, network: show.network, networkLogo: art?.logo, streaming: show.streaming,
+                    air: air, day: day, network: show.network, networkLogo: art?.logo, titleLogo: art?.titleLogo,
+                    streaming: show.streaming,
                     tags: tags, reasons: candidate.reasons, watched: watched, runtime: first.runtime)
                 if hideSpoilers, let furthest = watchedOf?.furthest, !watched {
                     entry.spoiler = LiveTVCalendarLogic.isAhead(season: first.season, episode: first.number, furthest: furthest)
@@ -265,18 +280,27 @@ final class LiveTVCalendarStore: ObservableObject {
                     key: "mv|\(contentID)|\(card.tag.rawValue)",
                     kind: .movie, contentID: contentID, title: record.title ?? candidate.name,
                     poster: candidate.poster ?? record.poster, background: candidate.background ?? record.background,
-                    summary: record.about, day: card.day, tags: [card.tag], note: card.note,
-                    reasons: candidate.reasons))
+                    summary: record.about, day: card.day, titleLogo: candidate.imdb.flatMap { arts[$0]?.titleLogo },
+                    tags: [card.tag], note: card.note, reasons: candidate.reasons))
             }
+        }
+        guard !Task.isCancelled else { return Self.merged(result) }
+        var found: [String: LiveTVCalendarSources.Art] = [:]
+        if let artTask {
+            entries = Self.merged(result)
+            found = await artTask.value
         }
         if !artToAsk.isEmpty, !Task.isCancelled {
             entries = Self.merged(result)
-            let found = await Self.askArt(artToAsk)
+            found.merge(await Self.askArt(artToAsk)) { first, _ in first }
+        }
+        if !found.isEmpty {
             result = result.map { entry in
                 guard let art = found[entry.contentID] else { return entry }
                 var changed = entry
                 if changed.background == nil { changed.background = art.backdrop }
                 if changed.kind == .episode { changed.networkLogo = art.logo }
+                changed.titleLogo = art.titleLogo
                 return changed
             }
         }

@@ -68,6 +68,8 @@ struct LiveTVCalendarEntry: Identifiable, Equatable, Sendable {
     var network: String?
     /// The network's logo (TMDB), shown in place of its name.
     var networkLogo: String?
+    /// The show's or film's own logo (TMDB), in place of its title.
+    var titleLogo: String?
     var streaming = false
     var tags: [LiveTVCalendarTag] = []
     /// Films: the other release ("At home Oct 2").
@@ -149,10 +151,10 @@ enum LiveTVCalendarLogic {
         aired && !watched && day >= Self.day(today, plus: -1)
     }
 
-    /// TVmaze's placeholder names ("Episode 5") say nothing.
+    /// TVmaze's placeholder names ("Episode 5", "TBA") say nothing.
     static func episodeName(_ name: String?) -> String? {
         guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
-        if name.range(of: #"^(?i)episode \d+$"#, options: .regularExpression) != nil { return nil }
+        if name.range(of: #"^(?i)(episode \d+|tba|tbd|to be announced)$"#, options: .regularExpression) != nil { return nil }
         return name
     }
 

@@ -143,9 +143,22 @@ struct LiveTVCalendarView: View {
     private func details(_ entry: LiveTVCalendarEntry?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if let entry {
-                Text(entry.title)
-                    .font(.system(size: 44, weight: .bold))
-                    .lineLimit(1)
+                // The show's own logo when TMDB has one, else its title.
+                if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
+                    AsyncImage(url: logo) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().aspectRatio(contentMode: .fit)
+                        } else {
+                            Text(entry.title).font(.system(size: 44, weight: .bold)).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: 520, maxHeight: 100, alignment: .leading)
+                    .id(logo)
+                } else {
+                    Text(entry.title)
+                        .font(.system(size: 44, weight: .bold))
+                        .lineLimit(1)
+                }
                 if let line = Self.subtitle(entry) {
                     Text(line)
                         .font(.system(size: 24, weight: .semibold))
@@ -325,14 +338,28 @@ private struct LiveTVCalendarCard: View {
                             if entry.watched {
                                 chip("✓", fill: .black.opacity(0.7))
                             } else if let tag = entry.tags.first {
-                                chip(LiveTVCalendarView.tagTitle(tag), fill: LiveTVTheme.accent.opacity(0.9))
+                                // A white accent: dark text on it.
+                                chip(LiveTVCalendarView.tagTitle(tag), fill: LiveTVTheme.accent.opacity(0.9),
+                                     text: LiveTVTheme.isWhiteAccent ? .black : .white)
                             }
                         }
                         Spacer()
                         HStack(alignment: .bottom) {
-                            Text(entry.title.uppercased())
-                                .font(.system(size: 20, weight: .heavy))
-                                .lineLimit(2)
+                            if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
+                                AsyncImage(url: logo) { phase in
+                                    if case .success(let image) = phase {
+                                        image.resizable().aspectRatio(contentMode: .fit)
+                                            .shadow(color: .black.opacity(0.8), radius: 4)
+                                    } else {
+                                        Text(entry.title.uppercased()).font(.system(size: 20, weight: .heavy)).lineLimit(2)
+                                    }
+                                }
+                                .frame(maxWidth: 220, maxHeight: 56, alignment: .bottomLeading)
+                            } else {
+                                Text(entry.title.uppercased())
+                                    .font(.system(size: 20, weight: .heavy))
+                                    .lineLimit(2)
+                            }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
                                 // The network's logo on a light chip (most are dark).
@@ -374,9 +401,10 @@ private struct LiveTVCalendarCard: View {
         .onChange(of: focused) { _, now in if now { onFocus() } }
     }
 
-    private func chip(_ text: String, fill: Color) -> some View {
+    private func chip(_ text: String, fill: Color, text color: Color = .white) -> some View {
         Text(text)
             .font(.system(size: 17, weight: .bold))
+            .foregroundColor(color)
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
