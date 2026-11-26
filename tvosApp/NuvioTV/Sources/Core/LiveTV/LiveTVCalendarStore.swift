@@ -158,6 +158,34 @@ final class LiveTVCalendarStore: ObservableObject {
     private static let daysBack = 30
     private static let daysAhead = 120
 
+    /// Something is playing: the calendar doesn't ask the network then (set
+    /// by the app).
+    static var isPlaying: () -> Bool = { false }
+    private var warmed = false
+
+    /// At app start, as Android: the cards from the disk after 3 s, fresh
+    /// ones after 40 s, then every 3 h; never while something plays.
+    func warmUp() {
+        guard !warmed else { return }
+        warmed = true
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self else { return }
+            if !self.builtOnce { self.build(fetch: false, force: false) }
+            try? await Task.sleep(nanoseconds: 40_000_000_000)
+            while !Task.isCancelled {
+                if Self.isPlaying() {
+                    try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                    continue
+                }
+                if self.updatedAt.map({ Date().timeIntervalSince($0) > 30 * 60 }) ?? true {
+                    self.build(fetch: true, force: false)
+                }
+                try? await Task.sleep(nanoseconds: 3 * 3600 * 1_000_000_000)
+            }
+        }
+    }
+
     /// The calendar screen opened: what's on disk at once, then fresh data
     /// when it's older than 30 minutes.
     func opened() {
@@ -301,6 +329,7 @@ final class LiveTVCalendarStore: ObservableObject {
         task?.cancel()
         builtOnce = true
         builtWith = LiveTVCalendarSettings.signature
+        hidden = Self.loadHidden()
         isLoading = fetch
         task = Task { [weak self] in
             guard let self else { return }
@@ -555,7 +584,9 @@ enum LiveTVCalendarSettings {
     }
 
     /// What the cards depend on in Settings: a change makes them again.
-    @MainActor static var signature: String { "\(timeZone.identifier)|\(hideSpoilers)|\(country)" }
+    @MainActor static var signature: String {
+        "\(ProfileSettings.activeProfileID ?? "")|\(timeZone.identifier)|\(hideSpoilers)|\(country)"
+    }
 
     /// The time zone of the calendar's days and times: the Apple TV's, or
     /// the one chosen in Settings → Live TV → Calendar.

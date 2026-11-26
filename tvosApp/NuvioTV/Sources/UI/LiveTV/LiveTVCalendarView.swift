@@ -76,8 +76,21 @@ struct LiveTVCalendarView: View {
         }
     }
 
+    /// Upcoming / Recently aired: your own calendar, in List, Week or Month.
+    private var ownCalendar: Bool { tab == .upcoming || tab == .recent }
+
+    /// As Android's: in Week and Month, Upcoming and Recently aired are one
+    /// tab, My calendar. Hidden only while there are any.
     private var tabs: [Tab] {
-        Tab.allCases.filter { $0 != .hidden || !store.hidden.isEmpty }
+        Tab.allCases.filter { item in
+            if item == .hidden { return !store.hidden.isEmpty }
+            if item == .recent { return mode == .list }
+            return true
+        }
+    }
+
+    private func tabTitle(_ item: Tab) -> String {
+        item == .upcoming && mode != .list ? L10n.string("livetv_cal_mine", fallback: "My calendar") : item.title
     }
 
     /// Airing today through its filter.
@@ -132,7 +145,8 @@ struct LiveTVCalendarView: View {
 
     var body: some View {
         let list = days
-        let focused = (mode == .list ? shown : store.entries).first { $0.key == focusedKey } ?? list.first?.entries.first
+        let focused = (ownCalendar && mode != .list ? store.entries : shown).first { $0.key == focusedKey }
+            ?? (ownCalendar ? list.first?.entries.first : shown.first)
         VStack(alignment: .leading, spacing: 0) {
                 header
                     .padding(.horizontal, 60)
@@ -147,19 +161,24 @@ struct LiveTVCalendarView: View {
                         .padding(.horizontal, 60)
                         .padding(.top, 8)
                 }
-                switch mode {
-                case .list:
+                if !ownCalendar {
                     if tab != .hidden {
                         details(focused)
                             .padding(.horizontal, 60)
                             .frame(height: 200, alignment: .bottomLeading)
                     }
                     switch tab {
-                    case .upcoming, .recent: content(list)
                     case .airing: airingContent
                     case .following: grid(followingCards, empty: L10n.string("livetv_cal_following_empty", fallback: "Ring the bell on a show's or film's page (or hold OK on a card) and it shows up here."))
-                    case .hidden: hiddenContent
+                    default: hiddenContent
                     }
+                } else {
+                switch mode {
+                case .list:
+                    details(focused)
+                        .padding(.horizontal, 60)
+                        .frame(height: 220, alignment: .bottomLeading)
+                    content(list)
                 case .week:
                     details(focused)
                         .padding(.horizontal, 60)
@@ -168,6 +187,7 @@ struct LiveTVCalendarView: View {
                 case .month:
                     LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
                         .padding(.top, 16)
+                }
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -256,64 +276,57 @@ struct LiveTVCalendarView: View {
 
     // MARK: Header
 
+    /// One row, as Android's: the tabs on the left; for your own calendar
+    /// List / Week / Month on the right, then Refresh.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            topRow
-            // Week and Month show everything: no tabs.
-            if mode == .list {
-                HStack(spacing: 16) {
-                    ForEach(tabs) { item in
-                        Button {
-                            tab = item
-                            focusedKey = nil
-                        } label: {
-                            Text(item.title)
-                                .font(.system(size: 22, weight: tab == item ? .bold : .regular))
-                        }
-                    }
-                    if tab == .recent {
-                        Button {
-                            unwatchedOnly.toggle()
-                            LiveTVCalendarSettings.unwatchedOnly = unwatchedOnly
-                        } label: {
-                            Label(L10n.string("livetv_cal_unwatched", fallback: "Unwatched only"),
-                                  systemImage: unwatchedOnly ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20))
-                        }
-                    }
+        HStack(spacing: 14) {
+            ForEach(tabs) { item in
+                Button {
+                    tab = item
+                    focusedKey = nil
+                } label: {
+                    Text(tabTitle(item))
+                        .font(.system(size: 22, weight: tab == item || (item == .upcoming && tab == .recent && mode != .list) ? .bold : .regular))
                 }
             }
-        }
-    }
-
-    private var topRow: some View {
-        HStack(spacing: 18) {
-            Text(L10n.string("livetv_cal_title", fallback: "Calendar"))
-                .font(.system(size: 36, weight: .bold))
-            Spacer()
+            if tab == .recent, mode == .list {
+                Button {
+                    unwatchedOnly.toggle()
+                    LiveTVCalendarSettings.unwatchedOnly = unwatchedOnly
+                } label: {
+                    Image(systemName: unwatchedOnly ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22))
+                        .accessibilityLabel(L10n.string("livetv_cal_unwatched", fallback: "Unwatched only"))
+                }
+            }
+            Spacer(minLength: 12)
             if let progress = store.progress, progress.total > 0 {
                 Text(L10n.format("livetv_cal_progress_format", fallback: "Updating %d of %d", progress.done, progress.total))
-                    .font(.system(size: 20))
+                    .font(.system(size: 18))
                     .foregroundColor(.white.opacity(0.6))
             } else if store.isLoading {
                 ProgressView()
             }
-            // List / Week / Month.
-            ForEach(Mode.allCases) { item in
-                Button {
-                    mode = item
+            if ownCalendar {
+                Picker(L10n.string("livetv_cal_view", fallback: "View"), selection: $mode) {
+                    ForEach(Mode.allCases) { item in
+                        Text(item.title).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 380)
+                .onChange(of: mode) { _, now in
                     focusedKey = nil
-                    LiveTVCalendarSettings.view = item.rawValue
-                } label: {
-                    Text(item.title)
-                        .font(.system(size: 22, weight: mode == item ? .bold : .regular))
+                    LiveTVCalendarSettings.view = now.rawValue
+                    if now != .list, tab == .recent { tab = .upcoming }
                 }
             }
             Button {
-                store.refresh()
+                if tab == .airing { store.loadAiring(force: true) } else { store.refresh() }
             } label: {
-                Label(L10n.string("livetv_refresh", fallback: "Refresh"), systemImage: "arrow.clockwise")
-                    .font(.system(size: 22))
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 22, weight: .semibold))
+                    .accessibilityLabel(L10n.string("livetv_refresh", fallback: "Refresh"))
             }
             .disabled(store.isLoading)
         }

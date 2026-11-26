@@ -969,6 +969,11 @@ struct ContentView: View {
             syncManager.attach(authManager: authManager, profileViewModel: profileViewModel)
             ICloudSettingsSyncManager.shared.start()
             setupPictureInPicture()
+            // Fork: the calendar is ready before it's opened (Live TV step 16).
+            LiveTVCalendarStore.isPlaying = {
+                LiveTVPlayer.shared.isFullscreen || LiveTVMultiview.shared.isOpen || activeScreen.isPlayer
+            }
+            LiveTVCalendarStore.shared.warmUp()
             guard !resolvedInitialScreen else { return }
             resolvedInitialScreen = true
             // Skip the login gate if a session was restored or the user has
