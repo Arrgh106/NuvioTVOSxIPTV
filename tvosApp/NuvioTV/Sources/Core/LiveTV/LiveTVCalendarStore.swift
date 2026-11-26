@@ -195,7 +195,7 @@ final class LiveTVCalendarStore: ObservableObject {
         // TMDB's pictures and logos while TVmaze is asked (another server).
         var known: [String] = []
         for imdb in (shows + movies).compactMap(\.imdb) {
-            if let art = await sources.art(imdb: imdb, fetch: false), art.version == 2 { arts[imdb] = art } else { known.append(imdb) }
+            if let art = await sources.art(imdb: imdb, fetch: false), art.version == 3 { arts[imdb] = art } else { known.append(imdb) }
         }
         let early = known
         let artTask: Task<[String: LiveTVCalendarSources.Art], Never>? = fetch && !early.isEmpty

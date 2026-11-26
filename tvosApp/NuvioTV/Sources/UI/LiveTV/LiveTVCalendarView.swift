@@ -371,18 +371,18 @@ private struct LiveTVCalendarCard: View {
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                // The network's logo on a light chip (most are dark).
+                                // The network's logo in white (as Apple TV's
+                                // apps): the same on every picture.
                                 AsyncImage(url: logo) { phase in
                                     if case .success(let image) = phase {
-                                        image.resizable().aspectRatio(contentMode: .fit)
+                                        image.renderingMode(.template).resizable().aspectRatio(contentMode: .fit)
+                                            .foregroundColor(.white)
+                                            .shadow(color: .black.opacity(0.9), radius: 3)
                                     } else if let network = entry.network {
-                                        Text(network).font(.system(size: 15, weight: .bold)).foregroundColor(.black)
+                                        chip(network, fill: .white.opacity(0.2))
                                     }
                                 }
-                                .frame(maxWidth: 110, maxHeight: 26)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 6))
+                                .frame(maxWidth: 96, maxHeight: 30, alignment: .bottomTrailing)
                             } else if let network = entry.network {
                                 chip(network, fill: .white.opacity(0.2))
                             }

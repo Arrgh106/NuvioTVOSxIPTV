@@ -366,21 +366,23 @@ actor LiveTVCalendarSources {
         var logo: String?
         /// The show's or film's own logo.
         var titleLogo: String?
-        /// 2: with the title logo (older ones are asked again).
+        /// 3: with the title logo, PNGs only (older ones are asked again).
         var version: Int?
     }
 
     /// `fetch` false: only what's known.
     func art(imdb: String, fetch: Bool) async -> Art? {
         if arts == nil { arts = read([String: Art].self, "art.json") ?? [:] }
-        if let known = arts?[imdb], known.version == 2 || !fetch { return known }
+        if let known = arts?[imdb], known.version == 3 || !fetch { return known }
         guard fetch, let found = await tmdb("/find/\(imdb)?external_source=imdb_id") else { return nil }
-        var art = Art(version: 2)
+        var art = Art(version: 3)
         let language = Locale.current.language.languageCode?.identifier ?? "en"
         let images = "append_to_response=images&include_image_language=\(language),en,null"
         // The logo in your language, else English, else one without text.
         func titleLogo(_ detail: [String: Any]) -> String? {
-            let logos = ((detail["images"] as? [String: Any])?["logos"] as? [[String: Any]]) ?? []
+            // PNGs only: the Apple TV's pictures can't draw SVG.
+            let logos = (((detail["images"] as? [String: Any])?["logos"] as? [[String: Any]]) ?? [])
+                .filter { ($0["file_path"] as? String)?.lowercased().hasSuffix(".png") == true }
             let pick = logos.first { ($0["iso_639_1"] as? String) == language }
                 ?? logos.first { ($0["iso_639_1"] as? String) == "en" }
                 ?? logos.first
@@ -390,7 +392,8 @@ actor LiveTVCalendarSources {
             art.backdrop = (show["backdrop_path"] as? String).map { "https://image.tmdb.org/t/p/w1280" + $0 }
             if let id = show["id"] as? Int, let detail = await tmdb("/tv/\(id)?\(images)") {
                 let networks = (detail["networks"] as? [[String: Any]]) ?? []
-                art.logo = networks.lazy.compactMap { $0["logo_path"] as? String }.first
+                art.logo = networks.lazy.compactMap { $0["logo_path"] as? String }
+                    .first { $0.lowercased().hasSuffix(".png") }
                     .map { "https://image.tmdb.org/t/p/w154" + $0 }
                 art.titleLogo = titleLogo(detail)
             }
