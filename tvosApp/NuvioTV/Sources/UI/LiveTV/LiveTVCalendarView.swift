@@ -363,8 +363,8 @@ private struct LiveTVCalendarCard: View {
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                LiveTVLogo(url: logo, style: .network, box: CGSize(width: 96, height: 30), area: 1_500,
-                                           alignment: .bottomTrailing) {
+                                LiveTVLogo(url: logo, style: .network, box: CGSize(width: 84, height: 24), area: 1_150,
+                                           alignment: .center) {
                                     if let network = entry.network { chip(network, fill: .white.opacity(0.2)) }
                                 }
                             } else if let network = entry.network {
@@ -406,56 +406,68 @@ private struct LiveTVCalendarCard: View {
 }
 
 /// A logo, made to look alike on every card: its empty edges cut off and
-/// sized to the same area whether it is wide or tall. Network logos are
-/// drawn in white: their shape when they stand free (FOX, CBS), their light
-/// parts when they sit on a box or a dark disc (TF1, ABC), so none turns
-/// into a white blot. Title logos keep their colours.
+/// sized to the same area whether it is wide or tall. Network logos keep
+/// their colours on one plate, the same size everywhere: light under a
+/// dark logo (ABC, Discovery), dark under a light one (CBS), so every logo
+/// reads. Title logos keep their colours, without a plate.
 struct LiveTVLogo<Fallback: View>: View {
     enum Style { case title, network }
 
     let url: URL
     let style: Style
-    /// The most room it may take.
+    /// The most room the logo may take (inside the plate for networks).
     let box: CGSize
     /// The area every logo gets (points²), within `box`.
     let area: CGFloat
     let alignment: Alignment
     @ViewBuilder let fallback: () -> Fallback
 
-    @State private var image: UIImage?
+    @State private var made: LiveTVLogoMaker.Made?
     @State private var failed = false
+
+    /// The networks' plate around `box`.
+    private static var platePadding: CGSize { CGSize(width: 10, height: 7) }
 
     var body: some View {
         Group {
-            if let image {
-                let size = Self.size(of: image.size, box: box, area: area)
-                Image(uiImage: image)
-                    .resizable()
-                    .frame(width: size.width, height: size.height)
-                    .shadow(color: .black.opacity(0.75), radius: style == .network ? 3 : 4)
+            if let made {
+                let size = Self.size(of: made.image.size, box: box, area: area)
+                let logo = Image(uiImage: made.image).resizable().frame(width: size.width, height: size.height)
+                if style == .network {
+                    logo
+                        .frame(width: box.width, height: box.height)
+                        .padding(.horizontal, Self.platePadding.width)
+                        .padding(.vertical, Self.platePadding.height)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(made.light ? Color.black.opacity(0.62) : Color.white.opacity(0.9)))
+                        .shadow(color: .black.opacity(0.35), radius: 3)
+                } else {
+                    logo
+                        .shadow(color: .black.opacity(0.75), radius: 4)
+                        .frame(maxWidth: box.width, maxHeight: box.height, alignment: alignment)
+                }
             } else if failed {
                 fallback()
             } else {
                 Color.clear.frame(width: 1, height: 1)
             }
         }
-        .frame(maxWidth: box.width, maxHeight: box.height, alignment: alignment)
         .task(id: url) {
-            let key = "\(style == .network ? "n" : "t")|\(url.absoluteString)" as NSString
+            let key = url.absoluteString as NSString
             if let known = LiveTVLogoCache.shared.object(forKey: key) {
-                image = known
+                made = known
                 return
             }
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let loaded = UIImage(data: data),
-                  let made = await Task.detached(priority: .utility, operation: {
-                      LiveTVLogoMaker.make(loaded, white: style == .network)
-                  }).value else {
+                  let result = await Task.detached(priority: .utility, operation: { LiveTVLogoMaker.make(loaded) }).value
+            else {
                 failed = true
                 return
             }
-            LiveTVLogoCache.shared.setObject(made, forKey: key)
-            image = made
+            LiveTVLogoCache.shared.setObject(result, forKey: key)
+            made = result
         }
     }
 
@@ -472,12 +484,23 @@ struct LiveTVLogo<Fallback: View>: View {
 }
 
 enum LiveTVLogoCache {
-    @MainActor static let shared = NSCache<NSString, UIImage>()
+    @MainActor static let shared = NSCache<NSString, LiveTVLogoMaker.Made>()
 }
 
-/// Makes a logo alike: cut to what's drawn; for networks, white.
+/// Makes logos alike: cut to what's drawn, and tells whether it is light
+/// (for the plate under it).
 enum LiveTVLogoMaker {
-    static func make(_ image: UIImage, white: Bool) -> UIImage? {
+    final class Made {
+        let image: UIImage
+        /// Mostly light: a dark plate under it.
+        let light: Bool
+        init(image: UIImage, light: Bool) {
+            self.image = image
+            self.light = light
+        }
+    }
+
+    static func make(_ image: UIImage) -> Made? {
         guard let cgImage = image.cgImage else { return nil }
         let width = cgImage.width, height = cgImage.height
         guard width > 0, height > 0, width * height <= 4_000_000 else { return nil }
@@ -491,50 +514,24 @@ enum LiveTVLogoMaker {
             return true
         }
         guard drawn else { return nil }
-
-        func luminance(_ i: Int) -> Double {
-            let alpha = Double(pixels[i + 3])
-            guard alpha > 0 else { return 0 }
-            return (0.2126 * Double(pixels[i]) + 0.7152 * Double(pixels[i + 1]) + 0.0722 * Double(pixels[i + 2])) / alpha
-        }
-
-        if white {
-            // On a box or a dark disc: only its light parts (the lettering).
-            var opaque = 0, light = 0, dark = 0
-            for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i + 3] > 128 {
-                opaque += 1
-                let lum = luminance(i)
-                if lum > 0.7 { light += 1 } else if lum < 0.3 { dark += 1 }
-            }
-            let cover = Double(opaque) / Double(width * height)
-            let share = { (count: Int) in opaque > 0 ? Double(count) / Double(opaque) : 0 }
-            let lettering = cover > 0.85 || (share(light) > 0.12 && share(dark) > 0.2)
-            for i in stride(from: 0, to: pixels.count, by: 4) {
-                var alpha = Double(pixels[i + 3]) / 255
-                if lettering {
-                    let lum = luminance(i)
-                    alpha *= min(1, max(0, (lum - 0.55) / 0.25))
-                }
-                let value = UInt8(alpha * 255)
-                pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value; pixels[i + 3] = value
-            }
-        }
-
-        // Cut to what's drawn.
         var minX = width, minY = height, maxX = -1, maxY = -1
+        var weight = 0.0, light = 0.0
         for y in 0..<height {
-            for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 24 {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let alpha = Double(pixels[i + 3])
+                guard alpha > 24 else { continue }
                 minX = min(minX, x); maxX = max(maxX, x)
                 minY = min(minY, y); maxY = max(maxY, y)
+                let lum = (0.2126 * Double(pixels[i]) + 0.7152 * Double(pixels[i + 1]) + 0.0722 * Double(pixels[i + 2])) / alpha
+                weight += alpha
+                light += lum * alpha
             }
         }
         guard maxX >= minX, maxY >= minY else { return nil }
-        let made: CGImage? = pixels.withUnsafeMutableBytes { buffer in
-            CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                      bytesPerRow: width * 4, space: space, bitmapInfo: info)?.makeImage()
-        }
         let crop = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
-        guard let cut = made?.cropping(to: crop) else { return nil }
-        return UIImage(cgImage: cut)
+        guard let cut = cgImage.cropping(to: crop) else { return nil }
+        let average = weight > 0 ? light / weight : 0
+        return Made(image: UIImage(cgImage: cut, scale: image.scale, orientation: image.imageOrientation), light: average > 0.6)
     }
 }
