@@ -155,7 +155,7 @@ struct LiveTVCalendarView: View {
             if let entry {
                 // The show's own logo when TMDB has one, else its title.
                 if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                    LiveTVLogo(url: logo, style: .title, box: CGSize(width: 520, height: 110), area: 24_000,
+                    LiveTVCalendarLogo(url: logo, style: .title, box: CGSize(width: 520, height: 110), area: 24_000,
                                alignment: .bottomLeading) {
                         Text(entry.title).font(.system(size: 44, weight: .bold)).lineLimit(1)
                     }
@@ -352,7 +352,7 @@ private struct LiveTVCalendarCard: View {
                         Spacer()
                         HStack(alignment: .bottom) {
                             if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                                LiveTVLogo(url: logo, style: .title, box: CGSize(width: 220, height: 64), area: 7_000,
+                                LiveTVCalendarLogo(url: logo, style: .title, box: CGSize(width: 220, height: 64), area: 7_000,
                                            alignment: .bottomLeading) {
                                     Text(entry.title.uppercased()).font(.system(size: 20, weight: .heavy)).lineLimit(2)
                                 }
@@ -363,7 +363,7 @@ private struct LiveTVCalendarCard: View {
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                LiveTVLogo(url: logo, style: .network, box: CGSize(width: 84, height: 24), area: 1_150,
+                                LiveTVCalendarLogo(url: logo, style: .network, box: CGSize(width: 84, height: 24), area: 1_150,
                                            alignment: .center) {
                                     if let network = entry.network { chip(network, fill: .white.opacity(0.2)) }
                                 }
@@ -410,7 +410,7 @@ private struct LiveTVCalendarCard: View {
 /// their colours on one plate, the same size everywhere: light under a
 /// dark logo (ABC, Discovery), dark under a light one (CBS), so every logo
 /// reads. Title logos keep their colours, without a plate.
-struct LiveTVLogo<Fallback: View>: View {
+struct LiveTVCalendarLogo<Fallback: View>: View {
     enum Style { case title, network }
 
     let url: URL
@@ -422,7 +422,7 @@ struct LiveTVLogo<Fallback: View>: View {
     let alignment: Alignment
     @ViewBuilder let fallback: () -> Fallback
 
-    @State private var made: LiveTVLogoMaker.Made?
+    @State private var made: LiveTVCalendarLogoMaker.Made?
     @State private var failed = false
 
     /// The networks' plate around `box`.
@@ -455,18 +455,18 @@ struct LiveTVLogo<Fallback: View>: View {
         }
         .task(id: url) {
             let key = url.absoluteString as NSString
-            if let known = LiveTVLogoCache.shared.object(forKey: key) {
+            if let known = LiveTVCalendarLogoCache.shared.object(forKey: key) {
                 made = known
                 return
             }
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let loaded = UIImage(data: data),
-                  let result = await Task.detached(priority: .utility, operation: { LiveTVLogoMaker.make(loaded) }).value
+                  let result = await Task.detached(priority: .utility, operation: { LiveTVCalendarLogoMaker.make(loaded) }).value
             else {
                 failed = true
                 return
             }
-            LiveTVLogoCache.shared.setObject(result, forKey: key)
+            LiveTVCalendarLogoCache.shared.setObject(result, forKey: key)
             made = result
         }
     }
@@ -483,13 +483,13 @@ struct LiveTVLogo<Fallback: View>: View {
     }
 }
 
-enum LiveTVLogoCache {
-    @MainActor static let shared = NSCache<NSString, LiveTVLogoMaker.Made>()
+enum LiveTVCalendarLogoCache {
+    @MainActor static let shared = NSCache<NSString, LiveTVCalendarLogoMaker.Made>()
 }
 
 /// Makes logos alike: cut to what's drawn, and tells whether it is light
 /// (for the plate under it).
-enum LiveTVLogoMaker {
+enum LiveTVCalendarLogoMaker {
     final class Made {
         let image: UIImage
         /// Mostly light: a dark plate under it.
