@@ -67,6 +67,8 @@ struct LiveTVCalendarView: View {
     @State private var airingFilter: AiringFilter = .all
     /// Upcoming: only episodes in your Live TV guide (16d, Android's On my TV).
     @State private var onMyTV = false
+    /// OK on an episode in your guide: its Live TV options (16e).
+    @State private var liveChoice: LiveTVCalendarEntry?
 
     private var shown: [LiveTVCalendarEntry] {
         let now = Date()
@@ -185,10 +187,10 @@ struct LiveTVCalendarView: View {
                         details: AnyView(details(focused, compact: true)
                             .padding(.horizontal, 60)
                             .frame(height: 150, alignment: .topLeading)),
-                        onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                        onFocus: { focusedKey = $0.key }, onOpen: choose)
                         .padding(.top, 16)
                 case .month:
-                    LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
+                    LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: choose)
                         .padding(.top, 16)
                 }
                 }
@@ -205,6 +207,55 @@ struct LiveTVCalendarView: View {
             if tab == .airing { store.loadAiring() }
         }
         .onChange(of: tab) { _, now in if now == .airing { store.loadAiring() } }
+        .confirmationDialog(liveChoice?.title ?? "", isPresented: Binding(
+            get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } }
+        ), titleVisibility: .visible, presenting: liveChoice) { entry in
+            liveOptions(entry)
+        } message: { entry in
+            if let onTV = store.onTV[entry.key] {
+                Text(onTV.channelName + " · " + Self.clock(onTV.start) + "–" + Self.clock(onTV.end))
+            }
+        }
+    }
+
+    /// OK on a card: an episode in your Live TV guide opens its Live TV
+    /// options (Settings → Calendar → OK on an Episode in Your Guide), else
+    /// the show's or film's page.
+    private func choose(_ entry: LiveTVCalendarEntry) {
+        if LiveTVSettings.shared.calendarOkAction == "live", let onTV = store.onTV[entry.key], onTV.end > Date(),
+           LiveTVStore.shared.channel(id: onTV.channelID) != nil {
+            liveChoice = entry
+        } else {
+            onOpen(entry)
+        }
+    }
+
+    @ViewBuilder
+    private func liveOptions(_ entry: LiveTVCalendarEntry) -> some View {
+        if let onTV = store.onTV[entry.key], let channel = LiveTVStore.shared.channel(id: onTV.channelID) {
+            let now = Date()
+            if now >= onTV.start.addingTimeInterval(-10 * 60) {
+                Button(L10n.format("livetv_cal_watch_live_format", fallback: "Watch live on %@", channel.name)) {
+                    LiveTVWatch.shared.watch(LiveTVWatchRequest(channelID: channel.streamID))
+                }
+            }
+            if onTV.start > now {
+                let set = LiveTVReminders.shared.isSet(channelID: channel.streamID, start: onTV.start)
+                Button(set
+                       ? L10n.string("livetv_cal_remind_off", fallback: "Don't remind me")
+                       : L10n.format("livetv_cal_remind_format", fallback: "Remind me (%@, %@)",
+                                     channel.name, Self.clock(onTV.start))) {
+                    LiveTVReminders.shared.toggle(
+                        channel: channel,
+                        programme: XtreamProgram(title: onTV.title, description: nil, start: onTV.start, end: onTV.end))
+                }
+            }
+        }
+        Button(L10n.string(entry.kind == .movie ? "livetv_cal_open_film" : "livetv_cal_open_show",
+                           fallback: entry.kind == .movie ? "Open the film's page" : "Open the show's page")) {
+            onOpen(entry)
+        }
+        Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
     }
 
     // MARK: Airing today, Following, Hidden (16c)
@@ -281,7 +332,7 @@ struct LiveTVCalendarView: View {
                 LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 30) {
                     ForEach(entries) { entry in
                         LiveTVCalendarCard(entry: entry, width: Self.cardWidth, onTV: store.onTV[entry.key],
-                                           onFocus: { focusedKey = entry.key }, onOpen: { onOpen(entry) })
+                                           onFocus: { focusedKey = entry.key }, onOpen: { choose(entry) })
                     }
                 }
                 .padding(.leading, 60)
@@ -667,7 +718,7 @@ struct LiveTVCalendarView: View {
                                 ForEach(day.entries) { entry in
                                     LiveTVCalendarCard(entry: entry, width: Self.cardWidth, onTV: store.onTV[entry.key],
                                                        onFocus: { focusedKey = entry.key },
-                                                       onOpen: { onOpen(entry) })
+                                                       onOpen: { choose(entry) })
                                 }
                             }
                         }

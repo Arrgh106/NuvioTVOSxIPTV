@@ -65,6 +65,14 @@ final class LiveTVSettings: ObservableObject {
         didSet { if !loading { ProfileSettings.current.set(calendarAiringLanguages, forKey: Key.calendarAiringLanguages) } }
     }
     static let calendarAiringLanguageChoices = ["local", "localEnglish", "all"]
+    /// OK on an episode in your Live TV guide: "live" (its Live TV options)
+    /// or "page" (the show's page), as Android's calendarOkAction.
+    @Published var calendarOkAction = "live" {
+        didSet { if !loading { ProfileSettings.current.set(calendarOkAction, forKey: Key.calendarOkAction) } }
+    }
+    /// Airing today leaves out news, talk, sports and panel shows (on, as
+    /// Android's calendarSkipNewsTalk).
+    @Published var calendarSkipNewsTalk = true { didSet { save(calendarSkipNewsTalk, Key.calendarSkipNewsTalk) } }
     static let calendarCountries = [
         "", "US", "GB", "IE", "CA", "AU", "NZ", "DE", "AT", "CH", "FR", "BE", "NL", "LU", "ES", "PT", "IT",
         "DK", "SE", "NO", "FI", "PL", "CZ", "GR", "TR", "BR", "MX", "AR", "IN", "JP", "KR", "ZA",
@@ -118,6 +126,8 @@ final class LiveTVSettings: ObservableObject {
         static let calendarCountry = prefix + "calendarCountry"
         static let calendarRatings = prefix + "calendarRatings"
         static let calendarAiringLanguages = prefix + "calendarAiringLanguages"
+        static let calendarOkAction = prefix + "calendarOkAction"
+        static let calendarSkipNewsTalk = prefix + "calendarSkipNewsTalk"
         static let timeshift = prefix + "timeshift"
         static let timeshiftMinutes = prefix + "timeshiftMinutes"
         static let homeRow = prefix + "homeRow"
@@ -176,6 +186,9 @@ final class LiveTVSettings: ObservableObject {
         if ratings != calendarRatings { calendarRatings = ratings }
         let languages = store.string(forKey: Key.calendarAiringLanguages) ?? "localEnglish"
         if languages != calendarAiringLanguages { calendarAiringLanguages = languages }
+        let okAction = store.string(forKey: Key.calendarOkAction) ?? "live"
+        if okAction != calendarOkAction { calendarOkAction = okAction }
+        assign(\.calendarSkipNewsTalk, bool(Key.calendarSkipNewsTalk, true))
         assign(\.timeshift, bool(Key.timeshift, true))
         let minutes = store.integer(forKey: Key.timeshiftMinutes)
         let keep = Self.timeshiftChoices.contains(minutes) ? minutes : 30

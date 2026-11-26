@@ -125,7 +125,8 @@ final class LiveTVCalendarStore: ObservableObject {
         let now = Date()
         let today = LiveTVCalendarLogic.day(of: now, in: zone)
         let languages = LiveTVCalendarSettings.airingLanguages
-        let made = LiveTVSettings.shared.calendarAiringLanguages + "|" + LiveTVCalendarSettings.country
+        let skipNewsTalk = LiveTVSettings.shared.calendarSkipNewsTalk
+        let made = LiveTVSettings.shared.calendarAiringLanguages + "|" + LiveTVCalendarSettings.country + "|\(skipNewsTalk)"
         if !force, airingDay == today, airingMadeWith == made, !airing.isEmpty || airingLoading { return }
         airingMadeWith = made
         airingLoading = true
@@ -141,7 +142,7 @@ final class LiveTVCalendarStore: ObservableObject {
                 guard let body = (item["show"] as? [String: Any]) ?? ((item["_embedded"] as? [String: Any])?["show"] as? [String: Any]),
                       let id = body["id"] as? Int, let number = item["number"] as? Int, let season = item["season"] as? Int,
                       let airdate = item["airdate"] as? String, !airdate.isEmpty else { continue }
-                if let type = body["type"] as? String, Self.skippedTypes.contains(type) { continue }
+                if skipNewsTalk, let type = body["type"] as? String, Self.skippedTypes.contains(type) { continue }
                 // TV in your country is shown (it's dubbed there); streaming
                 // from elsewhere only in your languages.
                 if let languages, let language = body["language"] as? String, !languages.contains(language) {

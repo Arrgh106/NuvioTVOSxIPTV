@@ -5,6 +5,7 @@ import SwiftUI
 struct LiveTVCalendarSettingsView: View {
     let accentColor: Color
     @ObservedObject private var settings = LiveTVSettings.shared
+    @State private var opensIn = LiveTVCalendarSettings.view
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -35,6 +36,32 @@ struct LiveTVCalendarSettingsView: View {
                     options: LiveTVSettings.calendarCountries,
                     accentColor: accentColor,
                     optionLabel: { Self.countryLabel($0) }
+                )
+                LiveTVSettingsRows.option(
+                    title: L10n.string("livetv_settings_calendar_opens", fallback: "Opens In"),
+                    subtitle: L10n.string("livetv_settings_calendar_opens_detail", fallback: "The list by day, a week, or a month at a time"),
+                    selection: Binding(get: { opensIn }, set: { opensIn = $0; LiveTVCalendarSettings.view = $0 }),
+                    options: ["list", "week", "month"],
+                    accentColor: accentColor,
+                    optionLabel: { (LiveTVCalendarView.Mode(rawValue: $0) ?? .list).title }
+                )
+                LiveTVSettingsRows.option(
+                    title: L10n.string("livetv_settings_calendar_ok", fallback: "OK on an Episode in Your Guide"),
+                    subtitle: L10n.string("livetv_settings_calendar_ok_detail", fallback: "An episode that's in your Live TV guide opens its Live TV options (watch, remind, page) or the show's page"),
+                    selection: $settings.calendarOkAction,
+                    options: ["live", "page"],
+                    accentColor: accentColor,
+                    optionLabel: {
+                        $0 == "page"
+                            ? L10n.string("livetv_settings_calendar_ok_page", fallback: "Show page")
+                            : L10n.string("livetv_settings_calendar_ok_live", fallback: "Live TV options")
+                    }
+                )
+                LiveTVSettingsRows.toggle(
+                    title: L10n.string("livetv_settings_calendar_news", fallback: "Airing Today: Leave Out News & Talk"),
+                    subtitle: L10n.string("livetv_settings_calendar_news_detail", fallback: "News, talk, sports and panel shows aren't listed in Airing today"),
+                    isOn: $settings.calendarSkipNewsTalk,
+                    accentColor: accentColor
                 )
                 LiveTVSettingsRows.option(
                     title: L10n.string("livetv_settings_calendar_languages", fallback: "Airing Today: Streaming Languages"),
