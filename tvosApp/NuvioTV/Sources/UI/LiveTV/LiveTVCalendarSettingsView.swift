@@ -20,6 +20,8 @@ struct LiveTVCalendarSettingsView: View {
                     accentColor: accentColor,
                     optionLabel: { Self.zoneLabel($0) }
                 )
+                // Right from the sidebar lands here, the first row.
+                .settingsEntryAnchor()
                 LiveTVSettingsRows.toggle(
                     title: L10n.string("livetv_settings_calendar_spoilers", fallback: "Hide Spoilers"),
                     subtitle: L10n.string("livetv_settings_calendar_spoilers_detail", fallback: "Episodes past the next one you'd watch keep their title, picture and description hidden"),

@@ -67,9 +67,7 @@ struct LiveTVCalendarView: View {
     var body: some View {
         let list = days
         let focused = (mode == .list ? shown : store.entries).first { $0.key == focusedKey } ?? list.first?.entries.first
-        ZStack(alignment: .topLeading) {
-            hero(focused)
-            VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
                 header
                     .padding(.horizontal, 60)
                     .padding(.top, 30)
@@ -98,8 +96,11 @@ struct LiveTVCalendarView: View {
                     LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
                         .padding(.top, 16)
                 }
-            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The big picture behind (out to the screen's edges): as a sibling
+        // it made the page wider than the screen.
+        .background(alignment: .top) { hero(focused) }
         .background(Color.black.ignoresSafeArea())
         .onAppear { store.opened() }
     }
@@ -109,8 +110,8 @@ struct LiveTVCalendarView: View {
     private var header: some View {
         HStack(spacing: 18) {
             Text(L10n.string("livetv_cal_title", fallback: "Calendar"))
-                .font(.system(size: 40, weight: .bold))
-                .padding(.trailing, 20)
+                .font(.system(size: 36, weight: .bold))
+                .padding(.trailing, 8)
             // Week and Month show everything: no tabs.
             if mode == .list {
                 ForEach(Tab.allCases) { item in
@@ -354,6 +355,9 @@ private struct LiveTVCalendarCard: View {
 
     @FocusState private var focused: Bool
 
+    /// Logos and text follow the card's size (Week and Month cards are smaller).
+    private var scale: CGFloat { width / 400 }
+
     private var picture: URL? {
         let link = entry.spoiler ? (entry.background ?? entry.poster) : (entry.episodeImage ?? entry.background ?? entry.poster)
         return link.flatMap(URL.init(string:))
@@ -393,19 +397,19 @@ private struct LiveTVCalendarCard: View {
                         Spacer()
                         HStack(alignment: .bottom) {
                             if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                                LiveTVCalendarLogo(url: logo, style: .title, box: CGSize(width: 220, height: 64), area: 7_000,
-                                           alignment: .bottomLeading) {
-                                    Text(entry.title.uppercased()).font(.system(size: 20, weight: .heavy)).lineLimit(2)
+                                LiveTVCalendarLogo(url: logo, style: .title, box: CGSize(width: 220 * scale, height: 64 * scale),
+                                                   area: 7_000 * scale * scale, alignment: .bottomLeading) {
+                                    Text(entry.title.uppercased()).font(.system(size: 20 * scale, weight: .heavy)).lineLimit(2)
                                 }
                             } else {
                                 Text(entry.title.uppercased())
-                                    .font(.system(size: 20, weight: .heavy))
+                                    .font(.system(size: 20 * scale, weight: .heavy))
                                     .lineLimit(2)
                             }
                             Spacer(minLength: 8)
                             if let logo = entry.networkLogo.flatMap(URL.init(string:)) {
-                                LiveTVCalendarLogo(url: logo, style: .network, box: CGSize(width: 96, height: 30), area: 1_400,
-                                           alignment: .bottomTrailing) {
+                                LiveTVCalendarLogo(url: logo, style: .network, box: CGSize(width: 96 * scale, height: 30 * scale),
+                                                   area: 1_400 * scale * scale, alignment: .bottomTrailing) {
                                     if let network = entry.network { chip(network, fill: .white.opacity(0.2)) }
                                 }
                             } else if let network = entry.network {
@@ -437,7 +441,7 @@ private struct LiveTVCalendarCard: View {
 
     private func chip(_ text: String, fill: Color, text color: Color = .white) -> some View {
         Text(text)
-            .font(.system(size: 17, weight: .bold))
+            .font(.system(size: 17 * max(scale, 0.75), weight: .bold))
             .foregroundColor(color)
             .lineLimit(1)
             .padding(.horizontal, 8)
@@ -670,6 +674,8 @@ private struct LiveTVCalendarWeek: View {
                 canBack: offset > Self.range.lowerBound, canForward: offset < Self.range.upperBound,
                 onMove: { step in offset = step == 0 ? 0 : min(max(offset + step, Self.range.lowerBound), Self.range.upperBound) })
                 .padding(.horizontal, 60)
+            GeometryReader { room in
+            let column = max(120, (room.size.width - 2 * 48 - 6 * 12) / 7)
             HStack(alignment: .top, spacing: 12) {
                 ForEach(shown, id: \.self) { date in
                     let key = LiveTVCalendarDays.key(date)
@@ -683,7 +689,7 @@ private struct LiveTVCalendarWeek: View {
                         ScrollView(.vertical, showsIndicators: false) {
                             LazyVStack(alignment: .leading, spacing: 18) {
                                 ForEach(byDay[key] ?? []) { entry in
-                                    LiveTVCalendarCard(entry: entry, width: 236,
+                                    LiveTVCalendarCard(entry: entry, width: column - 16,
                                                        onFocus: { onFocus(entry) }, onOpen: { onOpen(entry) })
                                 }
                             }
@@ -691,7 +697,7 @@ private struct LiveTVCalendarWeek: View {
                             .padding(.horizontal, 8)
                         }
                     }
-                    .frame(width: 252, alignment: .topLeading)
+                    .frame(width: column, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .top)
                     .background(key == today ? Color.white.opacity(0.06) : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 14))
@@ -699,6 +705,7 @@ private struct LiveTVCalendarWeek: View {
                 }
             }
             .padding(.horizontal, 48)
+            }
         }
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -830,18 +837,7 @@ private struct LiveTVCalendarDayCell: View {
     var body: some View {
         Button(action: onSelect) {
             ZStack(alignment: .topLeading) {
-                if let picture {
-                    AsyncImage(url: picture) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            Color.white.opacity(0.06)
-                        }
-                    }
-                    Color.black.opacity(focused ? 0.35 : 0.55)
-                } else {
-                    Color.white.opacity(inMonth ? 0.06 : 0.03)
-                }
+                Color.clear
                 VStack(alignment: .leading, spacing: 2) {
                     Text(LiveTVCalendarDays.format(date, date.isFirstOfMonth ? "MMMd" : "d"))
                         .font(.system(size: 22, weight: isToday ? .heavy : .semibold))
@@ -857,6 +853,22 @@ private struct LiveTVCalendarDayCell: View {
             }
             .frame(height: 74)
             .frame(maxWidth: .infinity)
+            // The picture behind, cut to the day (it pushed the day's
+            // number out of sight).
+            .background {
+                if let picture {
+                    AsyncImage(url: picture) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Color.white.opacity(0.06)
+                        }
+                    }
+                    .overlay(Color.black.opacity(focused ? 0.35 : 0.55))
+                } else {
+                    Color.white.opacity(inMonth ? 0.06 : 0.03)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
