@@ -162,27 +162,23 @@ struct LiveTVCalendarView: View {
                         .padding(.top, 8)
                 }
                 if !ownCalendar {
-                    if tab != .hidden {
-                        details(focused)
-                            .padding(.horizontal, 60)
-                            .frame(height: 200, alignment: .bottomLeading)
-                    }
                     switch tab {
-                    case .airing: airingContent
-                    case .following: grid(followingCards, empty: L10n.string("livetv_cal_following_empty", fallback: "Ring the bell on a show's or film's page (or hold OK on a card) and it shows up here."))
+                    case .airing: airingContent(focused)
+                    case .following:
+                        twoPane(focused) {
+                            grid(followingCards, empty: L10n.string("livetv_cal_following_empty", fallback: "Ring the bell on a show's or film's page (or hold OK on a card) and it shows up here."))
+                        }
                     default: hiddenContent
                     }
                 } else {
                 switch mode {
                 case .list:
-                    details(focused)
-                        .padding(.horizontal, 60)
-                        .frame(height: 220, alignment: .bottomLeading)
-                    content(list)
+                    twoPane(focused) { content(list) }
                 case .week:
-                    details(focused)
+                    details(focused, compact: true)
                         .padding(.horizontal, 60)
-                        .frame(height: 190, alignment: .bottomLeading)
+                        .padding(.top, 12)
+                        .frame(height: 170, alignment: .topLeading)
                     LiveTVCalendarWeek(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
                 case .month:
                     LiveTVCalendarMonth(entries: store.entries, onFocus: { focusedKey = $0.key }, onOpen: onOpen)
@@ -204,7 +200,28 @@ struct LiveTVCalendarView: View {
 
     // MARK: Airing today, Following, Hidden (16c)
 
-    private var airingContent: some View {
+    /// The cards on the left (two in a row), the one in focus described on
+    /// the right, where the big picture leaves room.
+    private func twoPane<Left: View>(_ focused: LiveTVCalendarEntry?, @ViewBuilder left: () -> Left) -> some View {
+        HStack(alignment: .top, spacing: 30) {
+            left()
+                .frame(width: Self.paneWidth)
+            // On a dark glass: the big picture shows through, the text reads.
+            details(focused, compact: false)
+                .padding(28)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(Color.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .padding(.top, 30)
+                .padding(.trailing, 60)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Two cards of `cardWidth` and the room around them.
+    private static let cardWidth: CGFloat = 380
+    private static let paneWidth: CGFloat = 60 + 2 * cardWidth + 28 + 30
+
+    private func airingContent(_ focused: LiveTVCalendarEntry?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 ForEach(AiringFilter.allCases) { item in
@@ -223,9 +240,12 @@ struct LiveTVCalendarView: View {
             }
             .padding(.horizontal, 60)
             .focusSection()
-            grid(airingShown, empty: store.airingLoading
-                 ? L10n.string("livetv_cal_loading", fallback: "Getting the dates of your shows and films…")
-                 : L10n.string("livetv_cal_airing_empty", fallback: "No new episodes today."))
+            .padding(.top, 14)
+            twoPane(focused) {
+                grid(airingShown, empty: store.airingLoading
+                     ? L10n.string("livetv_cal_loading", fallback: "Getting the dates of your shows and films…")
+                     : L10n.string("livetv_cal_airing_empty", fallback: "No new episodes today."))
+            }
         }
     }
 
@@ -240,14 +260,14 @@ struct LiveTVCalendarView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340, maximum: 360), spacing: 26)], alignment: .leading, spacing: 30) {
+                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 30) {
                     ForEach(entries) { entry in
-                        LiveTVCalendarCard(entry: entry, width: 340,
+                        LiveTVCalendarCard(entry: entry, width: Self.cardWidth,
                                            onFocus: { focusedKey = entry.key }, onOpen: { onOpen(entry) })
                     }
                 }
-                .padding(.horizontal, 60)
-                .padding(.vertical, 20)
+                .padding(.leading, 60)
+                .padding(.vertical, 24)
             }
         }
     }
@@ -294,9 +314,9 @@ struct LiveTVCalendarView: View {
                     unwatchedOnly.toggle()
                     LiveTVCalendarSettings.unwatchedOnly = unwatchedOnly
                 } label: {
-                    Image(systemName: unwatchedOnly ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22))
-                        .accessibilityLabel(L10n.string("livetv_cal_unwatched", fallback: "Unwatched only"))
+                    Label(L10n.string("livetv_cal_unwatched", fallback: "Unwatched only"),
+                          systemImage: unwatchedOnly ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20))
                 }
             }
             Spacer(minLength: 12)
@@ -362,20 +382,23 @@ struct LiveTVCalendarView: View {
         (entry.background ?? entry.poster).flatMap(URL.init(string:))
     }
 
-    private func details(_ entry: LiveTVCalendarEntry?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    /// The card in focus: its logo (or title), episode, when and where, and
+    /// what it's about. `compact`: one short block above the Week.
+    private func details(_ entry: LiveTVCalendarEntry?, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 12) {
             if let entry {
                 // The show's own logo when TMDB has one, else its title.
                 if let logo = entry.titleLogo.flatMap(URL.init(string:)) {
-                    LiveTVCalendarLogo(url: logo, style: .title, box: CGSize(width: 520, height: 110), area: 24_000,
-                               alignment: .bottomLeading) {
-                        Text(entry.title).font(.system(size: 44, weight: .bold)).lineLimit(1)
+                    LiveTVCalendarLogo(url: logo, style: .title,
+                                       box: compact ? CGSize(width: 360, height: 60) : CGSize(width: 560, height: 130),
+                                       area: compact ? 9_000 : 30_000, alignment: .bottomLeading) {
+                        Text(entry.title).font(.system(size: compact ? 32 : 44, weight: .bold)).lineLimit(2)
                     }
                     .id(logo)
                 } else {
                     Text(entry.title)
-                        .font(.system(size: 44, weight: .bold))
-                        .lineLimit(1)
+                        .font(.system(size: compact ? 32 : 44, weight: .bold))
+                        .lineLimit(2)
                 }
                 if let line = Self.subtitle(entry) {
                     Text(line)
@@ -386,16 +409,20 @@ struct LiveTVCalendarView: View {
                 Text(Self.when(entry))
                     .font(.system(size: 22))
                     .foregroundColor(LiveTVTheme.accent)
+                if !entry.tags.isEmpty, !compact {
+                    Text(entry.tags.map(Self.tagTitle).joined(separator: "  ·  "))
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                }
                 if let summary = entry.summary, !entry.spoiler {
                     Text(summary)
-                        .font(.system(size: 20))
-                        .foregroundColor(.white.opacity(0.7))
-                        .lineLimit(2)
-                        .frame(maxWidth: 1100, alignment: .leading)
+                        .font(.system(size: compact ? 19 : 22))
+                        .foregroundColor(.white.opacity(0.75))
+                        .lineLimit(compact ? 1 : 8)
+                        .frame(maxWidth: compact ? 1100 : CGFloat.infinity, alignment: .leading)
                 }
             }
         }
-        .padding(.bottom, 20)
     }
 
     // MARK: Days
@@ -422,26 +449,26 @@ struct LiveTVCalendarView: View {
                             Text(Self.dayTitle(day.day) + "  ·  " + String(day.entries.count))
                                 .font(.system(size: 26, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.85))
-                                .padding(.horizontal, 60)
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                LazyHStack(spacing: 28) {
-                                    ForEach(day.entries) { entry in
-                                        LiveTVCalendarCard(entry: entry,
-                                                           onFocus: { focusedKey = entry.key },
-                                                           onOpen: { onOpen(entry) })
-                                    }
+                            // Two in a row, more go on the next row.
+                            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 26) {
+                                ForEach(day.entries) { entry in
+                                    LiveTVCalendarCard(entry: entry, width: Self.cardWidth,
+                                                       onFocus: { focusedKey = entry.key },
+                                                       onOpen: { onOpen(entry) })
                                 }
-                                .padding(.horizontal, 60)
-                                .padding(.vertical, 20)
                             }
-                            .focusSection()
                         }
+                        .padding(.leading, 60)
                     }
                 }
+                .padding(.top, 24)
                 .padding(.bottom, 60)
             }
         }
     }
+
+    private static let columns = [GridItem(.fixed(cardWidth), spacing: 28, alignment: .topLeading),
+                                  GridItem(.fixed(cardWidth), alignment: .topLeading)]
 
     private var emptyText: String {
         if store.isLoading {
