@@ -9,6 +9,8 @@ struct SportsView: View {
     @ObservedObject private var store = SportsStore.shared
     @ObservedObject private var settings = SportsSettings.shared
     @State private var sport: Sport?
+    /// My Teams, the day's games, or the tables (17d, as Android's chips).
+    @State private var page: Page = .events
     @State private var liveOnly = false
     @State private var focusedID: String?
     @State private var showsQuickMenu = false
@@ -17,6 +19,8 @@ struct SportsView: View {
     @State private var openGame: SportsGameID?
     /// Redrawn every 30 s (clocks, time bars, Today).
     @State private var tick = Date()
+
+    enum Page { case myTeams, events, tables }
 
     private static let cardWidth: CGFloat = 380
     private static let paneWidth: CGFloat = 60 + 2 * cardWidth + 28 + 30
@@ -41,12 +45,23 @@ struct SportsView: View {
                 .padding(.horizontal, 60)
                 .padding(.top, 30)
                 .focusSection()
+            switch page {
+            case .myTeams:
+                SportsMyTeamsView(now: tick, onOpen: { openGame = SportsGameID(id: $0.id) })
+                    .focusSection()
+            case .tables:
+                SportsTablesView()
+                    .focusSection()
+            case .events:
             dayStrip
                 .padding(.top, 14)
                 .focusSection()
             HStack(alignment: .top, spacing: 30) {
+                // Its own section: down from any day lands on a game, even
+                // one not right below it.
                 list(games)
                     .frame(width: Self.paneWidth)
+                    .focusSection()
                 GeometryReader { box in
                     details(focused, width: max(box.size.width - 56, 200))
                         .padding(28)
@@ -59,10 +74,11 @@ struct SportsView: View {
                 .padding(.trailing, 60)
             }
             .frame(maxHeight: .infinity, alignment: .top)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .disabled(showsQuickMenu)
-        .background(alignment: .top) { backdrop(focused) }
+        .background(alignment: .top) { backdrop(page == .events ? focused : nil) }
         .background(Color.black.ignoresSafeArea())
         .overlay(alignment: .topTrailing) {
             if showsQuickMenu {
@@ -94,18 +110,28 @@ struct SportsView: View {
         let sports = Set(games.map(\.league.sport))
         let liveCount = games.reduce(0) { $0 + $1.events.filter { $0.state == .live }.count }
         return HStack(spacing: 14) {
-            chip(L10n.string("livetv_sports_all", fallback: "All Events"), selected: sport == nil && !liveOnly) {
-                sport = nil
-                liveOnly = false
-            }
-            chip(liveCount > 0 ? L10n.format("livetv_sports_live_count", fallback: "Live (%d)", liveCount)
-                               : L10n.string("livetv_sports_live", fallback: "Live"), selected: liveOnly) {
-                liveOnly.toggle()
-            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
+                    chip("★ " + L10n.string("livetv_sports_my_teams", fallback: "My Teams"), selected: page == .myTeams) {
+                        page = .myTeams
+                        store.loadFollowed()
+                    }
+                    chip(L10n.string("livetv_sports_all", fallback: "All Events"), selected: page == .events && sport == nil && !liveOnly) {
+                        page = .events
+                        sport = nil
+                        liveOnly = false
+                    }
+                    chip(liveCount > 0 ? L10n.format("livetv_sports_live_count", fallback: "Live (%d)", liveCount)
+                                       : L10n.string("livetv_sports_live", fallback: "Live"), selected: page == .events && liveOnly) {
+                        page = .events
+                        liveOnly.toggle()
+                    }
+                    chip("🏆 " + L10n.string("livetv_sports_tables", fallback: "Tables"), selected: page == .tables) {
+                        page = .tables
+                    }
                     ForEach(order.filter { sports.contains($0) }, id: \.self) { item in
-                        chip(item.icon + " " + item.label, selected: sport == item) {
+                        chip(item.icon + " " + item.label, selected: page == .events && sport == item) {
+                            page = .events
                             sport = sport == item ? nil : item
                         }
                     }
@@ -211,7 +237,7 @@ struct SportsView: View {
                             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 24) {
                                 ForEach(item.events) { event in
                                     SportsGameCard(event: event, league: item.league, width: Self.cardWidth,
-                                                   hideScores: settings.hideScores, now: tick,
+                                                   hideScores: settings.hides(event), now: tick,
                                                    onFocus: { focusedID = event.id },
                                                    onOpen: { openGame = SportsGameID(id: event.id) })
                                 }
@@ -289,16 +315,16 @@ struct SportsView: View {
                     if event.state == .live { SportsLiveBadge() }
                 }
                 if event.sides.count == 2 {
-                    SportsMatchup(event: event, league: league, hideScores: settings.hideScores, width: width)
+                    SportsMatchup(event: event, league: league, hideScores: settings.hides(event), width: width)
                 } else {
                     Text(event.title)
                         .font(.system(size: 40, weight: .bold))
                         .lineLimit(3)
                 }
-                Text(Self.whenLine(event, hideScores: settings.hideScores))
+                Text(Self.whenLine(event, hideScores: settings.hides(event)))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundColor(LiveTVTheme.accent)
-                if let situation = event.situation, !settings.hideScores {
+                if let situation = event.situation, !settings.hides(event) {
                     Text(situation).font(.system(size: 21)).foregroundColor(.white.opacity(0.8))
                 }
                 if let note = event.note {
@@ -316,7 +342,7 @@ struct SportsView: View {
                         .foregroundColor(.white.opacity(0.7))
                         .lineLimit(2)
                 }
-                if !settings.hideScores, event.state != .pre {
+                if !settings.hides(event), event.state != .pre {
                     SportsPeriodTable(event: event, league: league)
                 }
             }
@@ -346,12 +372,14 @@ struct SportsView: View {
 
 /// A game: the league and when on top, then each team on its colour with
 /// its logo, name and score; a time bar while it's on.
-private struct SportsGameCard: View {
+struct SportsGameCard: View {
     let event: SportsEvent
     let league: League
     let width: CGFloat
     let hideScores: Bool
     let now: Date
+    /// The day too (My Teams: games of other days).
+    var withDate = false
     let onFocus: () -> Void
     let onOpen: () -> Void
 
@@ -362,7 +390,7 @@ private struct SportsGameCard: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     if event.state == .live { SportsLiveBadge() }
-                    Text(SportsView.whenLine(event, hideScores: hideScores))
+                    Text(when)
                         .font(.system(size: 18, weight: .semibold))
                         .lineLimit(1)
                     Spacer()
@@ -414,6 +442,15 @@ private struct SportsGameCard: View {
         .buttonStyle(LiveTVInvisibleButtonStyle())
         .focused($focused)
         .onChange(of: focused) { _, now in if now { onFocus() } }
+    }
+
+    /// "Sat 29 Nov · FT" for another day (My Teams), else the state.
+    private var when: String {
+        let line = SportsView.whenLine(event, hideScores: hideScores)
+        guard withDate, event.state != .pre, !Calendar.current.isDateInToday(event.start) else { return line }
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        return formatter.string(from: event.start) + " · " + line
     }
 
     /// The clock's share of the game, else the time since the start
@@ -510,6 +547,7 @@ private struct SportsQuickMenu: View {
     @ObservedObject private var settings = SportsSettings.shared
     @FocusState private var focused: Int?
     @State private var choosingRegion = false
+    @State private var choosingScores = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -517,9 +555,18 @@ private struct SportsQuickMenu: View {
                 .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
-            LiveTVQuickRow(title: L10n.string("livetv_sports_hide_scores", fallback: "Hide Scores"),
-                           isOn: settings.hideScores, isFocused: focused == 0) { settings.hideScores.toggle() }
+            LiveTVQuickRow(title: L10n.string("livetv_sports_scores", fallback: "Scores"),
+                           value: settings.scoreMode.title, isFocused: focused == 0) { choosingScores = true }
                 .focused($focused, equals: 0)
+                .confirmationDialog(L10n.string("livetv_sports_scores", fallback: "Scores"), isPresented: $choosingScores,
+                                    titleVisibility: .visible) {
+                    ForEach(SportsSettings.ScoreMode.allCases, id: \.self) { mode in
+                        Button(mode.title) { settings.scoreMode = mode }
+                    }
+                    Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
+                } message: {
+                    Text(L10n.string("livetv_sports_scores_detail", fallback: "Hide Live Scores: results of games that are over show, running games don't."))
+                }
             LiveTVQuickRow(title: L10n.string("livetv_sports_region", fallback: "Your Region"),
                            value: settings.region.isEmpty
                                ? L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@",

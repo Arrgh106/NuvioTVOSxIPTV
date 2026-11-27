@@ -4,7 +4,16 @@ import Foundation
 /// SportsLeagues.swift), and which ones a region shows, as Android's
 /// SportsCatalog.
 enum SportsCatalog {
-    private static let byId: [String: League] = Dictionary(leagues.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    /// Fork: leagues from other feeds than ESPN (OpenLigaDB's 3. Liga).
+    static let forkLeagues: [League] = [
+        League(id: "openligadb/bl3", sport: .football, name: "3. Liga", short: "3. LIGA", guideWords: ["3. Liga"],
+               regions: [], minutes: 115, color: 0xFF1F5E3A),
+    ]
+
+    /// Every league: Android's and the fork's.
+    static let all: [League] = leagues.flatMap { $0.id == "soccer/ger.2" ? [$0] + forkLeagues : [$0] }
+
+    private static let byId: [String: League] = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
     static func league(_ id: String) -> League? { byId[id] }
 
@@ -15,13 +24,24 @@ enum SportsCatalog {
         ("IE", "Ireland"),
         ("CA", "Canada"),
         ("AU", "Australia & New Zealand"),
-        ("OTHER", "Somewhere else"),
-    ]
+    ] + countryRegions + [("OTHER", "Somewhere else")]
+
+    /// Fork: countries of their own (Android's regions are only the
+    /// English-speaking ones): what's on everywhere else, and that
+    /// country's own football.
+    static let countryRegions: [(code: String, name: String)] = [
+        "DE", "AT", "CH", "FR", "ES", "IT", "NL", "BE", "PT", "DK", "SE", "NO", "FI", "PL", "CZ", "GR", "TR",
+        "BR", "AR", "MX", "JP", "KR", "SA", "ZA", "IN",
+    ].map { (code: $0, name: Locale.current.localizedString(forRegionCode: $0) ?? $0) }
+        .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+
+    static func isCountry(_ region: String) -> Bool { countryRegions.contains { $0.code == region } }
 
     static func regionName(_ code: String) -> String { regions.first { $0.code == code }?.name ?? code }
 
     /// A country as a Sports region.
     static func region(ofCountry country: String) -> String {
+        if isCountry(country.uppercased()) { return country.uppercased() }
         switch country.uppercased() {
         case "US", "PR": return "US"
         case "GB", "UK": return "UK"
@@ -46,7 +66,9 @@ enum SportsCatalog {
     /// Shown in All Events by default: the region's leagues and your own
     /// country's.
     static func inRegion(_ league: League, region: String, country: String) -> Bool {
-        if league.regions.contains(region) { return true }
+        let country = isCountry(region) ? region : country
+        if league.regions.contains(isCountry(region) ? "OTHER" : region) { return true }
+        if league.onOpenLiga { return country.uppercased() == "DE" }
         guard let code = espnCountry[country.uppercased()], league.sport == .football,
               let path = league.espnPath, path.hasPrefix("soccer/") else { return false }
         let name = path.dropFirst("soccer/".count)

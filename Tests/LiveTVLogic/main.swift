@@ -1000,5 +1000,45 @@ check(extras.venue == "Signal Iduna Park" && extras.city == "Dortmund, Germany" 
 check(extras.homeWin == 40.1 && extras.awayWin == 35.2 && abs((extras.draw ?? 0) - 24.7) < 0.01, "summary: chances with the draw")
 check(SportsSummary.number("24:12") == 1452 && SportsSummary.number("4-11") == 4 && SportsSummary.number("54.2%") == 54.2, "summary: numbers for the bars")
 
+// MARK: Sports (step 17d): 3. Liga, tables, regions
+
+let liga3 = SportsCatalog.league("openligadb/bl3")!
+check(SportsCatalog.inRegion(liga3, region: "DE", country: "US") && !SportsCatalog.inRegion(liga3, region: "OTHER", country: "FR"), "sports: the 3. Liga for Germany")
+check(SportsCatalog.region(ofCountry: "DE") == "DE" && SportsCatalog.region(ofCountry: "GB") == "UK", "sports: Germany is a region")
+check(SportsCatalog.inRegion(SportsCatalog.league("soccer/uefa.champions")!, region: "DE", country: "US"), "sports: a country gets what's on everywhere else")
+check(SportsCatalog.all.firstIndex { $0.id == "openligadb/bl3" } == (SportsCatalog.all.firstIndex { $0.id == "soccer/ger.2" } ?? -9) + 1, "sports: 3. Liga after the 2. Bundesliga")
+let ligaJSON = """
+[{"matchID":1,"matchDateTimeUTC":"2026-11-22T18:30:00Z","matchIsFinished":true,"group":{"groupName":"14. Spieltag"},
+  "team1":{"teamId":107,"teamName":"MSV Duisburg","shortName":"Duisburg","teamIconUrl":"https://upload.wikimedia.org/wikipedia/en/c/c8/Msv.svg"},
+  "team2":{"teamId":102,"teamName":"Hansa Rostock","shortName":"Rostock","teamIconUrl":"https://x/y.png"},
+  "matchResults":[{"resultTypeID":1,"pointsTeam1":0,"pointsTeam2":0},{"resultTypeID":2,"pointsTeam1":2,"pointsTeam2":0}],
+  "goals":[{"scoreTeam1":1,"scoreTeam2":0,"matchMinute":68,"goalGetterName":"D. Kother","scoringTeamId":107,"isPenalty":true}]},
+ {"matchID":2,"matchDateTimeUTC":"2026-11-27T18:00:00Z","matchIsFinished":false,
+  "team1":{"teamId":1,"teamName":"A"},"team2":{"teamId":2,"teamName":"B"},"matchResults":[],"goals":[]}]
+"""
+let liga = SportsOpenLiga.parseMatches(liga3, data: Data(ligaJSON.utf8), now: Date(timeIntervalSince1970: 1_795_806_000))
+check(liga.events.count == 2 && liga.events[0].state == .post && liga.events[0].home?.score == "2" && liga.events[0].home?.winner == true, "liga: final score")
+check(liga.events[0].subtitle == "14. Spieltag" && liga.events[0].title == "Duisburg v Rostock", "liga: round and names")
+check(liga.events[0].home?.team.logo == "https://upload.wikimedia.org/wikipedia/en/thumb/c/c8/Msv.svg/200px-Msv.svg.png", "liga: SVG logos as PNG")
+check(liga.goals[liga.events[0].id]?.first?.text == "D. Kother (pen.)" && liga.goals[liga.events[0].id]?.first?.team == "Duisburg", "liga: goals")
+check(liga.events[1].state == .live && liga.events[1].home?.score == "0", "liga: started and not over is live")
+check(SportsOpenLiga.season(Date(timeIntervalSince1970: 1_795_806_000)) == 2026, "liga: season 2026/27")
+let tableJSON = """
+[{"teamInfoId":2199,"teamName":"Viktoria Köln","shortName":"Viktoria Köln","points":32,"goals":42,"opponentGoals":19,"matches":14,"won":10,"lost":2,"draw":2,"goalDiff":23}]
+"""
+let ligaTable = SportsOpenLiga.parseTable(liga3, data: Data(tableJSON.utf8))
+check(ligaTable?.groups.first?.rows.first?.values["points"] == "32" && ligaTable?.groups.first?.rows.first?.values["pointDifferential"] == "+23", "liga: table")
+check(ligaTable?.placeText("2199") == "1st · 3. Liga", "liga: place in the table")
+let espnTable = """
+{"children":[{"name":"Bundesliga","standings":{"entries":[
+ {"team":{"id":"124","displayName":"Borussia Dortmund","logos":[{"href":"https://a.espncdn.com/bvb.png"}]},"note":{"description":"Champions League","color":"#81D6AC"},
+  "stats":[{"name":"rank","value":2,"displayValue":"2"},{"name":"gamesPlayed","displayValue":"11"},{"name":"points","displayValue":"24"},{"name":"ties","displayValue":"3"},{"name":"pointDifferential","displayValue":"+12"}]},
+ {"team":{"id":"132","displayName":"Bayern Munich"},"stats":[{"name":"rank","value":1,"displayValue":"1"},{"name":"gamesPlayed","displayValue":"11"},{"name":"points","displayValue":"31"}]}]}}]}
+"""
+let table = SportsStandings.parseESPN(bundesliga, data: Data(espnTable.utf8))
+check(table?.kind == .table && table?.groups.first?.rows.first?.name == "Bayern Munich", "standings: in rank order")
+check(table?.find("124")?.row.zone?.color == 0xFF81D6AC && table?.columns.map(\.key).contains("points") == true, "standings: zone colour and columns")
+check(table?.around(["124"]).rows.last?.mine == true, "standings: mini table marks the game's team")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

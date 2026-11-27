@@ -130,6 +130,18 @@ enum SportsESPN {
         return list(root, "events").compactMap { parseEvent(league, $0, now: now) }
     }
 
+    /// A team's schedule: each game under its own competition when the
+    /// feed says which (a Champions League game in Dortmund's schedule).
+    static func parseSchedule(_ league: League, data: Data, now: Date = Date()) -> [SportsEvent] {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let prefix = league.espnPath?.split(separator: "/").first else { return [] }
+        return list(root, "events").compactMap { ev in
+            let slug = str(dict(ev, "league"), "slug") ?? str(dict(list(ev, "competitions").first, "league"), "slug")
+            let own = slug.flatMap { SportsCatalog.league("\(prefix)/\($0)") }.flatMap { $0.onESPN ? $0 : nil } ?? league
+            return parseEvent(own, ev, now: now)
+        }
+    }
+
     private static let offWords = ["POSTPONED", "CANCEL", "SUSPENDED", "FORFEIT", "ABANDON"]
 
     static func parseEvent(_ league: League, _ ev: [String: Any], now: Date = Date()) -> SportsEvent? {

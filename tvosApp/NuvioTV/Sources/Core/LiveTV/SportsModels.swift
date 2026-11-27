@@ -91,6 +91,12 @@ struct League: Identifiable, Hashable, Sendable {
 
     static let allRegions: Set<String> = ["US", "UK", "IE", "CA", "AU", "OTHER"]
 
+    /// OpenLigaDB has it (German football ESPN lacks: the 3. Liga).
+    var onOpenLiga: Bool { id.hasPrefix("openligadb/") }
+
+    /// Its games can be asked for (ESPN or OpenLigaDB).
+    var hasFeed: Bool { onESPN || onOpenLiga }
+
     /// ESPN's scoreboard has it (the other feeds come later).
     var onESPN: Bool {
         guard let path = espnPath else { return false }

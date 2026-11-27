@@ -39,7 +39,7 @@ struct SportsGamePage: View {
     /// Scores only Form, Table and Info (as Android's).
     private func tabs(_ event: SportsEvent, _ extras: SportsGameExtras?) -> [Tab] {
         guard let extras else { return [] }
-        let spoilerFree = event.state == .pre || settings.hideScores
+        let spoilerFree = event.state == .pre || settings.hides(event)
         var list: [Tab] = []
         if !spoilerFree, !extras.plays.isEmpty || extras.hasOdds { list.append(.overview) }
         if spoilerFree, extras.hasOdds, event.state == .pre { list.append(.overview) }
@@ -113,26 +113,44 @@ struct SportsGamePage: View {
                 if event.state == .live { SportsLiveBadge() }
             }
             if event.sides.count == 2 {
-                SportsMatchup(event: event, league: league, hideScores: settings.hideScores, width: 1100, logoSize: 150)
+                SportsMatchup(event: event, league: league, hideScores: settings.hides(event), width: 1100, logoSize: 150)
                     .frame(maxWidth: .infinity)
             } else {
                 Text(event.title).font(.system(size: 52, weight: .bold)).lineLimit(2)
             }
             VStack(spacing: 6) {
-                Text(SportsView.whenLine(event, hideScores: settings.hideScores))
+                Text(SportsView.whenLine(event, hideScores: settings.hides(event)))
                     .font(.system(size: 28, weight: .bold))
                     .foregroundColor(LiveTVTheme.accent)
                 if let countdown = Self.countdown(event, now: now) {
                     Text(countdown).font(.system(size: 22)).foregroundColor(.white.opacity(0.75))
                 }
-                if let situation = event.situation, !settings.hideScores {
+                if let situation = event.situation, !settings.hides(event) {
                     Text(situation).font(.system(size: 22)).foregroundColor(.white.opacity(0.8))
                 }
-                if !settings.hideScores, event.state != .pre {
+                if !settings.hides(event), event.state != .pre {
                     SportsPeriodTable(event: event, league: league)
                 }
             }
             .frame(maxWidth: .infinity)
+            // Follow either team (17d): its games in My Teams.
+            if event.sides.count == 2 {
+                HStack(spacing: 20) {
+                    ForEach(event.ordered(league.sport), id: \.team.key) { side in
+                        let on = settings.isFollowed(side.team)
+                        Button {
+                            settings.toggleFollow(side.team)
+                        } label: {
+                            Label(on ? L10n.format("livetv_sports_following_format", fallback: "Following %@", side.team.name)
+                                     : L10n.format("livetv_sports_follow_format", fallback: "Follow %@", side.team.name),
+                                  systemImage: on ? "star.fill" : "star")
+                                .font(.system(size: 20))
+                        }
+                    }
+                }
+                .focusSection()
+                .frame(maxWidth: .infinity)
+            }
             if list.isEmpty {
                 Text(extras == nil ? L10n.string("livetv_sports_loading_game", fallback: "Getting more about the game…")
                                    : L10n.string("livetv_sports_no_more", fallback: "ESPN has nothing more about this game yet."))
@@ -195,7 +213,7 @@ struct SportsGamePage: View {
     /// The scoring so far (newest first) and the chances.
     private func overview(_ event: SportsEvent, league: League, extras: SportsGameExtras) -> some View {
         HStack(alignment: .top, spacing: 50) {
-            if !extras.plays.isEmpty, !settings.hideScores, event.state != .pre {
+            if !extras.plays.isEmpty, !settings.hides(event), event.state != .pre {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(L10n.string("livetv_sports_scoring", fallback: "Scoring"))
                         .font(.system(size: 22, weight: .bold))
@@ -205,7 +223,7 @@ struct SportsGamePage: View {
                             Text(play.clock).font(.system(size: 20, weight: .semibold)).monospacedDigit()
                                 .frame(width: 110, alignment: .leading)
                             if let team = play.team {
-                                Text(team).font(.system(size: 20, weight: .heavy)).frame(width: 70, alignment: .leading)
+                                Text(team).font(.system(size: 20, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.7).frame(width: 220, alignment: .leading)
                             }
                             Text(play.text).font(.system(size: 20)).lineLimit(2)
                             Spacer(minLength: 10)
