@@ -609,7 +609,7 @@ private struct SportsLeaguesPicker: View {
 
     var body: some View {
         let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
-        let leagues = SportsCatalog.leagues.filter(\.onESPN)
+        let leagues = SportsCatalog.all.filter(\.hasFeed)
         ZStack {
             Color.black.opacity(0.92).ignoresSafeArea()
             ScrollView {
