@@ -22,6 +22,8 @@ struct SportsView: View {
     @State private var scene: SportsScene?
     /// The game page open (17c).
     @State private var openGame: SportsGameID?
+    /// The focused games' summaries (their goals for the panel).
+    @State private var panelExtras: [String: SportsGameExtras] = [:]
     /// Redrawn every 30 s (clocks, time bars, Today).
     @State private var tick = Date()
 
@@ -312,9 +314,67 @@ struct SportsView: View {
                 if !settings.hides(event), event.state != .pre {
                     SportsPeriodTable(event: event, league: league)
                 }
+                extrasSection(event, league: league)
             }
             .frame(width: width, alignment: .topLeading)
+            // Its summary (goals, odds) once focus rests on it.
+            .task(id: event.id) {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled, event.espnId != nil || league.onOpenLiga else { return }
+                if let extras = await store.extras(for: event) {
+                    if panelExtras.count > 40 { panelExtras.removeAll() }
+                    panelExtras[event.id] = extras
+                }
+            }
         }
+    }
+
+    /// Odds, both teams' form and places, and the goals so far.
+    @ViewBuilder
+    private func extrasSection(_ event: SportsEvent, league: League) -> some View {
+        let extras = panelExtras[event.id]
+        let odds = event.odds ?? extras?.odds
+        let sides = event.ordered(league.sport)
+        let table = store.standings[league.id]
+        if settings.showsOdds, let odds, !odds.isEmpty, event.state != .post {
+            panelSection(L10n.string("livetv_sports_odds_title", fallback: "Odds")) {
+                SportsOddsView(odds: odds, event: event, league: league, compact: true)
+            }
+        }
+        if sides.count == 2, sides.contains(where: { $0.form != nil }) || table != nil {
+            panelSection(L10n.string("livetv_sports_form", fallback: "Form")) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
+                        HStack(spacing: 12) {
+                            SportsTeamLogo(team: side.team, size: 30)
+                            SportsFormDots(results: SportsFormDots.split(side.form), size: 26)
+                            Spacer(minLength: 6)
+                            if let place = table?.find(side.team.id)?.row.pos {
+                                Text(SportsStandings.ordinal(place))
+                                    .font(.system(size: 19, weight: .heavy))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let extras, !settings.hides(event), event.state != .pre, !extras.moments.isEmpty {
+            panelSection(league.sport == .football ? L10n.string("livetv_sports_goals", fallback: "Goals")
+                                                   : L10n.string("livetv_sports_scoring", fallback: "Scoring")) {
+                SportsMomentsSummary(moments: extras.moments, event: event, limit: 5)
+            }
+        }
+    }
+
+    private func panelSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundColor(.white.opacity(0.5))
+            content()
+        }
+        .padding(.top, 4)
     }
 
     /// ESPN's short words in full: FT (full time), HT (half time), AET
@@ -776,11 +836,14 @@ extension SportsEvent {
 
 struct SportsBackdrop: View {
     let scene: SportsScene?
+    /// The stadium's photo (a game's page only; the other pages keep the
+    /// teams' colours).
+    var photo = false
     @ObservedObject private var venues = SportsVenueStore.shared
 
     var body: some View {
         let colors = (scene?.colors ?? []).map { Color(sportsARGB: $0) }
-        let image = venues.image(scene?.venue)
+        let image = photo ? venues.image(scene?.venue) : nil
         ZStack {
             Color.black
             if let image {
@@ -796,13 +859,19 @@ struct SportsBackdrop: View {
             } else if let color = colors.first {
                 LinearGradient(colors: [color.opacity(image == nil ? 0.55 : 0.3), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
             }
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.9)], startPoint: .top, endPoint: .bottom)
+            // Darker below, where the page's text is.
+            LinearGradient(stops: image == nil
+                               ? [.init(color: .black.opacity(0.35), location: 0), .init(color: .black.opacity(0.9), location: 1)]
+                               : [.init(color: .black.opacity(0.25), location: 0), .init(color: .black.opacity(0.55), location: 0.4),
+                                  .init(color: .black.opacity(0.9), location: 0.62), .init(color: .black.opacity(0.95), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.4), value: scene)
         .animation(.easeInOut(duration: 0.4), value: image)
         // Looked up once focus rests on it a moment.
-        .task(id: scene?.venue) {
+        .task(id: photo ? scene?.venue : nil) {
+            guard photo else { return }
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled else { return }
             venues.want(scene?.venue)

@@ -311,22 +311,32 @@ struct SportsImage<Placeholder: View>: View {
     }
 }
 
-/// A team's top player: their photo when ESPN has one, else the shirt
-/// number on the team's colour; the country's flag in the corner.
+/// A team's top player: their photo (ESPN's, else Wikidata's when it
+/// surely is him: a player of this team now), else the shirt number on the
+/// team's colour; the country's flag in the corner.
 struct SportsPlayerPhoto: View {
     let leader: SportsTeamLeader
     let color: Color
+    /// His team's name, to find his photo on Wikidata.
+    var team: String? = nil
     var size: CGFloat = 52
+    @ObservedObject private var photos = SportsVenueStore.shared
+
+    private var query: SportsVenueQuery? {
+        guard leader.headshot == nil, let team else { return nil }
+        return SportsVenueQuery(team: team, player: leader.name)
+    }
 
     var body: some View {
         ZStack {
             Circle().fill(color)
-            if let url = leader.headshot.flatMap(URL.init(string:)) {
+            if let url = leader.headshot.flatMap(URL.init(string:)) ?? photos.image(query) {
                 SportsImage(url: url, fill: true) { number }
             } else {
                 number
             }
         }
+        .task(id: query) { photos.want(query) }
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(Color.white.opacity(0.3), lineWidth: 1))

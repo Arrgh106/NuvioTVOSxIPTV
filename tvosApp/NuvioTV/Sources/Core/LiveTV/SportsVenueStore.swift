@@ -1,7 +1,7 @@
 import Foundation
 
-/// Fork (Live TV step 17d): the stadium pictures behind the Sports pages
-/// (see `SportsVenues`). Each venue is looked up once and kept on the
+/// Fork (Live TV step 17d): the stadium pictures behind a game's page and
+/// the players' photos ESPN has none for (see `SportsVenues`). Each venue is looked up once and kept on the
 /// Apple TV (one with none found is tried again after a week); lookups go
 /// one at a time, the one asked for last first, and stop for a while when
 /// Wikimedia asks to slow down.
@@ -71,6 +71,10 @@ final class SportsVenueStore: ObservableObject {
 
     nonisolated private static func lookup(_ query: SportsVenueQuery) async -> Outcome {
         do {
+            if let player = query.player?.nilIfBlank {
+                guard let team = query.team?.nilIfBlank, let link = try await playerPhoto(player, team: team) else { return .none }
+                return .found(link)
+            }
             if let venue = query.venue?.nilIfBlank, let link = try await venueImage(venue, city: query.city) {
                 return .found(link)
             }
@@ -100,6 +104,17 @@ final class SportsVenueStore: ObservableObject {
               let ground = SportsVenues.homeGround(team: itemData, item: item),
               let groundURL = SportsVenues.itemURL(ground), let groundData = try await fetch(groundURL) else { return nil }
         return SportsVenues.groundImage(groundData, item: ground)
+    }
+
+    /// A player's photo: his team's item (its article), the items named
+    /// like him, the one playing for that team now.
+    nonisolated private static func playerPhoto(_ name: String, team: String) async throws -> String? {
+        guard let url = SportsVenues.pageURL(team), let data = try await fetch(url),
+              let page = SportsVenues.parsePage(data), !page.disambiguation, let teamItem = page.item,
+              let searchURL = SportsVenues.searchURL(name), let found = try await fetch(searchURL) else { return nil }
+        let ids = SportsVenues.searchIDs(found)
+        guard !ids.isEmpty, let itemsURL = SportsVenues.itemsURL(ids), let items = try await fetch(itemsURL) else { return nil }
+        return SportsVenues.playerImage(items, ids: ids, team: teamItem)
     }
 
     /// Wikimedia asks for a name in the User-Agent (no personal details).

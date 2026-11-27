@@ -171,9 +171,12 @@ struct SportsTablesView: View {
     private func content(_ league: League) -> some View {
         if let standings = store.standings[league.id] {
             HStack(alignment: .top, spacing: 30) {
-                table(standings, league: league)
-                    .frame(width: 1130)
-                    .focusSection()
+                SportsStandingsTable(standings: standings, league: league, onFocus: { row in
+                    focusedRow = row
+                    onFocus(row.team(in: league))
+                })
+                .frame(width: 1130)
+                .focusSection()
                 teamPanel(focusedRow ?? standings.groups.first?.rows.first, league: league, standings: standings)
                     .focusSection()
             }
@@ -184,66 +187,8 @@ struct SportsTablesView: View {
         }
     }
 
-    private func table(_ standings: SportsStandings, league: League) -> some View {
-        let zones = Array(Set(standings.groups.flatMap { $0.rows.compactMap(\.zone) })).sorted { $0.label < $1.label }
-        return ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(standings.groups, id: \.name) { group in
-                    if standings.groups.count > 1 {
-                        Text(group.name)
-                            .font(.system(size: 24, weight: .bold))
-                            .padding(.top, 18)
-                            .padding(.bottom, 6)
-                            .padding(.horizontal, 20)
-                    }
-                    head(standings)
-                    ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
-                        SportsTableRowView(row: row, columns: standings.columns, mine: isMine(row, league: league),
-                                           shaded: index % 2 == 1, onFocus: {
-                                               focusedRow = row
-                                               onFocus(team(row, league: league))
-                                           })
-                    }
-                }
-                if !zones.isEmpty {
-                    // What the coloured edges mean.
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(zones, id: \.label) { zone in
-                            HStack(spacing: 10) {
-                                RoundedRectangle(cornerRadius: 3).fill(Color(sportsARGB: zone.color)).frame(width: 18, height: 18)
-                                Text(zone.label).font(.system(size: 18)).foregroundColor(.white.opacity(0.7))
-                            }
-                        }
-                    }
-                    .padding(20)
-                }
-            }
-            .padding(.vertical, 12)
-        }
-        .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 28, style: .continuous)))
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-    }
-
-    private func isMine(_ row: SportsStandingsRow, league: League) -> Bool {
-        settings.isFollowed(team(row, league: league))
-    }
-
     private func team(_ row: SportsStandingsRow, league: League) -> TeamInfo {
         row.team(in: league)
-    }
-
-    private func head(_ standings: SportsStandings) -> some View {
-        HStack(spacing: 0) {
-            Text("#").frame(width: 66, alignment: .leading)
-            Text(L10n.string("livetv_sports_team", fallback: "Team")).frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(standings.columns, id: \.key) { column in
-                Text(column.label).frame(width: SportsTableRowView.width(column.key))
-            }
-        }
-        .font(.system(size: 17, weight: .bold))
-        .foregroundColor(.white.opacity(0.5))
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
     }
 
     /// The team in focus: badge, place, numbers, last result, next game.
@@ -254,12 +199,18 @@ struct SportsTablesView: View {
             let games = store.games(of: info)
             let last = games.last { $0.state == .post }
             let next = games.first { $0.state == .pre || $0.state == .live }
+            // ESPN's own colour for the team (its games have it).
+            let colour = games.lazy.flatMap(\.sides).first { $0.team.id == info.id }?.team.color ?? info.color
+            let form = Self.form(info, games: games)
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 18) {
                     SportsTeamLogo(team: info, size: 96)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.name).font(.system(size: 30, weight: .bold)).lineLimit(2)
-                        Text(SportsStandings.ordinal(row.pos) + " · " + (standings.find(row.id)?.group.name ?? league.name))
+                        // The league's name; a group's only where there are groups.
+                        Text(SportsStandings.ordinal(row.pos) + " · "
+                             + (standings.groups.count > 1 ? standings.find(row.id)?.group.name ?? league.name : league.name))
+                            .lineLimit(1)
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(LiveTVTheme.accent)
                     }
@@ -292,16 +243,18 @@ struct SportsTablesView: View {
                     }
                 }
                 if let last {
-                    gameLine(L10n.string("livetv_sports_last_game", fallback: "Last"), last, team: info)
+                    SportsGameLine(label: L10n.string("livetv_sports_last_game", fallback: "Last"), event: last, team: info,
+                                   hideScore: settings.hides(last))
                 }
                 if let next {
-                    gameLine(L10n.string("livetv_sports_next_game", fallback: "Next"), next, team: info)
+                    SportsGameLine(label: L10n.string("livetv_sports_next_game", fallback: "Next"), event: next, team: info,
+                                   hideScore: settings.hides(next))
                 }
                 // Top scorer and top assists (other sports: their first two
                 // leaders), with a small picture.
                 ForEach(store.teamLeaders[info.key] ?? [], id: \.category) { leader in
                     HStack(spacing: 14) {
-                        SportsPlayerPhoto(leader: leader, color: info.color.map { Color(sportsARGB: $0) } ?? .gray)
+                        SportsPlayerPhoto(leader: leader, color: colour.map { Color(sportsARGB: $0) } ?? .gray, team: row.name)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(leader.category.uppercased())
                                 .font(.system(size: 15, weight: .bold))
@@ -310,6 +263,15 @@ struct SportsTablesView: View {
                         }
                         Spacer(minLength: 8)
                         Text(leader.value).font(.system(size: 26, weight: .heavy)).monospacedDigit()
+                    }
+                }
+                // The last five results, the newest on the right.
+                if !form.isEmpty, settings.scoreMode != .hideAll {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L10n.string("livetv_sports_form", fallback: "Form").uppercased())
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
+                        SportsFormDots(results: form, size: 36)
                     }
                 }
                 Spacer(minLength: 0)
@@ -327,19 +289,147 @@ struct SportsTablesView: View {
         }
     }
 
-    /// "Last  Sat 22 Nov · Duisburg 2–0 Rostock".
-    private func gameLine(_ label: String, _ event: SportsEvent, team: TeamInfo) -> some View {
+    /// The team's last five results ("W", "D", "L"), oldest first.
+    static func form(_ team: TeamInfo, games: [SportsEvent]) -> [String] {
+        games.filter { $0.state == .post && $0.hasScore }.suffix(5).compactMap { game in
+            guard let mine = game.sides.first(where: { $0.team.id == team.id }),
+                  let other = game.sides.first(where: { $0.team.id != team.id }),
+                  let us = Double(mine.score ?? ""), let them = Double(other.score ?? "") else { return nil }
+            return us > them ? "W" : (us < them ? "L" : "D")
+        }
+    }
+}
+
+/// "LAST · Sat 22 Nov", then both teams with their logos and the score
+/// (or the kick-off) between them; the team of the panel brighter, the
+/// result's letter on its colour.
+struct SportsGameLine: View {
+    let label: String
+    let event: SportsEvent
+    let team: TeamInfo
+    let hideScore: Bool
+
+    var body: some View {
         let formatter = DateFormatter()
         formatter.setLocalizedDateFormatFromTemplate(event.state == .pre ? "EEE d MMM jmm" : "EEE d MMM")
-        let hide = settings.hides(event)
-        let score = event.hasScore && !hide ? "\(event.home?.score ?? "")–\(event.away?.score ?? "")" : "v"
-        let text = "\(event.home?.team.name ?? "") \(score) \(event.away?.team.name ?? "")"
-        return VStack(alignment: .leading, spacing: 3) {
+        let sport = SportsCatalog.league(event.leagueId)?.sport ?? .football
+        let sides = event.ordered(sport)
+        let showScore = event.hasScore && !hideScore
+        let result = showScore ? SportsTablesView.form(team, games: [event]).first : nil
+        return VStack(alignment: .leading, spacing: 6) {
             Text(label.uppercased() + " · " + formatter.string(from: event.start))
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(.white.opacity(0.5))
-            Text(text).font(.system(size: 21, weight: .semibold)).lineLimit(1)
+            if sides.count == 2 {
+                HStack(spacing: 10) {
+                    side(sides[0], alignRight: false)
+                    Text(showScore ? "\(sides[0].score ?? "")–\(sides[1].score ?? "")"
+                                   : (event.state == .pre && event.hasTime ? SportsView.clock(event.start) : "–"))
+                        .font(.system(size: 21, weight: .heavy))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
+                    side(sides[1], alignRight: true)
+                    if let result {
+                        Text(SportsFormDots.letter(result))
+                            .font(.system(size: 14, weight: .heavy))
+                            .foregroundColor(result == "D" ? .black : .white)
+                            .frame(width: 26, height: 26)
+                            .background(Circle().fill(SportsFormDots.color(result)))
+                    }
+                }
+            } else {
+                Text(event.title).font(.system(size: 21, weight: .semibold)).lineLimit(1)
+            }
         }
+    }
+
+    private func side(_ side: SportsSide, alignRight: Bool) -> some View {
+        let mine = side.team.id == team.id
+        return HStack(spacing: 8) {
+            if !alignRight { SportsTeamLogo(team: side.team, size: 32) }
+            Text(side.team.name)
+                .font(.system(size: 19, weight: mine ? .bold : .medium))
+                .foregroundColor(.white.opacity(mine ? 1 : 0.7))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            if alignRight { SportsTeamLogo(team: side.team, size: 32) }
+        }
+        .frame(maxWidth: .infinity, alignment: alignRight ? .trailing : .leading)
+    }
+}
+
+/// A league table on a glass panel, the same on the Tables page and a
+/// game's page: each group, zones as a coloured edge with their names
+/// below, the teams you follow starred, the game's teams marked (and
+/// scrolled to), every other row shaded.
+struct SportsStandingsTable: View {
+    let standings: SportsStandings
+    let league: League
+    /// The game's teams (a game's page).
+    var highlight: Set<String> = []
+    var onFocus: (SportsStandingsRow) -> Void = { _ in }
+    @ObservedObject private var settings = SportsSettings.shared
+
+    var body: some View {
+        let zones = Array(Set(standings.groups.flatMap { $0.rows.compactMap(\.zone) })).sorted { $0.label < $1.label }
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(standings.groups, id: \.name) { group in
+                        if standings.groups.count > 1 {
+                            Text(group.name)
+                                .font(.system(size: 24, weight: .bold))
+                                .padding(.top, 18)
+                                .padding(.bottom, 6)
+                                .padding(.horizontal, 20)
+                        }
+                        head
+                        ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
+                            SportsTableRowView(row: row, columns: standings.columns,
+                                               mine: settings.isFollowed(row.team(in: league)),
+                                               marked: highlight.contains(row.id),
+                                               shaded: index % 2 == 1, onFocus: { onFocus(row) })
+                                .id(row.id)
+                        }
+                    }
+                    if !zones.isEmpty {
+                        // What the coloured edges mean.
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(zones, id: \.label) { zone in
+                                HStack(spacing: 10) {
+                                    RoundedRectangle(cornerRadius: 3).fill(Color(sportsARGB: zone.color)).frame(width: 18, height: 18)
+                                    Text(zone.label).font(.system(size: 18)).foregroundColor(.white.opacity(0.7))
+                                }
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .onAppear {
+                // The game's first team in view.
+                let first = standings.groups.flatMap(\.rows).first { highlight.contains($0.id) }
+                if let first { proxy.scrollTo(first.id, anchor: .center) }
+            }
+        }
+        .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 28, style: .continuous)))
+        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private var head: some View {
+        HStack(spacing: 0) {
+            Text("#").frame(width: 66, alignment: .leading)
+            Text(L10n.string("livetv_sports_team", fallback: "Team")).frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(standings.columns, id: \.key) { column in
+                Text(column.label).frame(width: SportsTableRowView.width(column.key))
+            }
+        }
+        .font(.system(size: 17, weight: .bold))
+        .foregroundColor(.white.opacity(0.5))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
     }
 }
 
@@ -349,6 +439,8 @@ private struct SportsTableRowView: View {
     let row: SportsStandingsRow
     let columns: [SportsStandingsColumn]
     let mine: Bool
+    /// One of the game's teams (a game's page).
+    var marked = false
     var shaded = false
     var onFocus: () -> Void = {}
     @FocusState private var focused: Bool
@@ -397,13 +489,14 @@ private struct SportsTableRowView: View {
                         .frame(width: Self.width(column.key))
                 }
             }
-            .font(.system(size: 22, weight: mine ? .heavy : .semibold))
+            .font(.system(size: 22, weight: mine || marked ? .heavy : .semibold))
             .foregroundColor(focused ? .black : .white)
             .padding(.horizontal, 14)
             .frame(height: 56)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(focused ? Color.white : (mine ? LiveTVTheme.accent.opacity(0.22) : Color.white.opacity(shaded ? 0.045 : 0))))
+                    .fill(focused ? Color.white : (marked ? LiveTVTheme.accent.opacity(0.34)
+                        : (mine ? LiveTVTheme.accent.opacity(0.22) : Color.white.opacity(shaded ? 0.045 : 0)))))
             .padding(.horizontal, 6)
         }
         .buttonStyle(LiveTVInvisibleButtonStyle())

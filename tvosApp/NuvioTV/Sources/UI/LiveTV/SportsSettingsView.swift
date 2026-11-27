@@ -40,6 +40,12 @@ struct SportsSettingsView: View {
                     accentColor: accentColor,
                     optionLabel: { SportsSettings.ScoreMode(rawValue: $0)?.title ?? $0 }
                 )
+                LiveTVSettingsRows.toggle(
+                    title: L10n.string("livetv_sports_odds", fallback: "Show Betting Odds"),
+                    subtitle: L10n.string("livetv_sports_odds_detail", fallback: "The bookmakers' odds by a game (as information, no links)."),
+                    isOn: $settings.showsOdds,
+                    accentColor: accentColor
+                )
                 LiveTVSettingsRows.action(
                     title: L10n.string("livetv_sports_sports_title", fallback: "Sports"),
                     subtitle: L10n.string("livetv_sports_sports_settings", fallback: "Which sports the Sports page shows, and in which order."),

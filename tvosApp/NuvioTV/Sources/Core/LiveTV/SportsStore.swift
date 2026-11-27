@@ -14,6 +14,7 @@ final class SportsSettings: ObservableObject {
         static let followed = "livetv.sports.followed"
         static let sportOrder = "livetv.sports.sportOrder"
         static let hiddenSports = "livetv.sports.hiddenSports"
+        static let hideOdds = "livetv.sports.hideOdds"
     }
 
     /// Which scores show (17d): all, all but the live ones (results
@@ -49,8 +50,12 @@ final class SportsSettings: ObservableObject {
         didSet { ProfileSettings.current.set(Array(hiddenSports).sorted(), forKey: Key.hiddenSports) }
     }
 
+    /// Betting odds by a game (on unless turned off).
+    @Published var showsOdds: Bool { didSet { ProfileSettings.current.set(!showsOdds, forKey: Key.hideOdds) } }
+
     private init() {
         let store = ProfileSettings.current
+        showsOdds = !store.bool(forKey: Key.hideOdds)
         region = store.string(forKey: Key.region) ?? ""
         scoreMode = Self.scoreMode(store)
         changedLeagues = Set(store.stringArray(forKey: Key.changedLeagues) ?? [])
@@ -62,6 +67,7 @@ final class SportsSettings: ObservableObject {
     /// The profile changed: its own settings.
     func reload() {
         let store = ProfileSettings.current
+        showsOdds = !store.bool(forKey: Key.hideOdds)
         region = store.string(forKey: Key.region) ?? ""
         scoreMode = Self.scoreMode(store)
         changedLeagues = Set(store.stringArray(forKey: Key.changedLeagues) ?? [])
@@ -594,6 +600,7 @@ final class SportsStore: ObservableObject {
         if league.onOpenLiga {
             var extras = SportsGameExtras()
             extras.plays = openLigaGoals[event.id] ?? []
+            extras.moments = SportsOpenLiga.moments(extras.plays, home: event.home?.team.name)
             // Form and meetings from the season's games (OpenLigaDB has no
             // summary of its own).
             let season = boards.values.flatMap(\.events).filter { $0.leagueId == league.id && $0.state == .post && $0.start < event.start }
@@ -609,7 +616,9 @@ final class SportsStore: ObservableObject {
             }
             let ids = Set(event.sides.map(\.team.id))
             extras.meetings = season.filter { Set($0.sides.map(\.team.id)) == ids }.suffix(3).reversed().map { game in
-                SportsMeeting(date: game.start, text: "\(game.home?.team.name ?? "") \(game.home?.score ?? "")–\(game.away?.score ?? "") \(game.away?.team.name ?? "")")
+                SportsMeeting(date: game.start, text: "\(game.home?.team.name ?? "") \(game.home?.score ?? "")–\(game.away?.score ?? "") \(game.away?.team.name ?? "")",
+                              homeId: game.home?.team.id, awayId: game.away?.team.id,
+                              homeScore: game.home?.score, awayScore: game.away?.score)
             }
             if let table = await loadStandings(league) {
                 let around = table.around(Set(event.sides.map(\.team.id)))

@@ -39,10 +39,15 @@ struct SportsFormRow: Hashable, Sendable {
     let results: [String]
 }
 
-/// One earlier meeting ("Everton 0–2 Arsenal").
+/// One earlier meeting ("Everton 0–2 Arsenal"); the teams and score
+/// apart when known (shown with the logos).
 struct SportsMeeting: Hashable, Sendable {
     let date: Date?
     let text: String
+    var homeId: String? = nil
+    var awayId: String? = nil
+    var homeScore: String? = nil
+    var awayScore: String? = nil
 }
 
 /// A line of the league table; `mine`: one of this game's teams.
@@ -57,16 +62,23 @@ struct SportsTableRow: Hashable, Sendable {
     var group: String? = nil
 }
 
-/// A team's starting line-up.
+/// A team's line-up: the starters' names ("10 N. Füllkrug"), and every
+/// player with his position and what he did (the picture of the line-up).
 struct SportsLineup: Hashable, Sendable {
     let team: String
     let teamId: String?
     let formation: String?
     let players: [String]
+    var starters: [SportsLineupPlayer] = []
+    var bench: [SportsLineupPlayer] = []
 }
 
 struct SportsGameExtras: Sendable {
     var plays: [SportsScoringPlay] = []
+    /// Goals, cards, substitutions, scores: the Overview's timeline.
+    var moments: [SportsMoment] = []
+    /// The betting odds (the summary's, when the scoreboard had none).
+    var odds: SportsOdds?
     var stats: [SportsStatLine] = []
     var performers: [SportsPerformer] = []
     var form: [SportsFormRow] = []
@@ -144,6 +156,9 @@ enum SportsSummary {
 
         var extras = SportsGameExtras()
         extras.plays = plays(root)
+        extras.moments = SportsMoments.parse(root, sport: sport, homeId: homeId,
+                                             finalHome: event.home?.score, finalAway: event.away?.score)
+        extras.odds = SportsOdds.parse(a(root, "pickcenter")) ?? SportsOdds.parse(a(root, "odds"))
         extras.stats = stats(root, sport: sport, homeId: homeId)
         extras.performers = performers(root)
         extras.form = form(root, nameOf)
@@ -336,7 +351,11 @@ enum SportsSummary {
             let oppName = nameOf(s(opp, "id"), s(opp, "displayName") ?? s(opp, "abbreviation"))
             let text: String
             if let hs = s(e, "homeTeamScore"), let ascore = s(e, "awayTeamScore") {
-                text = s(e, "homeTeamId") == teamId ? "\(teamName) \(hs)–\(ascore) \(oppName)" : "\(oppName) \(hs)–\(ascore) \(teamName)"
+                let teamHome = s(e, "homeTeamId") == teamId
+                text = teamHome ? "\(teamName) \(hs)–\(ascore) \(oppName)" : "\(oppName) \(hs)–\(ascore) \(teamName)"
+                return SportsMeeting(date: SportsESPN.parseISO(s(e, "gameDate").map { String($0.prefix(16)) + "Z" }), text: text,
+                                     homeId: teamHome ? teamId : s(opp, "id"), awayId: teamHome ? s(opp, "id") : teamId,
+                                     homeScore: hs, awayScore: ascore)
             } else if let score = s(e, "score") {
                 text = "\(teamName) \(score) \(oppName)"
             } else {
@@ -348,16 +367,19 @@ enum SportsSummary {
 
     // MARK: Line-ups
 
+    /// Football's rosters, else the box score's players (basketball,
+    /// hockey…); the home team's second.
     private static func lineups(_ root: JSON, _ nameOf: (String?, String?) -> String) -> [SportsLineup] {
-        a(root, "rosters").compactMap { r -> SportsLineup? in
-            let team = o(r, "team")
-            let starters = a(r, "roster").filter { ($0["starter"] as? Bool) == true }.compactMap { p -> String? in
-                guard let n = s(o(p, "athlete"), "shortName") ?? s(o(p, "athlete"), "displayName") else { return nil }
-                return [s(p, "jersey"), n].compactMap { $0 }.joined(separator: " ")
-            }
+        let teams = SportsMoments.lineups(root)
+        var order: [String] = a(root, "rosters").compactMap { s(o($0, "team"), "id") }
+        if order.isEmpty { order = a(o(root, "boxscore"), "players").compactMap { s(o($0, "team"), "id") } }
+        return order.compactMap { id -> SportsLineup? in
+            guard let team = teams[id] else { return nil }
+            let starters = team.players.filter(\.starter)
             guard starters.count >= 5 else { return nil }
-            return SportsLineup(team: nameOf(s(team, "id"), s(team, "displayName")), teamId: s(team, "id"),
-                                formation: s(r, "formation"), players: starters)
+            return SportsLineup(team: nameOf(id, nil), teamId: id, formation: team.formation,
+                                players: starters.map { [$0.jersey, $0.shortName].compactMap { $0 }.joined(separator: " ") },
+                                starters: starters, bench: team.players.filter { !$0.starter })
         }.prefix(2).map { $0 }
     }
 

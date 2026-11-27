@@ -42,8 +42,9 @@ struct SportsGamePage: View {
         guard let extras else { return [] }
         let spoilerFree = event.state == .pre || settings.hides(event)
         var list: [Tab] = []
-        if !spoilerFree, !extras.plays.isEmpty || extras.hasOdds { list.append(.overview) }
-        if spoilerFree, extras.hasOdds, event.state == .pre { list.append(.overview) }
+        let odds = settings.showsOdds && !(event.odds ?? extras.odds ?? SportsOdds()).isEmpty
+        if !spoilerFree, !extras.moments.isEmpty || !extras.plays.isEmpty || extras.hasOdds || odds { list.append(.overview) }
+        if spoilerFree, extras.hasOdds || odds, event.state == .pre { list.append(.overview) }
         if !spoilerFree, !extras.stats.isEmpty { list.append(.stats) }
         if !spoilerFree, !extras.performers.isEmpty { list.append(.leaders) }
         if !spoilerFree, !extras.lineups.isEmpty { list.append(.lineups) }
@@ -93,7 +94,7 @@ struct SportsGamePage: View {
             scene.venue?.venue = venue
             scene.venue?.city = extras?.city
         }
-        return SportsBackdrop(scene: scene)
+        return SportsBackdrop(scene: scene, photo: true)
     }
 
     private func page(_ event: SportsEvent, league: League) -> some View {
@@ -188,8 +189,8 @@ struct SportsGamePage: View {
         case .overview: overview(event, league: league, extras: extras)
         case .stats: stats(event, league: league, extras: extras)
         case .leaders: leaders(event, extras: extras)
-        case .lineups: lineups(extras)
-        case .table: table(extras)
+        case .lineups: SportsLineupView(lineups: extras.lineups, event: event, league: league)
+        case .table: table(event, league: league, extras: extras)
         case .form: form(event, extras: extras)
         case .info: info(event, extras: extras)
         }
@@ -200,35 +201,58 @@ struct SportsGamePage: View {
         return Color(sportsARGB: side?.team.color ?? (home ? 0xFF3A6EA5 : 0xFFB5523B))
     }
 
-    /// The scoring so far (newest first) and the chances.
+    /// What happened (the timeline), beside it the odds and the chances.
     private func overview(_ event: SportsEvent, league: League, extras: SportsGameExtras) -> some View {
-        HStack(alignment: .top, spacing: 50) {
-            if !extras.plays.isEmpty, !settings.hides(event), event.state != .pre {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(L10n.string("livetv_sports_scoring", fallback: "Scoring"))
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
-                    ForEach(Array(extras.plays.reversed().prefix(8).enumerated()), id: \.offset) { _, play in
-                        HStack(alignment: .firstTextBaseline, spacing: 14) {
-                            Text(play.clock).font(.system(size: 20, weight: .semibold)).monospacedDigit()
-                                .frame(width: 110, alignment: .leading)
-                            if let team = play.team {
-                                Text(team).font(.system(size: 20, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.7).frame(width: 220, alignment: .leading)
-                            }
-                            Text(play.text).font(.system(size: 20)).lineLimit(2)
-                            Spacer(minLength: 10)
-                            if let away = play.awayScore, let home = play.homeScore {
-                                Text(league.sport.homeFirst ? "\(home)–\(away)" : "\(away)–\(home)")
-                                    .font(.system(size: 20, weight: .bold)).monospacedDigit()
-                            }
+        let odds = settings.showsOdds ? (event.odds ?? extras.odds) : nil
+        let showMoments = !settings.hides(event) && event.state != .pre
+        return HStack(alignment: .top, spacing: 40) {
+            if showMoments, !extras.moments.isEmpty {
+                SportsTimeline(moments: extras.moments, event: event, league: league)
+                    .frame(maxWidth: .infinity)
+                    .focusSection()
+            } else if showMoments, !extras.plays.isEmpty {
+                plays(extras, league: league)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if extras.hasOdds || (odds.map { !$0.isEmpty } ?? false) {
+                VStack(alignment: .leading, spacing: 28) {
+                    if let odds, !odds.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(L10n.string("livetv_sports_odds_title", fallback: "Odds"))
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.white.opacity(0.6))
+                            SportsOddsView(odds: odds, event: event, league: league)
                         }
                     }
+                    if extras.hasOdds {
+                        chances(event, league: league, extras: extras)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 520)
             }
-            if extras.hasOdds {
-                chances(event, league: league, extras: extras)
-                    .frame(width: 520)
+        }
+    }
+
+    /// The scoring plays as text (a feed without key events).
+    private func plays(_ extras: SportsGameExtras, league: League) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.string("livetv_sports_scoring", fallback: "Scoring"))
+                .font(.system(size: 22, weight: .bold))
+                .foregroundColor(.white.opacity(0.6))
+            ForEach(Array(extras.plays.reversed().prefix(8).enumerated()), id: \.offset) { _, play in
+                HStack(alignment: .firstTextBaseline, spacing: 14) {
+                    Text(play.clock).font(.system(size: 20, weight: .semibold)).monospacedDigit()
+                        .frame(width: 110, alignment: .leading)
+                    if let team = play.team {
+                        Text(team).font(.system(size: 20, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.7).frame(width: 220, alignment: .leading)
+                    }
+                    Text(play.text).font(.system(size: 20)).lineLimit(2)
+                    Spacer(minLength: 10)
+                    if let away = play.awayScore, let home = play.homeScore {
+                        Text(league.sport.homeFirst ? "\(home)–\(away)" : "\(away)–\(home)")
+                            .font(.system(size: 20, weight: .bold)).monospacedDigit()
+                    }
+                }
             }
         }
     }
@@ -328,27 +352,23 @@ struct SportsGamePage: View {
         }
     }
 
-    private func lineups(_ extras: SportsGameExtras) -> some View {
-        HStack(alignment: .top, spacing: 80) {
-            ForEach(Array(extras.lineups.enumerated()), id: \.offset) { _, lineup in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text([lineup.team, lineup.formation].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 24, weight: .bold))
-                        .padding(.bottom, 6)
-                    ForEach(Array(lineup.players.prefix(11).enumerated()), id: \.offset) { _, player in
-                        Text(player).font(.system(size: 20))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+    /// The league's table as on the Tables page (the game's groups, its
+    /// teams marked); ESPN's excerpt when there is none.
+    @ViewBuilder
+    private func table(_ event: SportsEvent, league: League, extras: SportsGameExtras) -> some View {
+        let ids = Set(event.sides.map(\.team.id))
+        if let standings = store.standings[league.id]?.groups(of: ids), standings.groups.contains(where: { $0.rows.contains { ids.contains($0.id) } }) {
+            SportsStandingsTable(standings: standings, league: league, highlight: ids)
+                .frame(maxWidth: 1300)
+                .focusSection()
+        } else {
+            excerpt(extras)
+                .task(id: league.id) { await store.loadStandings(league) }
         }
     }
 
-    private func table(_ extras: SportsGameExtras) -> some View {
+    private func excerpt(_ extras: SportsGameExtras) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let title = extras.tableTitle {
-                Text(title).font(.system(size: 22, weight: .bold)).foregroundColor(.white.opacity(0.6))
-            }
             HStack {
                 Text("#").frame(width: 50, alignment: .leading)
                 Text("").frame(maxWidth: .infinity, alignment: .leading)
@@ -369,12 +389,14 @@ struct SportsGamePage: View {
                 }
                 .font(.system(size: 21, weight: row.mine ? .heavy : .regular))
                 .monospacedDigit()
-                .padding(.vertical, 4)
-                .padding(.horizontal, 10)
-                .background(row.mine ? Color.white.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.vertical, 6)
+                .padding(.horizontal, 14)
+                .background(RoundedRectangle(cornerRadius: 10).fill(row.mine ? LiveTVTheme.accent.opacity(0.34) : Color.clear))
             }
         }
-        .frame(maxWidth: 1000)
+        .padding(24)
+        .frame(maxWidth: 1100)
+        .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 28, style: .continuous)))
     }
 
     /// The last results (W, D, L as dots) and earlier meetings.
@@ -385,14 +407,13 @@ struct SportsGamePage: View {
                     Text(L10n.string("livetv_sports_last_five", fallback: "Last five"))
                         .font(.system(size: 22, weight: .bold)).foregroundColor(.white.opacity(0.6))
                     ForEach(Array(extras.form.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 10) {
-                            Text(row.team).font(.system(size: 22, weight: .bold)).frame(width: 260, alignment: .leading).lineLimit(1)
-                            ForEach(Array(row.results.enumerated()), id: \.offset) { _, result in
-                                Text(result)
-                                    .font(.system(size: 17, weight: .heavy))
-                                    .frame(width: 36, height: 36)
-                                    .background(result == "W" ? Color.green : result == "L" ? Color.red : Color.gray, in: Circle())
+                        HStack(spacing: 18) {
+                            if let team = event.sides.first(where: { $0.team.id == row.teamId })?.team {
+                                SportsTeamLogo(team: team, size: 48).accessibilityLabel(team.name)
+                            } else {
+                                Text(row.team).font(.system(size: 22, weight: .bold)).frame(width: 200, alignment: .leading).lineLimit(1)
                             }
+                            SportsFormDots(results: row.results, size: 40)
                         }
                     }
                 }
@@ -408,7 +429,15 @@ struct SportsGamePage: View {
                                     .font(.system(size: 19)).foregroundColor(.white.opacity(0.6))
                                     .frame(width: 170, alignment: .leading)
                             }
-                            Text(meeting.text).font(.system(size: 21, weight: .semibold))
+                            if let home = event.sides.first(where: { $0.team.id == meeting.homeId })?.team,
+                               let away = event.sides.first(where: { $0.team.id == meeting.awayId })?.team {
+                                SportsTeamLogo(team: home, size: 40).accessibilityLabel(home.name)
+                                Text("\(meeting.homeScore ?? "")–\(meeting.awayScore ?? "")")
+                                    .font(.system(size: 22, weight: .heavy)).monospacedDigit()
+                                SportsTeamLogo(team: away, size: 40).accessibilityLabel(away.name)
+                            } else {
+                                Text(meeting.text).font(.system(size: 21, weight: .semibold))
+                            }
                         }
                     }
                 }
@@ -442,6 +471,15 @@ struct SportsGamePage: View {
         }
         if let attendance = extras.attendance {
             lines.append(("person.3", L10n.string("livetv_sports_attendance_title", fallback: "Attendance"), attendance.formatted()))
+        }
+        if settings.showsOdds, let odds = event.odds ?? extras.odds, !odds.isEmpty, let sport = league?.sport {
+            let us = settings.showsBroadcasts
+            let sides = event.ordered(sport)
+            let parts = sides.map { "\($0.team.name) " + SportsOdds.text($0.home ? odds.home : odds.away, us: us) }
+            let draw = odds.draw.map { [L10n.string("livetv_sports_draw", fallback: "Draw") + " " + SportsOdds.text($0, us: us)] } ?? []
+            lines.append(("chart.bar", L10n.string("livetv_sports_odds_title", fallback: "Odds"),
+                          (parts.count == 2 ? [parts[0]] + draw + [parts[1]] : parts).joined(separator: " · ")
+                              + (odds.provider.map { " (\($0))" } ?? "")))
         }
         if settings.showsBroadcasts, !event.broadcasts.isEmpty {
             lines.append(("tv", L10n.string("livetv_sports_tv", fallback: "TV"), event.broadcasts.joined(separator: ", ")))

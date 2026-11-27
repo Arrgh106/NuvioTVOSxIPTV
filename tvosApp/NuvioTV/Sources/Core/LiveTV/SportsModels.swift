@@ -131,6 +131,8 @@ struct SportsSide: Codable, Hashable, Sendable {
     var home: Bool
     /// Score per quarter, period, inning or half.
     var periods: [String] = []
+    /// The last five results, oldest first ("WDLWW"), when the feed has it.
+    var form: String? = nil
 }
 
 enum GameState: String, Codable, Sendable { case pre, live, post, off }
@@ -171,6 +173,8 @@ struct SportsEvent: Codable, Identifiable, Hashable, Sendable {
     /// Where it's played ("WWK Arena") and the town.
     var venue: String? = nil
     var city: String? = nil
+    /// The betting odds (ESPN's scoreboard), when it has them.
+    var odds: SportsOdds? = nil
 
     var sides: [SportsSide] { [away, home].compactMap { $0 } }
 

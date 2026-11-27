@@ -109,6 +109,21 @@ enum SportsOpenLiga {
         return (events, goals)
     }
 
+    /// A game's goals as the Overview's timeline: penalties and own goals
+    /// marked, the score after each (OpenLigaDB has no cards or
+    /// substitutions).
+    static func moments(_ goals: [SportsScoringPlay], home: String?) -> [SportsMoment] {
+        goals.map { play in
+            let own = play.text.contains("(o.g.)"), penalty = play.text.contains("(pen.)")
+            let name = play.text.replacingOccurrences(of: " (o.g.)", with: "").replacingOccurrences(of: " (pen.)", with: "")
+            let minute = Int(play.clock.filter(\.isNumber)) ?? 0
+            return SportsMoment(
+                kind: own ? .ownGoal : (penalty ? .penaltyGoal : .goal), clock: play.clock, period: minute > 45 ? 2 : 1,
+                home: play.team.map { $0 == home }, player: name.nilIfBlank, detail: nil,
+                score: play.homeScore.flatMap { h in play.awayScore.map { "\(h)–\($0)" } })
+        }
+    }
+
     /// The league table.
     static func parseTable(_ league: League, data: Data) -> SportsStandings? {
         guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [JSON], !list.isEmpty else { return nil }

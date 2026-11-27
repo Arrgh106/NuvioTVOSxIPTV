@@ -271,7 +271,8 @@ enum SportsESPN {
             }
             let side = SportsSide(
                 team: team, score: score, record: str(list(co, "records").first, "summary"),
-                winner: (co["winner"] as? Bool) ?? false, home: str(co, "homeAway") == "home", periods: periods)
+                winner: (co["winner"] as? Bool) ?? false, home: str(co, "homeAway") == "home", periods: periods,
+                form: str(co, "form").flatMap { $0.allSatisfy { "WDLT".contains($0) } ? $0 : nil })
             if side.home && home == nil { home = side } else if away == nil { away = side } else if home == nil { home = side }
         }
         guard let h = home, let a = away else { return nil }
@@ -286,7 +287,7 @@ enum SportsESPN {
             id: "espn:\(league.id):\(espnId)", leagueId: league.id, start: start, hasTime: true, state: state,
             title: title, subtitle: [headline, week, venue].compactMap { $0 }.joined(separator: " · ").nilIfBlank,
             status: status, away: a, home: h, broadcasts: broadcasts, situation: situation, progress: progress,
-            espnId: espnId, venue: venue, city: city)
+            espnId: espnId, venue: venue, city: city, odds: SportsOdds.parse(list(comp, "odds")))
     }
 
     /// "4:12 - 3rd" reads "3rd · 4:12".

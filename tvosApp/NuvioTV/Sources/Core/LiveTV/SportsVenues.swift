@@ -6,9 +6,14 @@ struct SportsVenueQuery: Hashable, Sendable {
     var venue: String?
     var city: String?
     var team: String?
+    /// A player of `team`: his photo instead (the same lookups).
+    var player: String?
 
-    /// The cache key: the venue when known, else the team.
+    /// The cache key: the player, the venue when known, else the team.
     var key: String? {
+        if let player = player?.nilIfBlank {
+            return "p:" + SportsVenues.normalized(player) + "|" + SportsVenues.normalized(team ?? "")
+        }
         if let venue = venue?.nilIfBlank { return "v:" + SportsVenues.normalized(venue) + "|" + SportsVenues.normalized(city ?? "") }
         if let team = team?.nilIfBlank { return "t:" + SportsVenues.normalized(team) }
         return nil
@@ -134,6 +139,49 @@ enum SportsVenues {
               let file = (values(claims, "P18").first?["mainsnak"] as? JSON).flatMap({ ($0["datavalue"] as? JSON)?["value"] as? String })
         else { return nil }
         return fileURL(file)
+    }
+
+    // MARK: Players
+
+    /// Wikidata items named so (labels and aliases, any language).
+    static func searchURL(_ name: String) -> URL? {
+        var parts = URLComponents(string: wikidata)
+        parts?.queryItems = [
+            .init(name: "action", value: "wbsearchentities"), .init(name: "search", value: name),
+            .init(name: "language", value: "en"), .init(name: "strictlanguage", value: "false"),
+            .init(name: "type", value: "item"), .init(name: "limit", value: "7"), .init(name: "format", value: "json"),
+        ]
+        return parts?.url
+    }
+
+    static func searchIDs(_ data: Data) -> [String] {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? JSON else { return [] }
+        return (root["search"] as? [JSON] ?? []).compactMap { $0["id"] as? String }
+    }
+
+    /// Several items' statements at once.
+    static func itemsURL(_ ids: [String]) -> URL? {
+        itemURL(ids.prefix(10).joined(separator: "|"))
+    }
+
+    /// Players of a sport, as Wikidata calls them (football, basketball,
+    /// ice hockey, American football, baseball, rugby).
+    static let playerKinds: Set<String> = ["Q937857", "Q3665646", "Q11774891", "Q19204627", "Q10871364", "Q14089670"]
+
+    /// The photo of the one found who is a player and plays for the team
+    /// now (no end date): a namesake elsewhere is never taken.
+    static func playerImage(_ data: Data, ids: [String], team: String) -> String? {
+        for id in ids {
+            guard let claims = claims(data, id: id), !Set(itemIDs(claims, "P106")).isDisjoint(with: playerKinds) else { continue }
+            let now = values(claims, "P54").filter { (($0["qualifiers"] as? JSON)?["P582"]) == nil }.compactMap {
+                ((($0["mainsnak"] as? JSON)?["datavalue"] as? JSON)?["value"] as? JSON)?["id"] as? String
+            }
+            guard now.contains(team),
+                  let file = (values(claims, "P18").first?["mainsnak"] as? JSON).flatMap({ ($0["datavalue"] as? JSON)?["value"] as? String })
+            else { continue }
+            return fileURL(file)
+        }
+        return nil
     }
 
     /// Lower case, no accents, "ß" as "ss", only letters and digits.

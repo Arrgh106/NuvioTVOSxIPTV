@@ -45,6 +45,14 @@ struct SportsStandings: Sendable {
         SportsStandingsColumn(key: "pointDifferential", label: "GD"), SportsStandingsColumn(key: "points", label: "PTS"),
     ]
 
+    /// Only the groups these teams are in (a game's page); the whole table
+    /// when it is one group, or none of them is in it.
+    func groups(of teamIDs: Set<String>) -> SportsStandings {
+        guard groups.count > 1 else { return self }
+        let mine = groups.filter { $0.rows.contains { teamIDs.contains($0.id) } }
+        return SportsStandings(leagueId: leagueId, kind: kind, columns: columns, groups: mine.isEmpty ? groups : mine)
+    }
+
     /// A team's group and row.
     func find(_ teamID: String) -> (group: SportsStandingsGroup, row: SportsStandingsRow)? {
         for group in groups {
