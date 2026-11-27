@@ -47,6 +47,6 @@ struct SportsSettingsView: View {
                 )
             }
         }
-        .fullScreenCover(isPresented: $showsLeagues) { SportsLeaguesPicker() }
+        .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
     }
 }

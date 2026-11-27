@@ -160,6 +160,10 @@ final class SportsStore: ObservableObject {
     @Published private(set) var schedules: [String: Board] = [:]
     /// League tables (by league id).
     @Published private(set) var standings: [String: SportsStandings] = [:]
+    /// Competitions the feed has no table for (cups): left out of Tables.
+    @Published private(set) var noTable: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: SportsStore.noTableKey) ?? [])
+    private static let noTableKey = "livetv.sports.noTable"
 
     struct Board: Codable {
         var fetchedAt: Date
@@ -446,6 +450,11 @@ final class SportsStore: ObservableObject {
         }
         standingsAt[league.id] = Date()
         if let table { standings[league.id] = table }
+        // Asked and answered without a table: a cup, not shown in Tables.
+        if (table == nil) != noTable.contains(league.id) {
+            if table == nil { noTable.insert(league.id) } else { noTable.remove(league.id) }
+            UserDefaults.standard.set(Array(noTable), forKey: Self.noTableKey)
+        }
         return table ?? standings[league.id]
     }
 

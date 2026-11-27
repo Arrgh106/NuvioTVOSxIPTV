@@ -19,7 +19,7 @@ struct SportsMyTeamsView: View {
                         .font(.system(size: 60))
                         .foregroundColor(.white.opacity(0.6))
                     Text(L10n.string("livetv_sports_my_teams_empty",
-                                     fallback: "Open a game and choose Follow under a team: its games show up here, with its place in the table."))
+                                     fallback: "Press the star by a team (on a game's page or in Tables): its games show up here, with its place in the table."))
                         .font(.system(size: 24))
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
@@ -104,13 +104,14 @@ struct SportsTablesView: View {
     @State private var leagueID: String?
     @State private var focusedRow: SportsStandingsRow?
 
-    /// Leagues with tables: the ones shown and the ones of your teams.
+    /// Leagues with tables: the ones shown and the ones of your teams (not
+    /// cups, which have none).
     private var leagues: [League] {
         var list = settings.shownLeagues.filter { $0.kind == .teams }
         for team in settings.followed {
             if let league = SportsCatalog.league(team.leagueId), !list.contains(league) { list.insert(league, at: 0) }
         }
-        return list
+        return list.filter { !store.noTable.contains($0.id) }
     }
 
     var body: some View {
@@ -175,8 +176,10 @@ struct SportsTablesView: View {
                     }
                     head(standings)
                     ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
+                        // Select a line: follow the team (its star).
                         SportsTableRowView(row: row, columns: standings.columns, mine: isMine(row, league: league),
-                                           shaded: index % 2 == 1, onFocus: { focusedRow = row })
+                                           shaded: index % 2 == 1, onFocus: { focusedRow = row },
+                                           onSelect: { settings.toggleFollow(team(row, league: league)) })
                     }
                 }
                 if !zones.isEmpty {
@@ -229,7 +232,6 @@ struct SportsTablesView: View {
             let games = store.games(of: info)
             let last = games.last { $0.state == .post }
             let next = games.first { $0.state == .pre || $0.state == .live }
-            let on = settings.isFollowed(info)
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 18) {
                     SportsTeamLogo(team: info, size: 96)
@@ -239,20 +241,31 @@ struct SportsTablesView: View {
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(LiveTVTheme.accent)
                     }
+                    Spacer(minLength: 12)
+                    SportsFollowStar(team: info, size: 60)
                 }
                 if let zone = row.zone {
                     Label(zone.label, systemImage: "flag.fill")
                         .font(.system(size: 19))
                         .foregroundColor(Color(sportsARGB: zone.color))
                 }
-                HStack(spacing: 14) {
+                // Every number on one line ("42:19" too), sharing the width.
+                HStack(spacing: 8) {
                     ForEach(standings.columns, id: \.key) { column in
                         if let value = row.values[column.key] {
                             VStack(spacing: 4) {
-                                Text(value).font(.system(size: 28, weight: .heavy)).monospacedDigit()
-                                Text(column.label).font(.system(size: 15, weight: .bold)).foregroundColor(.white.opacity(0.5))
+                                Text(value)
+                                    .font(.system(size: 28, weight: .heavy))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.6)
+                                Text(column.label)
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
                             }
-                            .frame(minWidth: 64)
+                            .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -261,14 +274,6 @@ struct SportsTablesView: View {
                 }
                 if let next {
                     gameLine(L10n.string("livetv_sports_next_game", fallback: "Next"), next, team: info)
-                }
-                Button {
-                    settings.toggleFollow(info)
-                } label: {
-                    Label(on ? L10n.format("livetv_sports_following_format", fallback: "Following %@", row.shortName)
-                             : L10n.format("livetv_sports_follow_format", fallback: "Follow %@", row.shortName),
-                          systemImage: on ? "star.fill" : "star")
-                        .font(.system(size: 20))
                 }
                 Spacer(minLength: 0)
             }
@@ -303,6 +308,7 @@ private struct SportsTableRowView: View {
     let mine: Bool
     var shaded = false
     var onFocus: () -> Void = {}
+    var onSelect: () -> Void = {}
     @FocusState private var focused: Bool
 
     /// Wider columns for the goals ("42:19") and the points.
@@ -316,7 +322,7 @@ private struct SportsTableRowView: View {
     }
 
     var body: some View {
-        Button(action: {}) {
+        Button(action: onSelect) {
             HStack(spacing: 0) {
                 Rectangle()
                     .fill(row.zone.map { Color(sportsARGB: $0.color) } ?? .clear)
@@ -334,7 +340,16 @@ private struct SportsTableRowView: View {
                 }
                 .frame(width: 38, height: 38)
                 .padding(.trailing, 16)
-                Text(row.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 10) {
+                    Text(row.name).lineLimit(1)
+                    // A team you follow.
+                    if mine {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(focused ? .black : LiveTVTheme.accent)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 ForEach(columns, id: \.key) { column in
                     Text(row.values[column.key] ?? "")
                         .font(.system(size: 22, weight: column.key == "points" ? .heavy : .regular))

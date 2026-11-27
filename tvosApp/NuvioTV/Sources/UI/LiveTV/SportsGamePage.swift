@@ -108,7 +108,10 @@ struct SportsGamePage: View {
                 if event.state == .live { SportsLiveBadge() }
             }
             if event.sides.count == 2 {
-                SportsMatchup(event: event, league: league, hideScores: settings.hides(event), width: 1100, logoSize: 150)
+                // A star under either team follows it (its games in My Teams).
+                SportsMatchup(event: event, league: league, hideScores: settings.hides(event), width: 1100, logoSize: 150,
+                              follow: true)
+                    .focusSection()
                     .frame(maxWidth: .infinity)
             } else {
                 Text(event.title).font(.system(size: 52, weight: .bold)).lineLimit(2)
@@ -133,24 +136,6 @@ struct SportsGamePage: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            // Follow either team (17d): its games in My Teams.
-            if event.sides.count == 2 {
-                HStack(spacing: 20) {
-                    ForEach(event.ordered(league.sport), id: \.team.key) { side in
-                        let on = settings.isFollowed(side.team)
-                        Button {
-                            settings.toggleFollow(side.team)
-                        } label: {
-                            Label(on ? L10n.format("livetv_sports_following_format", fallback: "Following %@", side.team.name)
-                                     : L10n.format("livetv_sports_follow_format", fallback: "Follow %@", side.team.name),
-                                  systemImage: on ? "star.fill" : "star")
-                                .font(.system(size: 20))
-                        }
-                    }
-                }
-                .focusSection()
-                .frame(maxWidth: .infinity)
-            }
             if list.isEmpty {
                 Text(extras == nil ? L10n.string("livetv_sports_loading_game", fallback: "Getting more about the game…")
                                    : L10n.string("livetv_sports_no_more", fallback: "ESPN has nothing more about this game yet."))

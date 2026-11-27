@@ -9,39 +9,25 @@ struct LiveTVPickerOption: Identifiable, Hashable {
     var systemImage: String? = nil
 }
 
-/// Fork: a list to pick from, in Nuvio's settings look (as its Add-ons
-/// page): the page behind darkened away, a title and subtitle on top, the
-/// choices as Nuvio's settings rows on a glass panel (the chosen one
-/// checked), Done at the bottom. Used for every list the Live TV, Calendar
-/// and Sports pages open, instead of the system's dialog. Picking a choice
-/// closes it.
-struct LiveTVPickerWindow: View {
+/// Fork: a page in Nuvio's settings-sheet look (as its AI Subtitles
+/// sheet): the app's background, a title and a line under it, and the
+/// rows on one glass panel. Presented with `.sheet`, as Nuvio's own; the
+/// Menu button closes it.
+struct LiveTVSheetPage<Content: View>: View {
     let title: String
     var subtitle: String? = nil
-    var systemImage = "list.bullet"
-    let options: [LiveTVPickerOption]
-    /// The chosen option (nil for a list of actions).
-    var selected: String? = nil
-    var accentColor: Color = LiveTVTheme.accent
-    let onPick: (String) -> Void
-    let onClose: () -> Void
+    @ViewBuilder let content: Content
 
-    @FocusState private var focused: String?
-
-    private static let doneID = "\u{0}done"
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
     var body: some View {
         ZStack {
-            // Over the page as a page of its own (the rows read on any page).
-            Color.black.opacity(0.9).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 18) {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundColor(accentColor)
-                        .frame(width: 56, height: 56)
-                        .modifier(LiveTVGlass(shape: Circle(), prominent: true))
-                    VStack(alignment: .leading, spacing: 6) {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor)
+                .ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 7) {
                         Text(title)
                             .font(.system(size: 36, weight: .bold))
                             .foregroundColor(.white)
@@ -52,56 +38,58 @@ struct LiveTVPickerWindow: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(options) { option in
-                                row(option).id(option.id)
-                            }
-                        }
-                        .padding(24)
+                    // Lazy: long lists (languages, leagues) scroll smoothly.
+                    LazyVStack(spacing: 12) {
+                        content
                     }
-                    .frame(maxHeight: 640)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 32, style: .continuous)))
                     .overlay(RoundedRectangle(cornerRadius: 32, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-                    .onAppear {
-                        let start = options.first { $0.id == selected }?.id ?? options.first?.id
-                        DispatchQueue.main.async {
-                            if let start {
-                                proxy.scrollTo(start, anchor: .center)
-                                focused = start
-                            }
-                        }
-                    }
                 }
-                .focusSection()
-                HStack {
-                    Spacer()
-                    Button(action: onClose) {
-                        HStack(spacing: 10) {
-                            Image(systemName: selected == nil ? "xmark" : "checkmark")
-                                .font(.system(size: 18, weight: .bold))
-                            Text(selected == nil ? L10n.string("cancel", fallback: "Cancel")
-                                                 : L10n.string("tvos_common_done", fallback: "Done"))
-                                .font(.system(size: 21, weight: .bold))
-                        }
-                        .foregroundColor(focused == Self.doneID ? .black : .white)
-                        .padding(.horizontal, 26)
-                        .frame(height: 58)
-                        .background(Capsule().fill(focused == Self.doneID ? Color.white : Color.white.opacity(0.08)))
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
-                    }
-                    .buttonStyle(PosterCardButtonStyle())
-                    .focused($focused, equals: Self.doneID)
-                    .focusEffectDisabledIfAvailable()
-                    .scaleEffect(focused == Self.doneID ? 1.06 : 1)
-                    .animation(.easeOut(duration: 0.14), value: focused == Self.doneID)
-                }
-                .focusSection()
+                .frame(width: 1_000, alignment: .leading)
+                .padding(.horizontal, 52)
+                .padding(.vertical, 38)
             }
-            .frame(width: 1100)
-            .padding(.vertical, 50)
+            .focusSection()
+        }
+    }
+}
+
+/// Fork: a list to pick from, as Nuvio's settings sheets: its rows on the
+/// sheet's glass panel, the chosen one checked. Used for every list the
+/// Live TV, Calendar and Sports pages open, instead of the system's
+/// dialog. Picking a choice closes it.
+struct LiveTVPickerWindow: View {
+    let title: String
+    var subtitle: String? = nil
+    /// Kept for the callers; Nuvio's sheets show no icon.
+    var systemImage = "list.bullet"
+    let options: [LiveTVPickerOption]
+    /// The chosen option (nil for a list of actions).
+    var selected: String? = nil
+    var accentColor: Color = LiveTVTheme.accent
+    let onPick: (String) -> Void
+    let onClose: () -> Void
+
+    @FocusState private var focused: String?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            LiveTVSheetPage(title: title, subtitle: subtitle) {
+                ForEach(options) { option in
+                    row(option).id(option.id)
+                }
+            }
+            .onAppear {
+                let start = options.first { $0.id == selected }?.id ?? options.first?.id
+                DispatchQueue.main.async {
+                    if let start {
+                        proxy.scrollTo(start, anchor: .center)
+                        focused = start
+                    }
+                }
+            }
         }
         .onExitCommand(perform: onClose)
     }
@@ -122,7 +110,7 @@ struct LiveTVPickerWindow: View {
                     LiveTVSettingsRows.rowText(title: option.title, subtitle: subtitle)
                 } else {
                     Text(option.title)
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.appFont(size: 22, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
@@ -153,11 +141,9 @@ struct LiveTVGlass<S: InsettableShape>: ViewModifier {
 }
 
 extension View {
-    /// A picker window over everything (a full-screen cover with the page
-    /// showing through, darkened).
+    /// A picker window as Nuvio's settings sheets (the system sheet over
+    /// the page).
     func liveTVPicker<Window: View>(isPresented: Binding<Bool>, @ViewBuilder window: @escaping () -> Window) -> some View {
-        fullScreenCover(isPresented: isPresented) {
-            LiveTVSettingsRows.clearSheetBackground(window())
-        }
+        sheet(isPresented: isPresented) { window() }
     }
 }

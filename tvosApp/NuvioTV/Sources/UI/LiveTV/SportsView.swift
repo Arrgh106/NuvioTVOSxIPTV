@@ -90,7 +90,7 @@ struct SportsView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
-        .fullScreenCover(isPresented: $showsLeagues) { SportsLeaguesPicker() }
+        .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
         .fullScreenCover(item: $openGame) { game in SportsGamePage(eventID: game.id) }
         .onAppear {
             settings.reload()
@@ -601,7 +601,7 @@ private struct SportsQuickMenu: View {
 }
 
 /// Which leagues All Events shows, by sport (as Android's Leagues dialog),
-/// in Nuvio's settings look (as its Add-ons page): a row per sport that
+/// as Nuvio's settings sheets (as its AI Subtitles sheet): a row per sport that
 /// opens and closes (how many of its leagues are on), and under an open
 /// one each league with its logo and a switch. Only open sports' rows are
 /// made, so the list stays short and scrolls smoothly; logos are asked for
@@ -615,35 +615,22 @@ struct SportsLeaguesPicker: View {
         let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
         let leagues = SportsCatalog.all.filter(\.hasFeed)
         let sports = order.filter { sport in leagues.contains { $0.sport == sport } }
-        ZStack {
-            Color.black.opacity(0.92).ignoresSafeArea()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"))
-                            .font(.system(size: 36, weight: .bold))
-                        Text(L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off."))
-                            .font(.system(size: 20, weight: .medium))
-                            .foregroundColor(.white.opacity(0.62))
-                    }
-                    .padding(.bottom, 12)
-                    ForEach(sports, id: \.self) { sport in
-                        let list = leagues.filter { $0.sport == sport }
-                        SportsSportRow(sport: sport, on: list.filter(settings.isShown).count, total: list.count,
-                                       isOpen: open.contains(sport)) {
-                            if open.contains(sport) { open.remove(sport) } else { open.insert(sport) }
-                        }
-                        if open.contains(sport) {
-                            ForEach(list) { league in
-                                SportsLeagueRow(league: league)
-                                    .padding(.leading, 40)
-                            }
-                        }
+        LiveTVSheetPage(
+            title: L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"),
+            subtitle: L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off.")
+        ) {
+            ForEach(sports, id: \.self) { sport in
+                let list = leagues.filter { $0.sport == sport }
+                SportsSportRow(sport: sport, on: list.filter(settings.isShown).count, total: list.count,
+                               isOpen: open.contains(sport)) {
+                    if open.contains(sport) { open.remove(sport) } else { open.insert(sport) }
+                }
+                if open.contains(sport) {
+                    ForEach(list) { league in
+                        SportsLeagueRow(league: league)
+                            .padding(.leading, 40)
                     }
                 }
-                .frame(width: 1100, alignment: .leading)
-                .padding(.vertical, 50)
-                .frame(maxWidth: .infinity)
             }
         }
         .onAppear {
@@ -719,6 +706,36 @@ private struct SportsLeagueRow: View {
     }
 }
 
+/// Follow a team (its games in My Teams): a star by its name, filled when
+/// followed.
+struct SportsFollowStar: View {
+    let team: TeamInfo
+    var size: CGFloat = 52
+    @ObservedObject private var settings = SportsSettings.shared
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let on = settings.isFollowed(team)
+        Button {
+            settings.toggleFollow(team)
+        } label: {
+            Image(systemName: on ? "star.fill" : "star")
+                .font(.system(size: size * 0.46, weight: .bold))
+                .foregroundColor(focused ? .black : (on ? LiveTVTheme.accent : .white.opacity(0.85)))
+                .frame(width: size, height: size)
+                .background(Circle().fill(focused ? Color.white : Color.white.opacity(0.1)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(focused ? 0 : 0.16), lineWidth: 1))
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+        .scaleEffect(focused ? 1.1 : 1)
+        .animation(.easeOut(duration: 0.14), value: focused)
+        .accessibilityLabel(on ? L10n.format("livetv_sports_following_format", fallback: "Following %@", team.name)
+                               : L10n.format("livetv_sports_follow_format", fallback: "Follow %@", team.name))
+    }
+}
+
 /// A league's logo, else its short name on its colour.
 struct SportsLeagueLogo: View {
     let league: League
@@ -788,6 +805,8 @@ struct SportsMatchup: View {
     let hideScores: Bool
     let width: CGFloat
     var logoSize: CGFloat = 110
+    /// A star under each team, to follow it (the game's page).
+    var follow = false
 
     var body: some View {
         let sides = event.ordered(league.sport)
@@ -822,6 +841,9 @@ struct SportsMatchup: View {
                 .minimumScaleFactor(0.8)
             if let record = side.record ?? side.team.record {
                 Text(record).font(.system(size: 18)).foregroundColor(.white.opacity(0.6))
+            }
+            if follow {
+                SportsFollowStar(team: side.team)
             }
         }
         .frame(width: max((width - 200 * logoSize / 110) / 2, 100))
