@@ -647,19 +647,21 @@ struct LiveTVCalendarView: View {
     /// moves.
     @ViewBuilder
     private func ratingsRow(_ entry: LiveTVCalendarEntry, width: CGFloat) -> some View {
-        let fit = max(1, Int((width + 20) / (26 + 7 + 62 + 20)))
+        let fit = max(1, Int((width + 21) / (26 + 7 + 56 + 21)))
         let chosen = Array(LiveTVCalendarSettings.ratingVisuals.prefix(fit))
         if !chosen.isEmpty, about.meta(entry) != nil || entry.contentID.hasPrefix("tt") {
             let values = about.ratingValues(entry)
-            HStack(spacing: 20) {
+            // As Nuvio's Home hero row (TvHeroRatingsRow): icon 26, value
+            // 22, 21 apart.
+            HStack(spacing: 26 * 0.8) {
                 ForEach(chosen, id: \.source) { visual in
                     HStack(spacing: 7) {
                         TvRatingIcon(visual: visual, height: 26)
                         Text(values[visual.source].map { visual.format($0.value) } ?? "–")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(.white.opacity(values[visual.source] == nil ? 0.35 : 0.85))
+                            .font(.appFont(size: 22, weight: .semibold))
+                            .foregroundColor(.white.opacity(values[visual.source] == nil ? 0.35 : 0.82))
                             .lineLimit(1)
-                            .frame(width: 62, alignment: .leading)
+                            .fixedSize()
                     }
                 }
             }

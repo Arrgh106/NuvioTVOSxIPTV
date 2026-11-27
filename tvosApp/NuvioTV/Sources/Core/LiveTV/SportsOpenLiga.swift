@@ -30,11 +30,11 @@ enum SportsOpenLiga {
         guard let link, !link.isEmpty else { return nil }
         let marker = "upload.wikimedia.org/wikipedia/"
         guard link.lowercased().hasSuffix(".svg"), let range = link.range(of: marker) else { return link }
-        // .../wikipedia/en/c/c8/Name.svg -> .../wikipedia/en/thumb/c/c8/Name.svg/200px-Name.svg.png
+        // .../wikipedia/en/c/c8/Name.svg -> .../wikipedia/en/thumb/c/c8/Name.svg/250px-Name.svg.png
         let rest = link[range.upperBound...]
         let parts = rest.split(separator: "/", maxSplits: 1)
         guard parts.count == 2, let file = rest.split(separator: "/").last else { return link }
-        return "https://" + marker + parts[0] + "/thumb/" + parts[1] + "/200px-" + file + ".png"
+        return "https://" + marker + parts[0] + "/thumb/" + parts[1] + "/250px-" + file + ".png"
     }
 
     private typealias JSON = [String: Any]

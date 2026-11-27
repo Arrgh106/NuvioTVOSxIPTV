@@ -41,6 +41,7 @@ struct SportsStandings: Sendable {
     static let tableColumns = [
         SportsStandingsColumn(key: "gamesPlayed", label: "P"), SportsStandingsColumn(key: "wins", label: "W"),
         SportsStandingsColumn(key: "ties", label: "D"), SportsStandingsColumn(key: "losses", label: "L"),
+        SportsStandingsColumn(key: "goals", label: "GOALS"),
         SportsStandingsColumn(key: "pointDifferential", label: "GD"), SportsStandingsColumn(key: "points", label: "PTS"),
     ]
 
@@ -147,6 +148,7 @@ struct SportsStandings: Sendable {
                 if values[key] == nil, let shown = s(stat, "displayValue")?.trimmingCharacters(in: .whitespaces) { values[key] = shown }
             }
             if kind == .racing, let points = values["championshipPts"] { values["points"] = points }
+            if values["goals"] == nil, let pf = values["pointsFor"], let pa = values["pointsAgainst"] { values["goals"] = "\(pf):\(pa)" }
             if values["gamesBehind"] == "-" { values["gamesBehind"] = "–" }
             let note = entry["note"] as? JSON
             let zone = s(note, "description").map { description in

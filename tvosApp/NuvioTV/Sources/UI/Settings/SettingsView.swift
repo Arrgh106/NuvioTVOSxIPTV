@@ -14591,6 +14591,49 @@ private struct SideloadUpdatesSheet: View {
     }
 }
 
+/// Fork: a licence entry that can take focus (the list scrolls with it).
+private struct LicenseEntryCard: View {
+    let title: String
+    let license: String
+    let entryBody: String
+    let accentColor: Color
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Button(action: {}) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
+                    Spacer(minLength: 16)
+                    Text(license)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(accentColor)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text(entryBody)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .settingsGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isProminent: isFocused)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(isFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
+                                  lineWidth: isFocused ? AppFocusOutline.width : 1)
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
 private struct LicensesAttributionsSheet: View {
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
@@ -14805,30 +14848,9 @@ private struct LicensesAttributionsSheet: View {
                 .foregroundColor(.white.opacity(0.9))
 
             ForEach(entries) { entry in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(entry.title)
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(.white)
-                        Spacer(minLength: 16)
-                        Text(entry.license)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(accentColor)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    Text(entry.body)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white.opacity(0.68))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .settingsGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isProminent: false)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-                )
+                // Fork: each entry takes focus, so the remote scrolls
+                // through the whole list.
+                LicenseEntryCard(title: entry.title, license: entry.license, entryBody: entry.body, accentColor: accentColor)
             }
         }
     }
@@ -22771,6 +22793,16 @@ enum LiveTVSettingsRows {
     /// Nuvio's settings glass for the fork's own panels.
     static func glass<V: View, S: InsettableShape>(_ view: V, shape: S, prominent: Bool) -> some View {
         view.settingsGlass(shape: shape, isProminent: prominent)
+    }
+
+    /// Nuvio's settings row (as the Add-ons rows): glass, focus outline.
+    static func rowShell<Content: View>(isFocused: Bool, accentColor: Color, @ViewBuilder content: () -> Content) -> some View {
+        SettingsRowShell(isFocused: isFocused, accentColor: accentColor, content: content)
+    }
+
+    /// A settings row's title and subtitle.
+    static func rowText(title: String, subtitle: String) -> some View {
+        SettingsRowText(title: title, subtitle: subtitle)
     }
 
     static func action(

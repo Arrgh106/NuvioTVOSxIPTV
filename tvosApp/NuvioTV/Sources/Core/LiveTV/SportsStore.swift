@@ -323,7 +323,7 @@ final class SportsStore: ObservableObject {
             return
         }
         boards[key] = Board(fetchedAt: Date(), events: SportsESPN.parseScoreboard(league, data: data))
-        if leagueLogos[league.id] == nil, let logo = SportsESPN.leagueLogo(data) { leagueLogos[league.id] = logo }
+        if (leagueLogos[league.id] ?? "").isEmpty, let logo = SportsESPN.leagueLogo(data) { leagueLogos[league.id] = logo }
     }
 
     nonisolated private static let session: URLSession = {
@@ -353,8 +353,8 @@ final class SportsStore: ObservableObject {
     private var logoRunning = 0
 
     /// A league's logo, asked for when it isn't known yet (the Leagues
-    /// list: as rows come into view; ESPN's scoreboard of a day without
-    /// games, two kilobytes). Two at a time.
+    /// list: as rows come into view; ESPN's core API, a few kilobytes).
+    /// Two at a time.
     func wantLogo(_ league: League) {
         guard league.onESPN, leagueLogos[league.id] == nil, logoAsking.insert(league.id).inserted else { return }
         logoQueue.append(league)
@@ -366,10 +366,12 @@ final class SportsStore: ObservableObject {
             let league = logoQueue.removeFirst()
             logoRunning += 1
             Task {
-                if let url = SportsESPN.scoreboardURL(league, day: "20000101"), let data = await Self.fetch(url),
-                   let logo = SportsESPN.leagueLogo(data) {
-                    leagueLogos[league.id] = logo
+                // "" when it has none: asked once, its colour badge after that.
+                if let url = SportsESPN.coreLeagueURL(league), let data = await Self.fetch(url) {
+                    leagueLogos[league.id] = SportsESPN.coreLeagueLogo(league, data: data) ?? ""
                     scheduleSave()
+                } else if let logo = SportsESPN.patternLogo(league) {
+                    leagueLogos[league.id] = logo
                 }
                 logoRunning -= 1
                 pumpLogos()

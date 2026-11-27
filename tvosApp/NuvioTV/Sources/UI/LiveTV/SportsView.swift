@@ -601,35 +601,24 @@ private struct SportsQuickMenu: View {
 }
 
 /// Which leagues All Events shows, by sport (as Android's Leagues dialog),
-/// in Nuvio's settings look: each sport under its name, each league with
-/// its logo and a switch. Lazy, light rows (no glass per row) so it
-/// scrolls smoothly; logos are asked for as rows come into view.
+/// in Nuvio's settings look (as its Add-ons page): a row per sport that
+/// opens and closes (how many of its leagues are on), and under an open
+/// one each league with its logo and a switch. Only open sports' rows are
+/// made, so the list stays short and scrolls smoothly; logos are asked for
+/// as rows come into view.
 struct SportsLeaguesPicker: View {
     @ObservedObject private var settings = SportsSettings.shared
     @Environment(\.dismiss) private var dismiss
-
-    private enum Item: Identifiable {
-        case sport(Sport)
-        case league(League)
-        var id: String {
-            switch self {
-            case .sport(let sport): return "s:" + sport.rawValue
-            case .league(let league): return league.id
-            }
-        }
-    }
+    @State private var open: Set<Sport> = []
 
     var body: some View {
         let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
         let leagues = SportsCatalog.all.filter(\.hasFeed)
-        let items: [Item] = order.flatMap { sport -> [Item] in
-            let list = leagues.filter { $0.sport == sport }
-            return list.isEmpty ? [] : [.sport(sport)] + list.map { .league($0) }
-        }
+        let sports = order.filter { sport in leagues.contains { $0.sport == sport } }
         ZStack {
             Color.black.opacity(0.92).ignoresSafeArea()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"))
                             .font(.system(size: 36, weight: .bold))
@@ -637,30 +626,66 @@ struct SportsLeaguesPicker: View {
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.62))
                     }
-                    .padding(.bottom, 14)
-                    ForEach(items) { item in
-                        switch item {
-                        case .sport(let sport):
-                            Text(sport.icon + "  " + sport.label)
-                                .font(.system(size: 28, weight: .bold))
-                                .padding(.top, 22)
-                                .padding(.bottom, 4)
-                        case .league(let league):
-                            SportsLeagueRow(league: league)
+                    .padding(.bottom, 12)
+                    ForEach(sports, id: \.self) { sport in
+                        let list = leagues.filter { $0.sport == sport }
+                        SportsSportRow(sport: sport, on: list.filter(settings.isShown).count, total: list.count,
+                                       isOpen: open.contains(sport)) {
+                            if open.contains(sport) { open.remove(sport) } else { open.insert(sport) }
+                        }
+                        if open.contains(sport) {
+                            ForEach(list) { league in
+                                SportsLeagueRow(league: league)
+                                    .padding(.leading, 40)
+                            }
                         }
                     }
                 }
                 .frame(width: 1100, alignment: .leading)
-                .padding(.horizontal, 60)
                 .padding(.vertical, 50)
                 .frame(maxWidth: .infinity)
+            }
+        }
+        .onAppear {
+            // The sports with leagues on start open.
+            if open.isEmpty, let first = sports.first(where: { sport in leagues.contains { $0.sport == sport && settings.isShown($0) } }) {
+                open = [first]
             }
         }
         .onExitCommand { dismiss() }
     }
 }
 
-/// One league: its logo, name and region, and a switch (Nuvio's row look).
+/// A sport's row: opens and closes its leagues.
+private struct SportsSportRow: View {
+    let sport: Sport
+    let on: Int
+    let total: Int
+    let isOpen: Bool
+    let action: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
+                Text(sport.icon).font(.system(size: 30)).frame(width: 46)
+                LiveTVSettingsRows.rowText(
+                    title: sport.label,
+                    subtitle: L10n.format("livetv_sports_leagues_count_format", fallback: "%d of %d leagues on", on, total))
+                Spacer(minLength: 24)
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(LiveTVTheme.accent)
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
+/// One league: its logo, name and short name, and a switch (Nuvio's row
+/// look).
 private struct SportsLeagueRow: View {
     let league: League
     @ObservedObject private var settings = SportsSettings.shared
@@ -672,16 +697,9 @@ private struct SportsLeagueRow: View {
         Button {
             settings.toggle(league)
         } label: {
-            HStack(spacing: 18) {
+            LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
                 SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 46)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(league.name)
-                        .font(.system(size: 22, weight: .semibold))
-                        .lineLimit(1)
-                    Text(league.short)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
-                }
+                LiveTVSettingsRows.rowText(title: league.name, subtitle: league.short)
                 Spacer(minLength: 24)
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(on ? LiveTVTheme.accent : Color.white.opacity(0.24))
@@ -693,19 +711,10 @@ private struct SportsLeagueRow: View {
                             .padding(4)
                     }
             }
-            .foregroundColor(.white)
-            .padding(.horizontal, 20)
-            .frame(minHeight: 74)
-            .background(RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.white.opacity(focused ? 0.18 : 0.07)))
-            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(focused ? AppFocusOutline.color : Color.white.opacity(0.10),
-                              lineWidth: focused ? AppFocusOutline.width : 1))
-            .scaleEffect(focused ? 1.02 : 1)
-            .animation(.easeOut(duration: 0.14), value: focused)
         }
-        .buttonStyle(LiveTVInvisibleButtonStyle())
+        .buttonStyle(PosterCardButtonStyle())
         .focused($focused)
+        .focusEffectDisabledIfAvailable()
         .onAppear { store.wantLogo(league) }
     }
 }
@@ -718,7 +727,7 @@ struct SportsLeagueLogo: View {
 
     var body: some View {
         Group {
-            if let url = (logo ?? league.logo).flatMap(URL.init(string:)) {
+            if let url = ((logo?.isEmpty == false ? logo : nil) ?? league.logo).flatMap(URL.init(string:)) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().aspectRatio(contentMode: .fit)

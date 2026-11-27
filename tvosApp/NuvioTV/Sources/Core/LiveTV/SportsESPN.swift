@@ -112,6 +112,28 @@ enum SportsESPN {
         return first
     }
 
+    /// ESPN's core API page of a league (its name and logos).
+    static func coreLeagueURL(_ league: League) -> URL? {
+        guard let path = league.espnPath, let slash = path.firstIndex(of: "/") else { return nil }
+        return URL(string: "https://sports.core.api.espn.com/v2/sports/\(path[..<slash])/leagues/\(path[path.index(after: slash)...])")
+    }
+
+    /// A league's logo from the core API (not ESPN's own placeholder icon),
+    /// else from a known address (cricket).
+    static func coreLeagueLogo(_ league: League, data: Data) -> String? {
+        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let logos = (root?["logos"] as? [[String: Any]] ?? []).compactMap { $0["href"] as? String }
+            .filter { !$0.contains("ESPN-icon") }
+        if let first = logos.first { return first.replacingOccurrences(of: "http://", with: "https://") }
+        return patternLogo(league)
+    }
+
+    /// Leagues whose logo sits at a known address (cricket: by its id).
+    static func patternLogo(_ league: League) -> String? {
+        guard let path = league.espnPath, path.hasPrefix("cricket/"), path != "cricket/panel" else { return nil }
+        return "https://a.espncdn.com/i/leaguelogos/cricket/500/\(path.dropFirst("cricket/".count)).png"
+    }
+
     /// The league's logo from a scoreboard (the one for dark backgrounds).
     static func leagueLogo(_ data: Data) -> String? {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

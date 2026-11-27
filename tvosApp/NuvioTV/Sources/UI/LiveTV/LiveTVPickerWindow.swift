@@ -7,14 +7,14 @@ struct LiveTVPickerOption: Identifiable, Hashable {
     let title: String
     var subtitle: String? = nil
     var systemImage: String? = nil
-    var destructive = false
 }
 
-/// Fork: Nuvio's own picker window (as its language picker in Settings): a
-/// glass panel over the page with an icon, a title and a subtitle, the
-/// choices as glass capsules (the chosen one checked), and Done. Used for
-/// every list the Live TV, Calendar and Sports pages open, instead of the
-/// system's dialog. Picking a choice closes it.
+/// Fork: a list to pick from, in Nuvio's settings look (as its Add-ons
+/// page): the page behind darkened away, a title and subtitle on top, the
+/// choices as Nuvio's settings rows on a glass panel (the chosen one
+/// checked), Done at the bottom. Used for every list the Live TV, Calendar
+/// and Sports pages open, instead of the system's dialog. Picking a choice
+/// closes it.
 struct LiveTVPickerWindow: View {
     let title: String
     var subtitle: String? = nil
@@ -32,38 +32,39 @@ struct LiveTVPickerWindow: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.62).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 22) {
+            // Over the page as a page of its own (the rows read on any page).
+            Color.black.opacity(0.9).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 18) {
                     Image(systemName: systemImage)
-                        .font(.system(size: 34, weight: .semibold))
+                        .font(.system(size: 30, weight: .semibold))
                         .foregroundColor(accentColor)
-                        .frame(width: 58, height: 58)
+                        .frame(width: 56, height: 56)
                         .modifier(LiveTVGlass(shape: Circle(), prominent: true))
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(title)
-                            .font(.system(size: 34, weight: .bold))
+                            .font(.system(size: 36, weight: .bold))
                             .foregroundColor(.white)
                         if let subtitle {
                             Text(subtitle)
-                                .font(.system(size: 19, weight: .medium))
-                                .foregroundColor(.white.opacity(0.58))
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
+                        LazyVStack(spacing: 12) {
                             ForEach(options) { option in
-                                row(option)
-                                    .id(option.id)
+                                row(option).id(option.id)
                             }
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
+                        .padding(24)
                     }
-                    .frame(maxHeight: 520)
+                    .frame(maxHeight: 640)
+                    .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 32, style: .continuous)))
+                    .overlay(RoundedRectangle(cornerRadius: 32, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
                     .onAppear {
                         let start = options.first { $0.id == selected }?.id ?? options.first?.id
                         DispatchQueue.main.async {
@@ -91,63 +92,52 @@ struct LiveTVPickerWindow: View {
                         .background(Capsule().fill(focused == Self.doneID ? Color.white : Color.white.opacity(0.08)))
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
                     }
-                    .buttonStyle(LiveTVInvisibleButtonStyle())
+                    .buttonStyle(PosterCardButtonStyle())
                     .focused($focused, equals: Self.doneID)
+                    .focusEffectDisabledIfAvailable()
                     .scaleEffect(focused == Self.doneID ? 1.06 : 1)
                     .animation(.easeOut(duration: 0.14), value: focused == Self.doneID)
                 }
                 .focusSection()
             }
-            .padding(34)
-            .frame(width: 900)
-            .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 34, style: .continuous), prominent: true))
-            .overlay(RoundedRectangle(cornerRadius: 34, style: .continuous).strokeBorder(Color.white.opacity(0.20), lineWidth: 1))
+            .frame(width: 1100)
+            .padding(.vertical, 50)
         }
         .onExitCommand(perform: onClose)
     }
 
     private func row(_ option: LiveTVPickerOption) -> some View {
-        let isFocused = focused == option.id
-        let isSelected = option.id == selected
-        return Button {
+        Button {
             onPick(option.id)
             onClose()
         } label: {
-            HStack(spacing: 16) {
+            LiveTVSettingsRows.rowShell(isFocused: focused == option.id, accentColor: accentColor) {
                 if let symbol = option.systemImage {
                     Image(systemName: symbol)
                         .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(option.destructive ? .red : accentColor)
-                        .frame(width: 34)
+                        .foregroundColor(accentColor)
+                        .frame(width: 36)
                 }
-                VStack(alignment: .leading, spacing: 3) {
+                if let subtitle = option.subtitle {
+                    LiveTVSettingsRows.rowText(title: option.title, subtitle: subtitle)
+                } else {
                     Text(option.title)
-                        .font(.system(size: 26, weight: .bold))
-                        .foregroundColor(option.destructive ? .red : .white)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    if let subtitle = option.subtitle {
-                        Text(subtitle)
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white.opacity(0.56))
-                            .lineLimit(1)
-                    }
+                        .minimumScaleFactor(0.82)
                 }
                 Spacer(minLength: 24)
-                if isSelected {
+                if option.id == selected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 20, weight: .black))
                         .foregroundColor(accentColor)
                 }
             }
-            .padding(.horizontal, 24)
-            .frame(minHeight: 72)
-            .modifier(LiveTVGlass(shape: Capsule(), prominent: isFocused))
-            .overlay(Capsule().strokeBorder(isFocused ? Color.white : Color.white.opacity(isSelected ? 0.28 : 0.12),
-                                            lineWidth: isFocused ? 3 : 1))
         }
-        .buttonStyle(LiveTVInvisibleButtonStyle())
+        .buttonStyle(PosterCardButtonStyle())
         .focused($focused, equals: option.id)
+        .focusEffectDisabledIfAvailable()
     }
 }
 
@@ -164,7 +154,7 @@ struct LiveTVGlass<S: InsettableShape>: ViewModifier {
 
 extension View {
     /// A picker window over everything (a full-screen cover with the page
-    /// showing through).
+    /// showing through, darkened).
     func liveTVPicker<Window: View>(isPresented: Binding<Bool>, @ViewBuilder window: @escaping () -> Window) -> some View {
         fullScreenCover(isPresented: isPresented) {
             LiveTVSettingsRows.clearSheetBackground(window())

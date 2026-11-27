@@ -1020,7 +1020,7 @@ let ligaJSON = """
 let liga = SportsOpenLiga.parseMatches(liga3, data: Data(ligaJSON.utf8), now: Date(timeIntervalSince1970: 1_795_806_000))
 check(liga.events.count == 2 && liga.events[0].state == .post && liga.events[0].home?.score == "2" && liga.events[0].home?.winner == true, "liga: final score")
 check(liga.events[0].subtitle == "14. Spieltag" && liga.events[0].title == "Duisburg v Rostock", "liga: round and names")
-check(liga.events[0].home?.team.logo == "https://upload.wikimedia.org/wikipedia/en/thumb/c/c8/Msv.svg/200px-Msv.svg.png", "liga: SVG logos as PNG")
+check(liga.events[0].home?.team.logo == "https://upload.wikimedia.org/wikipedia/en/thumb/c/c8/Msv.svg/250px-Msv.svg.png", "liga: SVG logos as PNG")
 check(liga.goals[liga.events[0].id]?.first?.text == "D. Kother (pen.)" && liga.goals[liga.events[0].id]?.first?.team == "Duisburg", "liga: goals")
 check(liga.events[1].state == .live && liga.events[1].home?.score == "0", "liga: started and not over is live")
 check(SportsOpenLiga.season(Date(timeIntervalSince1970: 1_795_806_000)) == 2026, "liga: season 2026/27")
