@@ -22,6 +22,9 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case layout = "Layout & Discovery"
     case integrations = "Integrations"
     case playback = "Playback"
+    // Fork: the calendar (UI/LiveTV/LiveTVCalendarSettingsView.swift), for
+    // everything you follow, not only Live TV.
+    case calendar = "Calendar"
     // Fork: Live TV options (UI/LiveTV/LiveTVSettingsViews.swift).
     case liveTV = "Live TV"
     case subtitles = "Subtitle Style"
@@ -43,6 +46,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
             return L10n.string("settings_integration", fallback: "Integrations")
         case .playback:
             return L10n.string("settings_playback", fallback: "Playback")
+        case .calendar:
+            return L10n.string("nav_calendar", fallback: "Calendar")
         case .liveTV:
             return L10n.string("settings_livetv_vod", fallback: "Live TV / VOD")
         case .subtitles:
@@ -81,6 +86,11 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
                 "settings_playback_subtitle",
                 fallback: "Player, subtitles, and auto-play"
             )
+        case .calendar:
+            return L10n.string(
+                "livetv_settings_calendar_category_subtitle",
+                fallback: "Time zone, spoilers and film dates"
+            )
         case .liveTV:
             return L10n.string(
                 "livetv_settings_subtitle",
@@ -111,6 +121,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .layout: return "rectangle.grid.2x2"
         case .integrations: return "link"
         case .playback: return "play.circle"
+        case .calendar: return "calendar"
         case .liveTV: return "tv"
         case .subtitles: return "captions.bubble"
         case .advanced: return "wrench.and.screwdriver"
@@ -2127,6 +2138,8 @@ struct SettingsView: View {
                     presentedLanguagePicker = .subtitles
                 }
             )
+        case .calendar:
+            LiveTVCalendarSettingsView(accentColor: accentColor)
         case .liveTV:
             LiveTVSettingsView(accentColor: accentColor)
         case .subtitles:
@@ -22691,6 +22704,17 @@ enum LiveTVSettingsRows {
         SettingsOptionRow(
             title: title, subtitle: subtitle, selection: selection, options: options,
             accentColor: accentColor, optionLabel: optionLabel)
+    }
+
+    /// Every choice in a list that opens (for long lists).
+    static func choice(
+        title: String, subtitle: String, selection: Binding<String>, options: [String], accentColor: Color,
+        optionLabel: (String) -> String
+    ) -> some View {
+        SettingsChoiceRow(
+            title: title, subtitle: subtitle, selection: selection, options: options,
+            optionLabels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
+            accentColor: accentColor)
     }
 
     static func action(

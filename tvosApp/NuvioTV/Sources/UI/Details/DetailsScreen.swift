@@ -4469,6 +4469,8 @@ struct TvDetailsContent: View {
     /// Settings → Integrations → AniList: which AniList entry and episode the play target is.
     @State private var aniListTarget: AniListScrobbler.Target?
     @State private var showingAniListMenu = false
+    /// Fork: redraws the calendar's bell after it rang (Live TV step 16c).
+    @State private var calendarBellRevision = 0
     @State private var showingAniListScore = false
     @State private var malID: Int?
     @State private var malStatus: MALAccount.ListStatus?
@@ -4846,6 +4848,13 @@ struct TvDetailsContent: View {
                 cancelFocusRestoration()
                 stopBackgroundTrailer(manual: false)
                 showingMALMenu = true
+            } : nil,
+            isBellRinging: calendarBellRevision >= 0
+                && LiveTVCalendarBell.isRinging(id: meta.id, imdb: meta.imdbId, tmdb: meta.tmdbId),
+            onBellClick: LiveTVCalendarBell.canRing(id: meta.id, imdb: meta.imdbId, tmdb: meta.tmdbId) ? {
+                cancelFocusRestoration()
+                LiveTVCalendarBell.toggle(meta)
+                calendarBellRevision &+= 1
             } : nil,
             onTrailerClick: {
                 cancelFocusRestoration()
@@ -6550,7 +6559,7 @@ private struct TvDetailsLogo: View {
 /// (tvOS doesn't auto-focus the primary button when the details content swaps in
 /// after the async load — see `TvDetailsContent`).
 private enum DetailsActionFocus: Hashable {
-    case play, shuffle, party, watchlist, watched, rate, anilist, mal, trailer
+    case play, shuffle, party, watchlist, watched, rate, anilist, mal, bell, trailer
 }
 
 private enum DetailsCastHeaderFocus: Hashable {
@@ -6580,6 +6589,9 @@ private struct TvDetailsActionRow: View {
     /// Settings → Anime Integrations → MyAnimeList: the viewer's MAL status ("Watching 5/12").
     var malTitle: String? = nil
     var onMALClick: (() -> Void)? = nil
+    /// Fork: the calendar's bell (Live TV step 16c).
+    var isBellRinging = false
+    var onBellClick: (() -> Void)? = nil
     let onTrailerClick: () -> Void
     var onBack: (() -> Void)? = nil
     var focus: FocusState<DetailsActionFocus?>.Binding
@@ -6702,6 +6714,25 @@ private struct TvDetailsActionRow: View {
                     focus: focus,
                     tag: .mal,
                     action: onMALClick,
+                    onFocus: onFocus,
+                    onBack: onBack
+                )
+                .disabled(entryLocked)
+            }
+
+            // Fork: follow the title in the calendar (Live TV step 16c).
+            if let onBellClick {
+                TvDetailsActionButton(
+                    title: nil,
+                    systemName: isBellRinging ? "bell.fill" : "bell",
+                    accessibilityLabel: isBellRinging
+                        ? L10n.string("livetv_cal_bell_ringing", fallback: "In your calendar")
+                        : L10n.string("livetv_cal_bell_on", fallback: "Ring the bell"),
+                    accessibilityHint: L10n.string("livetv_cal_bell_hint", fallback: "Follows this title in the calendar"),
+                    isPrimary: false,
+                    focus: focus,
+                    tag: .bell,
+                    action: onBellClick,
                     onFocus: onFocus,
                     onBack: onBack
                 )

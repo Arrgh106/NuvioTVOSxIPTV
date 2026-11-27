@@ -969,6 +969,11 @@ struct ContentView: View {
             syncManager.attach(authManager: authManager, profileViewModel: profileViewModel)
             ICloudSettingsSyncManager.shared.start()
             setupPictureInPicture()
+            // Fork: the calendar is ready before it's opened (Live TV step 16).
+            LiveTVCalendarStore.isPlaying = {
+                LiveTVPlayer.shared.isFullscreen || LiveTVMultiview.shared.isOpen || activeScreen.isPlayer
+            }
+            LiveTVCalendarStore.shared.warmUp()
             guard !resolvedInitialScreen else { return }
             resolvedInitialScreen = true
             // Skip the login gate if a session was restored or the user has
@@ -5018,10 +5023,21 @@ private struct TVMainTabView: View {
     }
 
     private var calendarTabContent: some View {
-        CalendarView(
-            onOpenEntry: { entry in onOpenCalendarEntry?(entry) },
-            onOpenSettings: { selectedTab = .settings }
-        )
+        // Fork: the calendar as Android's (Live TV step 16); its cards open
+        // the show or film page the way Nuvio's calendar did.
+        LiveTVCalendarView(onOpen: { entry in
+            guard let day = CalendarDay(iso: entry.day) else { return }
+            onOpenCalendarEntry?(CalendarEntry(
+                itemId: entry.contentID,
+                itemType: entry.kind == .episode ? "series" : "movie",
+                kind: entry.kind == .episode ? .series : .movie,
+                tmdbId: 0,
+                title: entry.title,
+                date: day,
+                releaseKind: entry.kind == .episode ? .episode : .release,
+                seasonNumber: entry.season,
+                episodeNumber: entry.episode))
+        })
             .id(activeProfile?.id ?? "none")
     }
 

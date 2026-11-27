@@ -824,6 +824,25 @@ final class GuideDatabase: @unchecked Sendable {
         return result
     }
 
+    /// Every programme between two times (any channel), one by one: key,
+    /// start, stop, title. For the calendar's On my TV (16d).
+    func scan(from: Date, to: Date, _ each: (String, Date, Date, String) -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        let sql = "SELECT ch, start, stop, title FROM programmes WHERE stop > ? AND start < ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(from.timeIntervalSince1970))
+        sqlite3_bind_int64(statement, 2, Int64(to.timeIntervalSince1970))
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let channel = sqlite3_column_text(statement, 0), let title = sqlite3_column_text(statement, 3) else { continue }
+            each(String(cString: channel),
+                 Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1))),
+                 Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2))),
+                 String(cString: title))
+        }
+    }
+
     /// Prepared insert, reused for the whole import.
     final class Inserter {
         private var statement: OpaquePointer?

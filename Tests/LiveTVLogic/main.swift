@@ -855,5 +855,91 @@ check(LiveTVBackupNames.backup(for: copies[0], in: backupIndex, tried: [1, 2, 3]
 check(LiveTVBackupNames.backup(for: copies[3], in: backupIndex, tried: [4])?.id == 6, "backup: never another local station")
 check(LiveTVBackupNames.backup(for: copies[6], in: backupIndex, tried: []) == nil, "backup: names too short")
 
+// Step 16: the calendar.
+func calEpisode(_ season: Int, _ number: Int, _ day: String = "2026-11-20", at stamp: Date? = nil,
+                order: Int? = nil) -> LiveTVCalendarEpisode {
+    LiveTVCalendarEpisode(season: season, number: number, name: nil, airstamp: stamp, airdate: day,
+                          runtime: 45, image: nil, summary: nil, seasonEpisodes: order)
+}
+check(LiveTVCalendarLogic.tags(first: calEpisode(1, 1), last: calEpisode(1, 1), showEnded: false, highestSeason: 1)
+      == [.seriesPremiere], "calendar: series premiere")
+check(LiveTVCalendarLogic.tags(first: calEpisode(3, 1), last: calEpisode(3, 1, order: 8), showEnded: false, highestSeason: 3)
+      == [.seasonPremiere], "calendar: season premiere, not a finale on E1")
+check(LiveTVCalendarLogic.tags(first: calEpisode(3, 8), last: calEpisode(3, 8, order: 8), showEnded: false, highestSeason: 3)
+      == [.seasonFinale], "calendar: season finale")
+check(LiveTVCalendarLogic.tags(first: calEpisode(3, 8), last: calEpisode(3, 8, order: 8), showEnded: true, highestSeason: 3)
+      == [.seriesFinale], "calendar: series finale")
+check(LiveTVCalendarLogic.grouped([calEpisode(2, 1), calEpisode(2, 2), calEpisode(2, 3, "2026-11-21")], streaming: true).map(\.count)
+      == [2, 1], "calendar: a drop on one day is one card")
+check(LiveTVCalendarLogic.isNew(aired: true, watched: false, day: "2026-11-19", today: "2026-11-20")
+      && !LiveTVCalendarLogic.isNew(aired: true, watched: false, day: "2026-11-18", today: "2026-11-20")
+      && !LiveTVCalendarLogic.isNew(aired: false, watched: false, day: "2026-11-20", today: "2026-11-20"), "calendar: new")
+check(LiveTVCalendarLogic.episodeName("Episode 4") == nil && LiveTVCalendarLogic.episodeName("TBA") == nil
+      && LiveTVCalendarLogic.episodeName("Pilot") == "Pilot", "calendar: placeholder names")
+check(LiveTVCalendarLogic.plainText("<p>Tom &amp; Jerry&#39;s day</p>") == "Tom & Jerry's day", "calendar: summary text")
+check(!LiveTVCalendarLogic.isAhead(season: 2, episode: 4, furthest: (2, 3))
+      && !LiveTVCalendarLogic.isAhead(season: 3, episode: 1, furthest: (2, 9))
+      && LiveTVCalendarLogic.isAhead(season: 2, episode: 6, furthest: (2, 3)), "calendar: spoilers past the next one")
+check(LiveTVCalendarLogic.isWatched(season: 1, episode: 4, marked: [], furthest: (2, 1))
+      && LiveTVCalendarLogic.isWatched(season: 2, episode: 7, marked: ["2:7"], furthest: nil)
+      && !LiveTVCalendarLogic.isWatched(season: 2, episode: 2, marked: [], furthest: (2, 1)), "calendar: watched")
+check(LiveTVCalendarLogic.day("2026-12-31", plus: 1) == "2027-01-01" && LiveTVCalendarLogic.day("2026-03-01", plus: -1) == "2026-02-28",
+      "calendar: day arithmetic")
+// West Coast: an East Coast show at 20:00 ET airs at 20:00 PT on the Pacific feed.
+let calPacific = TimeZone(identifier: "America/Los_Angeles")!
+let calBerlin = TimeZone(identifier: "Europe/Berlin")!
+let eightET = Date(timeIntervalSince1970: 1_795_222_800) // 2026-11-21 01:00 UTC = 20:00 EST
+let pacificAir = LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
+                                              streaming: false, local: calPacific)
+var pacificCalendar = Calendar(identifier: .gregorian)
+pacificCalendar.timeZone = calPacific
+check(pacificAir.map { pacificCalendar.component(.hour, from: $0) } == 20, "calendar: Pacific feed at the same clock time")
+check(LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
+                                   streaming: false, local: calBerlin) == eightET, "calendar: abroad, the real time")
+check(LiveTVCalendarLogic.localAir(listed: eightET, networkZone: "America/New_York", scheduleTime: "20:00",
+                                   streaming: true, local: calPacific) == eightET, "calendar: streaming, the real time")
+// Lists.
+let utcZone = TimeZone(identifier: "UTC")!
+let calNow = Date(timeIntervalSince1970: 1_795_176_000) // 2026-11-20 12:00 UTC
+func calEntry(_ key: String, _ day: String, _ air: Date?, watched: Bool = false) -> LiveTVCalendarEntry {
+    LiveTVCalendarEntry(key: key, kind: .episode, contentID: key, title: key, air: air, day: day, watched: watched, runtime: 60)
+}
+let calEntries = [
+    calEntry("past", "2026-11-19", nil, watched: true),
+    calEntry("morning", "2026-11-20", calNow.addingTimeInterval(-3 * 3600)),
+    calEntry("running", "2026-11-20", calNow.addingTimeInterval(-1800)),
+    calEntry("later", "2026-11-22", nil),
+]
+check(LiveTVCalendarLogic.upcoming(calEntries, now: calNow, zone: utcZone).map(\.key) == ["running", "later"],
+      "calendar: upcoming keeps what's still on")
+check(LiveTVCalendarLogic.recent(calEntries, now: calNow, zone: utcZone, unwatchedOnly: false).map(\.key)
+      == ["running", "morning", "past"], "calendar: recent, newest first")
+check(LiveTVCalendarLogic.recent(calEntries, now: calNow, zone: utcZone, unwatchedOnly: true).map(\.key)
+      == ["running", "morning"], "calendar: unwatched only")
+// Films.
+let filmCards = LiveTVCalendarLogic.movieCards(
+    .init(theatrical: "2026-11-25", digital: nil, disc: "2027-01-10"), from: "2026-10-21", to: "2027-03-20",
+    label: { tag, day in "\(tag.rawValue) \(day)" })
+check(filmCards.map(\.tag) == [.inTheaters, .onDisc] && filmCards.first?.note == "atHome ", "calendar: film cards")
+
+// On my TV (16d).
+check(LiveTVCalendarGuideMatch.normalize("Grey's Anatomy!") == "greys anatomy", "guide: names folded")
+check(LiveTVCalendarGuideMatch.names("Tulsa King: Der Deal") == ["tulsa king der deal", "tulsa king"], "guide: title before a colon")
+let guideAir = Date(timeIntervalSince1970: 1_800_000_000)
+let guideHits = LiveTVCalendarGuideMatch.match(
+    [.init(key: "ep", title: "Tulsa King", network: "Paramount Network", air: guideAir)],
+    channels: [
+        "one": [.init(id: 1, name: "Some Channel", logo: nil, favorite: false)],
+        "two": [.init(id: 2, name: "Paramount Network HD", logo: nil, favorite: false)],
+        "far": [.init(id: 3, name: "Other", logo: nil, favorite: true)],
+    ],
+    rows: { each in
+        each("one", guideAir, guideAir.addingTimeInterval(3600), "Tulsa King")
+        each("two", guideAir.addingTimeInterval(600), guideAir.addingTimeInterval(4200), "Tulsa King - Folge 7")
+        each("far", guideAir.addingTimeInterval(6 * 3600), guideAir.addingTimeInterval(7 * 3600), "Tulsa King")
+        each("one", guideAir, guideAir.addingTimeInterval(3600), "Tulsa Kingdom")
+    })
+check(guideHits["ep"]?.channelID == 2 && guideHits["ep"]?.others == 1, "guide: the network's channel first, not a rerun hours later")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

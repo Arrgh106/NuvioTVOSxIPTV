@@ -254,8 +254,23 @@ struct LiveTVQuickMenu: View {
     private func row(
         _ id: Int, title: String, value: String?, isOn: Bool? = nil, enabled: Bool = true, action: @escaping () -> Void
     ) -> some View {
-        let isFocused = focused == id
-        return Button(action: action) {
+        LiveTVQuickRow(title: title, value: value, isOn: isOn, isFocused: focused == id, action: action)
+            .focused($focused, equals: id)
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.45)
+    }
+}
+
+/// A row of a quick menu (the guide's, the calendar's): a switch or a value.
+struct LiveTVQuickRow: View {
+    let title: String
+    var value: String? = nil
+    var isOn: Bool? = nil
+    let isFocused: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
             HStack(spacing: 16) {
                 Text(title)
                     .font(.system(size: LiveTVTheme.Font.small, weight: isFocused ? .semibold : .regular))
@@ -283,8 +298,50 @@ struct LiveTVQuickMenu: View {
             )
         }
         .buttonStyle(LiveTVInvisibleButtonStyle())
-        .focused($focused, equals: id)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.45)
+    }
+}
+
+/// Fork: the calendar's quick menu (the gear next to Refresh): its filters
+/// and the switches you'd change while looking at it.
+struct LiveTVCalendarQuickMenu: View {
+    @Binding var unwatchedOnly: Bool
+    @Binding var onMyTV: Bool
+    let onClose: () -> Void
+    @ObservedObject private var settings = LiveTVSettings.shared
+    @FocusState private var focused: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L10n.string("livetv_cal_quick_menu", fallback: "Calendar options"))
+                    .font(.system(size: LiveTVTheme.Font.secondary, weight: .bold))
+                Spacer()
+                Text(L10n.string("livetv_quick_menu_hint_calendar", fallback: "The calendar changes as you go"))
+                    .font(.system(size: LiveTVTheme.Font.badge))
+                    .foregroundColor(LiveTVTheme.secondaryText)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+            item(0, L10n.string("livetv_cal_quick_on_my_tv", fallback: "Upcoming: Only On My TV"), $onMyTV)
+            item(1, L10n.string("livetv_cal_quick_unwatched", fallback: "Recently Aired: Unwatched Only"), $unwatchedOnly)
+            item(2, L10n.string("livetv_settings_calendar_news", fallback: "Airing Today: Leave Out News & Talk"),
+                 $settings.calendarSkipNewsTalk)
+            Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1).padding(.vertical, 6)
+            Text(L10n.string("livetv_cal_quick_more", fallback: "More options: Settings → Calendar"))
+                .font(.system(size: LiveTVTheme.Font.badge))
+                .foregroundColor(LiveTVTheme.secondaryText)
+                .padding(.horizontal, 10)
+        }
+        .padding(18)
+        .frame(width: 720)
+        .liveTVGlass(cornerRadius: 24)
+        .focusSection()
+        .onAppear { focused = 0 }
+        .onExitCommand(perform: onClose)
+    }
+
+    private func item(_ id: Int, _ title: String, _ isOn: Binding<Bool>) -> some View {
+        LiveTVQuickRow(title: title, isOn: isOn.wrappedValue, isFocused: focused == id) { isOn.wrappedValue.toggle() }
+            .focused($focused, equals: id)
     }
 }
