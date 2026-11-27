@@ -138,6 +138,9 @@ final class LiveTVCalendarStore: ObservableObject {
             let stamp = ISO8601DateFormatter()
             var result: [LiveTVCalendarEntry] = []
             var seenShows = Set<String>()
+            // A show's episodes of today on one card (E01–E04), as a drop.
+            var order: [String] = []
+            var shows: [String: (show: LiveTVCalendarShow, candidate: Candidate, imdb: String?, airdate: String)] = [:]
             for item in list {
                 guard let body = (item["show"] as? [String: Any]) ?? ((item["_embedded"] as? [String: Any])?["show"] as? [String: Any]),
                       let id = body["id"] as? Int, let number = item["number"] as? Int, let season = item["season"] as? Int,
@@ -158,6 +161,17 @@ final class LiveTVCalendarStore: ObservableObject {
                 let image = body["image"] as? [String: Any]
                 let picture = item["image"] as? [String: Any]
                 let airtime = (item["airtime"] as? String) ?? ""
+                let episode = LiveTVCalendarEpisode(
+                    season: season, number: number,
+                    name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
+                    airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
+                    airdate: airdate, runtime: item["runtime"] as? Int,
+                    image: (picture?["original"] as? String) ?? (picture?["medium"] as? String),
+                    summary: LiveTVCalendarLogic.plainText(item["summary"] as? String), seasonEpisodes: nil)
+                if shows[contentID] != nil {
+                    shows[contentID]?.show.episodes.append(episode)
+                    continue
+                }
                 let show = LiveTVCalendarShow(
                     id: id, name: (body["name"] as? String) ?? "", status: body["status"] as? String,
                     network: (network?["name"] as? String) ?? (web?["name"] as? String),
@@ -166,21 +180,22 @@ final class LiveTVCalendarStore: ObservableObject {
                     background: nil, imdb: imdb,
                     scheduleTime: (body["schedule"] as? [String: Any])?["time"] as? String,
                     networkZone: (network?["country"] as? [String: Any])?["timezone"] as? String,
-                    episodes: [LiveTVCalendarEpisode(
-                        season: season, number: number,
-                        name: LiveTVCalendarLogic.episodeName(item["name"] as? String),
-                        airstamp: airtime.isEmpty ? nil : (item["airstamp"] as? String).flatMap(stamp.date(from:)),
-                        airdate: airdate, runtime: item["runtime"] as? Int,
-                        image: (picture?["original"] as? String) ?? (picture?["medium"] as? String),
-                        summary: LiveTVCalendarLogic.plainText(item["summary"] as? String), seasonEpisodes: nil)],
+                    episodes: [episode],
                     fetchedAt: Date())
                 var reasons: Set<LiveTVCalendarReason> = [.airingToday]
                 if follows.contains(contentID) || (imdb.map { follows.contains($0) } ?? false) { reasons.insert(.bell) }
                 let candidate = Candidate(id: contentID, imdb: imdb, tmdb: nil, series: true, name: show.name,
                                           poster: show.image, background: nil, year: nil, reasons: reasons)
-                let art = imdb == nil ? nil : await LiveTVCalendarSources.shared.art(imdb: imdb!, fetch: false)
-                result += self.cards(show: show, candidate: candidate, contentID: contentID, art: art, seen: self.lastSeen,
-                                     window: (airdate, airdate), today: today, now: now, zone: zone)
+                order.append(contentID)
+                shows[contentID] = (show, candidate, imdb, airdate)
+            }
+            for contentID in order {
+                guard var found = shows[contentID] else { continue }
+                found.show.episodes.sort { ($0.season, $0.number) < ($1.season, $1.number) }
+                let art = found.imdb == nil ? nil : await LiveTVCalendarSources.shared.art(imdb: found.imdb!, fetch: false)
+                result += self.cards(show: found.show, candidate: found.candidate, contentID: contentID, art: art,
+                                     seen: self.lastSeen, window: (found.airdate, found.airdate), today: today, now: now,
+                                     zone: zone, oneDrop: true)
             }
             // As Android: TV by time first, streaming after it.
             self.airing = result.sorted {
@@ -553,14 +568,16 @@ final class LiveTVCalendarStore: ObservableObject {
     /// several.
     private func cards(show: LiveTVCalendarShow, candidate: Candidate, contentID: String,
                        art: LiveTVCalendarSources.Art?, seen: [String: Seen], window: (from: String, to: String),
-                       today: String, now: Date, zone: TimeZone) -> [LiveTVCalendarEntry] {
+                       today: String, now: Date, zone: TimeZone, oneDrop: Bool = false) -> [LiveTVCalendarEntry] {
         let watchedOf = seen[candidate.id] ?? candidate.imdb.flatMap { seen[$0] }
         let hideSpoilers = LiveTVCalendarSettings.hideSpoilers
         let background = candidate.background ?? show.background ?? art?.backdrop
         let highest = show.episodes.map(\.season).max() ?? 0
         let inside = show.episodes.filter { $0.airdate >= window.from && $0.airdate <= window.to }
         var result: [LiveTVCalendarEntry] = []
-        for group in LiveTVCalendarLogic.grouped(inside, streaming: show.streaming) {
+        // oneDrop (Airing today): a day's episodes in a row on one card, at
+        // the first one's time, on TV too.
+        for group in LiveTVCalendarLogic.grouped(inside, streaming: show.streaming || oneDrop) {
             guard let first = group.first, let last = group.last else { continue }
             let air = LiveTVCalendarLogic.localAir(
                 listed: first.airstamp, networkZone: show.networkZone, scheduleTime: show.scheduleTime,

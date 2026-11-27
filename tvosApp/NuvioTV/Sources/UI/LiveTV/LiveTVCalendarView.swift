@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -69,6 +70,8 @@ struct LiveTVCalendarView: View {
     @State private var onMyTV = false
     /// OK on an episode in your guide: its Live TV options (16e).
     @State private var liveChoice: LiveTVCalendarEntry?
+    /// The calendar's quick menu (the gear, as the guide's).
+    @State private var showsQuickMenu = false
 
     private var shown: [LiveTVCalendarEntry] {
         let now = Date()
@@ -196,6 +199,27 @@ struct LiveTVCalendarView: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .disabled(showsQuickMenu)
+        // The quick menu, top right over the calendar, which changes as the
+        // options change.
+        .overlay(alignment: .topTrailing) {
+            if showsQuickMenu {
+                LiveTVCalendarQuickMenu(
+                    unwatchedOnly: Binding(get: { unwatchedOnly }, set: {
+                        unwatchedOnly = $0
+                        LiveTVCalendarSettings.unwatchedOnly = $0
+                    }),
+                    onMyTV: Binding(get: { onMyTV }, set: { onMyTV = $0; focusedKey = nil }),
+                    onClose: { showsQuickMenu = false })
+                    .padding(.top, 20)
+                    .padding(.trailing, 40)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
+        .onReceive(LiveTVSettings.shared.$calendarSkipNewsTalk.dropFirst()) { _ in
+            if tab == .airing { DispatchQueue.main.async { store.loadAiring() } }
+        }
         // The big picture behind (out to the screen's edges): as a sibling
         // it made the page wider than the screen.
         .background(alignment: .top) { hero(focused) }
@@ -375,26 +399,7 @@ struct LiveTVCalendarView: View {
                         .font(.system(size: 22, weight: tab == item || (item == .upcoming && tab == .recent && mode != .list) ? .bold : .regular))
                 }
             }
-            if tab == .upcoming, mode == .list, !store.onTV.isEmpty || onMyTV {
-                Button {
-                    onMyTV.toggle()
-                    focusedKey = nil
-                } label: {
-                    Label(L10n.string("livetv_cal_on_my_tv", fallback: "On my TV"),
-                          systemImage: onMyTV ? "checkmark.circle.fill" : "tv")
-                        .font(.system(size: 20))
-                }
-            }
-            if tab == .recent, mode == .list {
-                Button {
-                    unwatchedOnly.toggle()
-                    LiveTVCalendarSettings.unwatchedOnly = unwatchedOnly
-                } label: {
-                    Label(L10n.string("livetv_cal_unwatched", fallback: "Unwatched only"),
-                          systemImage: unwatchedOnly ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 20))
-                }
-            }
+            // On my TV and Unwatched only are in the quick menu (the gear).
             Spacer(minLength: 12)
             if let progress = store.progress, progress.total > 0 {
                 Text(L10n.format("livetv_cal_progress_format", fallback: "Updating %d of %d", progress.done, progress.total))
@@ -426,6 +431,13 @@ struct LiveTVCalendarView: View {
                     .accessibilityLabel(L10n.string("livetv_refresh", fallback: "Refresh"))
             }
             .disabled(store.isLoading)
+            Button {
+                showsQuickMenu = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 22, weight: .semibold))
+                    .accessibilityLabel(L10n.string("livetv_cal_quick_menu", fallback: "Calendar options"))
+            }
         }
     }
 
