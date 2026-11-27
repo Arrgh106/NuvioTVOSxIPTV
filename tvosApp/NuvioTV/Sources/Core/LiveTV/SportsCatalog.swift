@@ -7,7 +7,9 @@ enum SportsCatalog {
     /// Fork: leagues from other feeds than ESPN (OpenLigaDB's 3. Liga).
     static let forkLeagues: [League] = [
         League(id: "openligadb/bl3", sport: .football, name: "3. Liga", short: "3. LIGA", guideWords: ["3. Liga"],
-               regions: [], minutes: 115, color: 0xFF1F5E3A),
+               regions: [], minutes: 115, color: 0xFF1F5E3A,
+               // Logos: football-logos.cc (credited in Settings → About → Licenses & Attributions).
+               logo: "https://assets.football-logos.cc/logos/germany/256x256/3-liga.d8504584.png"),
     ]
 
     /// Every league: Android's and the fork's.

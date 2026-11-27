@@ -25,6 +25,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     // Fork: the calendar (UI/LiveTV/LiveTVCalendarSettingsView.swift), for
     // everything you follow, not only Live TV.
     case calendar = "Calendar"
+    // Fork: the Sports page (UI/LiveTV/SportsSettingsView.swift).
+    case sports = "Sports"
     // Fork: Live TV options (UI/LiveTV/LiveTVSettingsViews.swift).
     case liveTV = "Live TV"
     case subtitles = "Subtitle Style"
@@ -48,6 +50,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
             return L10n.string("settings_playback", fallback: "Playback")
         case .calendar:
             return L10n.string("nav_calendar", fallback: "Calendar")
+        case .sports:
+            return L10n.string("nav_sports", fallback: "Sports")
         case .liveTV:
             return L10n.string("settings_livetv_vod", fallback: "Live TV / VOD")
         case .subtitles:
@@ -91,6 +95,11 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
                 "livetv_settings_calendar_category_subtitle",
                 fallback: "Time zone, spoilers and film dates"
             )
+        case .sports:
+            return L10n.string(
+                "livetv_settings_sports_category_subtitle",
+                fallback: "Region, scores and leagues"
+            )
         case .liveTV:
             return L10n.string(
                 "livetv_settings_subtitle",
@@ -122,6 +131,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .integrations: return "link"
         case .playback: return "play.circle"
         case .calendar: return "calendar"
+        case .sports: return "sportscourt"
         case .liveTV: return "tv"
         case .subtitles: return "captions.bubble"
         case .advanced: return "wrench.and.screwdriver"
@@ -2142,6 +2152,8 @@ struct SettingsView: View {
             )
         case .calendar:
             LiveTVCalendarSettingsView(accentColor: accentColor)
+        case .sports:
+            SportsSettingsView(accentColor: accentColor)
         case .liveTV:
             LiveTVSettingsView(accentColor: accentColor)
         case .subtitles:
@@ -14672,6 +14684,31 @@ private struct LicensesAttributionsSheet: View {
             title: "TVmaze",
             body: "Broadcast times of series episodes in the calendar, when Exact air times is on. Data from tvmaze.com.",
             license: "CC BY-SA 4.0"
+        ),
+        // Fork (Live TV step 17): the Sports page.
+        LicenseEntry(
+            id: "espn",
+            title: "ESPN",
+            body: "Scores, schedules, tables and game details on the Sports page, from ESPN's public site API. Not endorsed by ESPN; logos belong to their clubs and leagues.",
+            license: "ESPN Terms of Use"
+        ),
+        LicenseEntry(
+            id: "openligadb",
+            title: "OpenLigaDB",
+            body: "German football ESPN doesn't carry (the 3. Liga): matches, goals and tables. Data from api.openligadb.de.",
+            license: "OpenLigaDB (free, community data)"
+        ),
+        LicenseEntry(
+            id: "wikimedia",
+            title: "Wikimedia Commons",
+            body: "Club logos of the 3. Liga, as OpenLigaDB links them. Logos belong to their clubs.",
+            license: "Per file on commons.wikimedia.org"
+        ),
+        LicenseEntry(
+            id: "football-logos",
+            title: "football-logos.cc",
+            body: "The 3. Liga's logo. Logos: football-logos.cc. Logos belong to their clubs, leagues and associations; used for a non-commercial fan app.",
+            license: "football-logos.cc usage terms (credit required)"
         )
     ]
 

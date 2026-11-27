@@ -604,7 +604,7 @@ private struct SportsQuickMenu: View {
 /// in Nuvio's settings look: each sport under its name, each league with
 /// its logo and a switch. Lazy, light rows (no glass per row) so it
 /// scrolls smoothly; logos are asked for as rows come into view.
-private struct SportsLeaguesPicker: View {
+struct SportsLeaguesPicker: View {
     @ObservedObject private var settings = SportsSettings.shared
     @Environment(\.dismiss) private var dismiss
 
@@ -718,7 +718,7 @@ struct SportsLeagueLogo: View {
 
     var body: some View {
         Group {
-            if let url = logo.flatMap(URL.init(string:)) {
+            if let url = (logo ?? league.logo).flatMap(URL.init(string:)) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().aspectRatio(contentMode: .fit)

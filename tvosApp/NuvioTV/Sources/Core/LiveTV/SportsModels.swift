@@ -88,6 +88,8 @@ struct League: Identifiable, Hashable, Sendable {
     var liveByDefault: Bool = false
     var national: Bool = false
     var women: Bool = false
+    /// Fork: a logo of its own, for a league no feed gives one for.
+    var logo: String? = nil
 
     static let allRegions: Set<String> = ["US", "UK", "IE", "CA", "AU", "OTHER"]
 
