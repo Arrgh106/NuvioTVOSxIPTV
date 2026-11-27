@@ -293,11 +293,12 @@ private enum DetailsReturnDestination {
 }
 
 enum TVTab: Hashable, Identifiable, CaseIterable {
-    case profile, home, liveTV, onDemand, jellyfin, party, search, library, calendar, settings, surprise
+    case profile, home, liveTV, sports, onDemand, jellyfin, party, search, library, calendar, settings, surprise
     case collection(CollectionHomeID)
 
     static var allCases: [Self] {
         var tabs: [Self] = [.profile, .home, .liveTV]
+        if isSportsEnabled { tabs.append(.sports) }
         if isOnDemandEnabled { tabs.append(.onDemand) }
         if isJellyfinEnabled { tabs.append(.jellyfin) }
         if isWatchPartyEnabled { tabs.append(.party) }
@@ -306,6 +307,12 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         if ProfileSettings.current.bool(forKey: SettingsKey.showSurpriseMeTab) { tabs.append(.surprise) }
         tabs.append(.settings)
         return tabs
+    }
+
+    /// Fork (Live TV step 17): Settings → Appearance → Sidebar → Sports
+    /// (on unless turned off, as Android's).
+    static var isSportsEnabled: Bool {
+        ProfileSettings.current.object(forKey: SettingsKey.showSportsTab) as? Bool ?? true
     }
 
     /// Settings → Appearance → Sidebar → Calendar (on unless turned off).
@@ -337,6 +344,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return "Profile"
         case .home: return "Home"
         case .liveTV: return "Live TV"
+        case .sports: return "Sports"
         case .onDemand: return "VOD"
         case .jellyfin: return "Jellyfin"
         case .search: return "Search"
@@ -353,6 +361,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return L10n.string("settings_profiles", fallback: "Profile")
         case .home: return L10n.string("nav_home", fallback: "Home")
         case .liveTV: return L10n.string("nav_live_tv", fallback: "Live TV")
+        case .sports: return L10n.string("nav_sports", fallback: "Sports")
         case .onDemand: return L10n.string("livetv_ondemand_title", fallback: "VOD")
         case .jellyfin: return "Jellyfin"
         case .search: return L10n.string("nav_search", fallback: "Search")
@@ -369,6 +378,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .profile: return "person.crop.circle"
         case .home: return "house"
         case .liveTV: return "tv"
+        case .sports: return "sportscourt"
         case .onDemand: return "film.stack"
         case .jellyfin: return "server.rack"
         case .search: return "magnifyingglass"
@@ -4798,6 +4808,8 @@ private struct TVMainTabView: View {
     /// Fork (Live TV step 12b): the VOD and Jellyfin pages.
     @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
     @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
+    /// Fork (Live TV step 17): the Sports page.
+    @AppStorage(SettingsKey.showSportsTab) private var showSportsTab = true
     @ObservedObject private var jellyfinServers = JellyfinServerStore.shared
     private var showsOnDemandTab: Bool { showOnDemandTab && OnDemandSources.hasAny }
     private var showsJellyfinTab: Bool { showJellyfinTab && !jellyfinServers.servers.isEmpty }
@@ -4840,6 +4852,9 @@ private struct TVMainTabView: View {
         }
         .onChange(of: showOnDemandTab) { _, isShown in
             if !isShown, selectedTab == .onDemand { selectedTab = .home }
+        }
+        .onChange(of: showSportsTab) { _, isShown in
+            if !isShown, selectedTab == .sports { selectedTab = .home }
         }
         .onChange(of: showJellyfinTab) { _, isShown in
             if !isShown, selectedTab == .jellyfin { selectedTab = .home }
@@ -5014,6 +5029,11 @@ private struct TVMainTabView: View {
             .id(activeProfile?.id ?? "none")
     }
 
+    private var sportsTabContent: some View {
+        SportsView()
+            .id(activeProfile?.id ?? "none")
+    }
+
     private var jellyfinTabContent: some View {
         JellyfinPageView(
             onOpen: { id, type in onNavigateToDetails(id, type) },
@@ -5127,6 +5147,11 @@ private struct TVMainTabView: View {
             liveTVTabContent
                 .tabItem { Label(TVTab.liveTV.title, systemImage: TVTab.liveTV.symbol) }
                 .tag(TVTab.liveTV)
+            if showSportsTab {
+                sportsTabContent
+                    .tabItem { Label(TVTab.sports.title, systemImage: TVTab.sports.symbol) }
+                    .tag(TVTab.sports)
+            }
             if showsOnDemandTab {
                 onDemandTabContent
                     .tabItem { Label(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol) }
@@ -5233,6 +5258,11 @@ private struct TVMainTabView: View {
             }
             // One group: a tab builder takes at most 10 entries.
             Group {
+                if showSportsTab {
+                    Tab(TVTab.sports.title, systemImage: TVTab.sports.symbol, value: TVTab.sports) {
+                        sportsTabContent
+                    }
+                }
                 if showsOnDemandTab {
                     Tab(TVTab.onDemand.title, systemImage: TVTab.onDemand.symbol, value: TVTab.onDemand) {
                         onDemandTabContent

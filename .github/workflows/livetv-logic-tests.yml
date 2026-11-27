@@ -28,6 +28,10 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -52,6 +56,10 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -91,6 +99,10 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

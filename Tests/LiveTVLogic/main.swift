@@ -941,5 +941,43 @@ let guideHits = LiveTVCalendarGuideMatch.match(
     })
 check(guideHits["ep"]?.channelID == 2 && guideHits["ep"]?.others == 1, "guide: the network's channel first, not a rerun hours later")
 
+// MARK: Sports (step 17a): ESPN's scoreboard
+
+let espnJSON = """
+{"leagues":[{"logos":[{"href":"https://a.espncdn.com/l.png","rel":["full","default"]},{"href":"https://a.espncdn.com/d.png","rel":["full","dark"]}]}],
+ "events":[{"id":"401","date":"2026-11-27T19:30Z","name":"Bayern at Dortmund",
+  "competitions":[{"status":{"period":2,"clock":4020,"displayClock":"67'","type":{"state":"in","name":"STATUS_SECOND_HALF","shortDetail":"67'"}},
+   "venue":{"fullName":"Signal Iduna Park"},
+   "broadcasts":[{"market":"home","names":["Sky"]},{"market":"national","names":["DAZN","ESPN App"]}],
+   "competitors":[
+    {"homeAway":"home","score":"2","winner":false,"team":{"id":"124","displayName":"Borussia Dortmund","shortDisplayName":"Dortmund","abbreviation":"BVB","color":"fde100","logo":"https://a.espncdn.com/bvb.png"},
+     "linescores":[{"value":1},{"value":1}]},
+    {"homeAway":"away","score":"1","team":{"id":"132","displayName":"Bayern Munich","shortDisplayName":"Bayern","abbreviation":"FCB","color":"#dc052d"}}]}]},
+  {"id":"402","date":"2026-11-28T14:30Z","competitions":[{"status":{"type":{"state":"pre","name":"STATUS_SCHEDULED"}},
+   "competitors":[{"homeAway":"home","score":"0","team":{"id":"1","displayName":"A"}},{"homeAway":"away","score":"0","team":{"id":"2","displayName":"B"}}]}]},
+  {"id":"403","date":"2026-11-28T14:30Z","competitions":[{"status":{"type":{"state":"post","name":"STATUS_POSTPONED","description":"Postponed"}},
+   "competitors":[{"homeAway":"home","team":{"id":"1","displayName":"A"}},{"homeAway":"away","team":{"id":"2","displayName":"B"}}]}]}]}
+"""
+let bundesliga = SportsCatalog.league("soccer/ger.1")!
+let games = SportsESPN.parseScoreboard(bundesliga, data: Data(espnJSON.utf8))
+check(games.count == 3, "sports: three games")
+check(games.first?.state == .live && games.first?.status == "67'", "sports: live with its minute")
+check(games.first?.title == "Dortmund v Bayern", "sports: football says home v away")
+check(games.first?.broadcasts == ["DAZN", "ESPN App", "Sky"], "sports: national first (apps after its channels), then the home team's")
+check(games.first?.home?.team.color == 0xFFFDE100 && games.first?.away?.team.color == 0xFFDC052D, "sports: team colours")
+check(games.first?.home?.periods == ["1", "1"] && games.first?.hasScore == true, "sports: score and halves")
+check(abs((games.first?.progress ?? 0) - 67.0 / 90) < 0.01, "sports: time bar from the minute")
+check(games[1].state == .pre && games[1].home?.score == nil, "sports: no score before kick-off")
+check(games[2].state == .off && games[2].status == "Postponed", "sports: postponed")
+check(SportsESPN.leagueLogo(Data(espnJSON.utf8)) == "https://a.espncdn.com/d.png", "sports: league logo for dark")
+check(SportsESPN.clockLast("4:12 - 3rd") == "3rd · 4:12", "sports: clock last")
+check(SportsESPN.espnDay(Date(timeIntervalSince1970: 1_795_824_000)) == "20261127", "sports: ESPN day in New York")
+check(SportsCatalog.inRegion(SportsCatalog.league("soccer/ger.2")!, region: "OTHER", country: "DE"), "sports: your country's leagues")
+check(!SportsCatalog.inRegion(SportsCatalog.league("soccer/ger.2")!, region: "OTHER", country: "FR"), "sports: not another country's")
+let changed = SportsCatalog.toggled(bundesliga, region: "OTHER", country: "DE", changed: [])
+check(changed == ["soccer/ger.1"] && !SportsCatalog.shown(bundesliga, region: "OTHER", country: "DE", changed: changed), "sports: league off")
+let stale = SportsStale.fix(games[0], sport: .football, now: games[0].start.addingTimeInterval(6 * 3600))
+check(stale.state == .post && stale.home?.score == nil, "sports: an old live copy is over")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

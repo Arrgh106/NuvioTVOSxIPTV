@@ -216,6 +216,8 @@ enum SettingsKey {
     /// Fork (Live TV step 12b): the VOD and Jellyfin pages in the
     /// sidebar, and the VOD row on Home.
     static let showOnDemandTab = "nuvio.tv.settings.layout.showOnDemandTab"
+    /// Fork (Live TV step 17): the Sports page in the sidebar.
+    static let showSportsTab = "nuvio.tv.settings.layout.showSportsTab"
     static let showJellyfinTab = "nuvio.tv.settings.layout.showJellyfinTab"
     static let onDemandHomeRow = "nuvio.tv.settings.layout.onDemandHomeRow"
     static let showSurpriseMeTab = "nuvio.tv.settings.layout.showSurpriseMeTab"
@@ -481,7 +483,7 @@ enum SettingsKey {
         homeLayout, sidebarClockFormat, gridRows, gridItemsPerRow, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, homeHeroRatingSource, homeHeroRatingsEnabled, posterLabels, continueWatchingLabels, catalogAddonNames, landscapePosters, customPosterURLPattern, customPosterEnabledScreens, discoverLocation,
         searchStyle, preferAddonArtworkInSearch,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp, continueWatchingEpisodeRatings, continueWatchingBlurNextUp,
-        showCalendarTab, showSurpriseMeTab, surpriseMeUseTMDB, surpriseMeUseTrackers, surpriseMeAIProvider, surpriseMeAIModel, showWatchPartyTab, showOnDemandTab, showJellyfinTab, onDemandHomeRow, useTopNavigation, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes, calendarAniList, calendarAniListPlanning,
+        showCalendarTab, showSurpriseMeTab, surpriseMeUseTMDB, surpriseMeUseTrackers, surpriseMeAIProvider, surpriseMeAIModel, showWatchPartyTab, showOnDemandTab, showSportsTab, showJellyfinTab, onDemandHomeRow, useTopNavigation, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes, calendarAniList, calendarAniListPlanning,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates, detailsActionsBelowInfo,
         detailsSectionOrder, detailsSectionDisabled,
@@ -2841,6 +2843,7 @@ private struct AppearanceSettingsView: View {
     @AppStorage(SettingsKey.showWatchPartyTab) private var showWatchPartyTab = true
     // Fork (Live TV step 12b): the provider's and Jellyfin's pages and rows.
     @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
+    @AppStorage(SettingsKey.showSportsTab) private var showSportsTab = true
     @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
     @AppStorage(SettingsKey.onDemandHomeRow) private var onDemandHomeRow = true
     @AppStorage(SettingsKey.jellyfinLocalRowEnabled) private var jellyfinHomeRows = true
@@ -2956,6 +2959,16 @@ private struct AppearanceSettingsView: View {
                         fallback: "Show Watch Party in the sidebar"
                     ),
                     isOn: $showWatchPartyTab,
+                    accentColor: accentColor
+                )
+                // Fork (Live TV step 17): the Sports page.
+                SettingsToggleRow(
+                    title: L10n.string("nav_sports", fallback: "Sports"),
+                    subtitle: L10n.string(
+                        "settings_show_sports_tab_subtitle",
+                        fallback: "Today's games and the days around, live scores in your leagues (from ESPN)."
+                    ),
+                    isOn: $showSportsTab,
                     accentColor: accentColor
                 )
                 // Fork (Live TV step 12b): the VOD and Jellyfin pages.
