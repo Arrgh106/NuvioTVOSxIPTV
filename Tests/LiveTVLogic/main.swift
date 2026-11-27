@@ -968,6 +968,7 @@ check(games.first?.home?.team.color == 0xFFFDE100 && games.first?.away?.team.col
 check(games.first?.home?.periods == ["1", "1"] && games.first?.hasScore == true, "sports: score and halves")
 check(abs((games.first?.progress ?? 0) - 67.0 / 90) < 0.01, "sports: time bar from the minute")
 check(games[1].state == .pre && games[1].home?.score == nil, "sports: no score before kick-off")
+check(games.first?.venue == "Signal Iduna Park", "sports: venue")
 check(games[2].state == .off && games[2].status == "Postponed", "sports: postponed")
 check(SportsESPN.leagueLogo(Data(espnJSON.utf8)) == "https://a.espncdn.com/d.png", "sports: league logo for dark")
 check(SportsESPN.clockLast("4:12 - 3rd") == "3rd · 4:12", "sports: clock last")

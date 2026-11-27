@@ -254,18 +254,7 @@ struct SportsView: View {
     private func leagueHeader(_ league: League, count: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                if let logo = store.leagueLogos[league.id].flatMap(URL.init(string:)) {
-                    AsyncImage(url: logo) { phase in
-                        if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fit) }
-                    }
-                    .frame(width: 36, height: 36)
-                } else {
-                    Text(league.short)
-                        .font(.system(size: 15, weight: .heavy))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color(sportsARGB: league.color), in: Capsule())
-                }
+                SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 36)
                 Text(league.name)
                     .font(.system(size: 28, weight: .bold))
                 Spacer()
@@ -303,12 +292,7 @@ struct SportsView: View {
         if let event, let league = SportsCatalog.league(event.leagueId) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 10) {
-                    if let logo = store.leagueLogos[league.id].flatMap(URL.init(string:)) {
-                        AsyncImage(url: logo) { phase in
-                            if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fit) }
-                        }
-                        .frame(width: 30, height: 30)
-                    }
+                    SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 30)
                     Text(league.name)
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundColor(.white.opacity(0.8))
@@ -350,6 +334,18 @@ struct SportsView: View {
         }
     }
 
+    /// ESPN's short words in full: FT (full time), HT (half time), AET
+    /// (after extra time), penalties.
+    static func readable(_ status: String) -> String {
+        switch status.trimmingCharacters(in: .whitespaces).uppercased() {
+        case "FT": return L10n.string("livetv_sports_full_time", fallback: "Full Time")
+        case "HT": return L10n.string("livetv_sports_half_time", fallback: "Half Time")
+        case "AET": return L10n.string("livetv_sports_after_extra", fallback: "After Extra Time")
+        case "FT-PENS", "PENS", "AP", "FT-PEN": return L10n.string("livetv_sports_after_pens", fallback: "After Penalties")
+        default: return status
+        }
+    }
+
     /// "Today · 20:30", "2nd Half · 67'", "Final".
     static func whenLine(_ event: SportsEvent, hideScores: Bool) -> String {
         switch event.state {
@@ -361,9 +357,10 @@ struct SportsView: View {
                 : formatter.string(from: event.start)
             return event.hasTime ? day + " · " + clock(event.start) : day
         case .live:
-            return hideScores ? L10n.string("livetv_sports_live", fallback: "Live") : (event.status ?? L10n.string("livetv_sports_live", fallback: "Live"))
+            return hideScores ? L10n.string("livetv_sports_live", fallback: "Live")
+                : readable(event.status ?? L10n.string("livetv_sports_live", fallback: "Live"))
         case .post:
-            return hideScores ? L10n.string("livetv_sports_over", fallback: "Over") : (event.status ?? "Final")
+            return hideScores ? L10n.string("livetv_sports_over", fallback: "Over") : readable(event.status ?? "Final")
         case .off:
             return event.status ?? "Postponed"
         }
@@ -558,15 +555,6 @@ private struct SportsQuickMenu: View {
             LiveTVQuickRow(title: L10n.string("livetv_sports_scores", fallback: "Scores"),
                            value: settings.scoreMode.title, isFocused: focused == 0) { choosingScores = true }
                 .focused($focused, equals: 0)
-                .confirmationDialog(L10n.string("livetv_sports_scores", fallback: "Scores"), isPresented: $choosingScores,
-                                    titleVisibility: .visible) {
-                    ForEach(SportsSettings.ScoreMode.allCases, id: \.self) { mode in
-                        Button(mode.title) { settings.scoreMode = mode }
-                    }
-                    Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
-                } message: {
-                    Text(L10n.string("livetv_sports_scores_detail", fallback: "Hide Live Scores: results of games that are over show, running games don't."))
-                }
             LiveTVQuickRow(title: L10n.string("livetv_sports_region", fallback: "Your Region"),
                            value: settings.region.isEmpty
                                ? L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@",
@@ -576,19 +564,6 @@ private struct SportsQuickMenu: View {
                 choosingRegion = true
             }
             .focused($focused, equals: 1)
-            .confirmationDialog(L10n.string("livetv_sports_region", fallback: "Your Region"), isPresented: $choosingRegion,
-                                titleVisibility: .visible) {
-                Button(L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@",
-                                   SportsCatalog.regionName(SportsCatalog.region(ofCountry: SportsSettings.country)))) {
-                    settings.region = ""
-                }
-                ForEach(SportsCatalog.regions, id: \.code) { region in
-                    Button(region.name) { settings.region = region.code }
-                }
-                Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
-            } message: {
-                Text(L10n.string("livetv_sports_region_detail", fallback: "Which leagues are on at first (your own country's football is always on)."))
-            }
             LiveTVQuickRow(title: L10n.string("livetv_sports_leagues", fallback: "Leagues…"),
                            value: "\(settings.shownLeagues.count)", isFocused: focused == 2, action: onLeagues)
                 .focused($focused, equals: 2)
@@ -599,58 +574,176 @@ private struct SportsQuickMenu: View {
         .focusSection()
         .onAppear { focused = 0 }
         .onExitCommand(perform: onClose)
+        // Nuvio's picker windows (as its language picker).
+        .liveTVPicker(isPresented: $choosingScores) {
+            LiveTVPickerWindow(
+                title: L10n.string("livetv_sports_scores", fallback: "Scores"),
+                subtitle: L10n.string("livetv_sports_scores_detail", fallback: "Hide Live Scores: results of games that are over show, running games don't."),
+                systemImage: "eye.slash",
+                options: SportsSettings.ScoreMode.allCases.map { LiveTVPickerOption(id: $0.rawValue, title: $0.title) },
+                selected: settings.scoreMode.rawValue,
+                onPick: { if let mode = SportsSettings.ScoreMode(rawValue: $0) { settings.scoreMode = mode } },
+                onClose: { choosingScores = false })
+        }
+        .liveTVPicker(isPresented: $choosingRegion) {
+            LiveTVPickerWindow(
+                title: L10n.string("livetv_sports_region", fallback: "Your Region"),
+                subtitle: L10n.string("livetv_sports_region_detail", fallback: "Which leagues are on at first: a country gets what's on everywhere and its own football."),
+                systemImage: "globe",
+                options: [LiveTVPickerOption(id: "", title: L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@",
+                                                                       SportsCatalog.regionName(SportsCatalog.region(ofCountry: SportsSettings.country))))]
+                    + SportsCatalog.regions.map { LiveTVPickerOption(id: $0.code, title: $0.name) },
+                selected: settings.region,
+                onPick: { settings.region = $0 },
+                onClose: { choosingRegion = false })
+        }
     }
 }
 
-/// Which leagues All Events shows, by sport (as Android's Leagues dialog).
+/// Which leagues All Events shows, by sport (as Android's Leagues dialog),
+/// in Nuvio's settings look: each sport under its name, each league with
+/// its logo and a switch. Lazy, light rows (no glass per row) so it
+/// scrolls smoothly; logos are asked for as rows come into view.
 private struct SportsLeaguesPicker: View {
     @ObservedObject private var settings = SportsSettings.shared
     @Environment(\.dismiss) private var dismiss
 
+    private enum Item: Identifiable {
+        case sport(Sport)
+        case league(League)
+        var id: String {
+            switch self {
+            case .sport(let sport): return "s:" + sport.rawValue
+            case .league(let league): return league.id
+            }
+        }
+    }
+
     var body: some View {
         let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
         let leagues = SportsCatalog.all.filter(\.hasFeed)
+        let items: [Item] = order.flatMap { sport -> [Item] in
+            let list = leagues.filter { $0.sport == sport }
+            return list.isEmpty ? [] : [.sport(sport)] + list.map { .league($0) }
+        }
         ZStack {
             Color.black.opacity(0.92).ignoresSafeArea()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    Text(L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"))
-                        .font(.system(size: 38, weight: .bold))
-                    Text(L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off."))
-                        .font(.system(size: 20))
-                        .foregroundColor(.white.opacity(0.6))
-                        .padding(.bottom, 10)
-                    ForEach(order, id: \.self) { sport in
-                        let list = leagues.filter { $0.sport == sport }
-                        if !list.isEmpty {
-                            Text(sport.icon + " " + sport.label)
-                                .font(.system(size: 26, weight: .bold))
-                                .padding(.top, 16)
-                            ForEach(list) { league in
-                                SportsLeagueRow(league: league)
-                            }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"))
+                            .font(.system(size: 36, weight: .bold))
+                        Text(L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off."))
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(.white.opacity(0.62))
+                    }
+                    .padding(.bottom, 14)
+                    ForEach(items) { item in
+                        switch item {
+                        case .sport(let sport):
+                            Text(sport.icon + "  " + sport.label)
+                                .font(.system(size: 28, weight: .bold))
+                                .padding(.top, 22)
+                                .padding(.bottom, 4)
+                        case .league(let league):
+                            SportsLeagueRow(league: league)
                         }
                     }
                 }
-                .padding(60)
+                .frame(width: 1100, alignment: .leading)
+                .padding(.horizontal, 60)
+                .padding(.vertical, 50)
+                .frame(maxWidth: .infinity)
             }
         }
         .onExitCommand { dismiss() }
     }
 }
 
-/// One league, on or off.
+/// One league: its logo, name and region, and a switch (Nuvio's row look).
 private struct SportsLeagueRow: View {
     let league: League
     @ObservedObject private var settings = SportsSettings.shared
+    @ObservedObject private var store = SportsStore.shared
     @FocusState private var focused: Bool
 
     var body: some View {
-        LiveTVQuickRow(title: league.name, isOn: settings.isShown(league), isFocused: focused) {
+        let on = settings.isShown(league)
+        Button {
             settings.toggle(league)
+        } label: {
+            HStack(spacing: 18) {
+                SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(league.name)
+                        .font(.system(size: 22, weight: .semibold))
+                        .lineLimit(1)
+                    Text(league.short)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                Spacer(minLength: 24)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(on ? LiveTVTheme.accent : Color.white.opacity(0.24))
+                    .frame(width: 54, height: 30)
+                    .overlay(alignment: on ? .trailing : .leading) {
+                        Circle()
+                            .fill(on && LiveTVTheme.isWhiteAccent ? Color.black : Color.white)
+                            .frame(width: 22, height: 22)
+                            .padding(4)
+                    }
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 20)
+            .frame(minHeight: 74)
+            .background(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.white.opacity(focused ? 0.18 : 0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(focused ? AppFocusOutline.color : Color.white.opacity(0.10),
+                              lineWidth: focused ? AppFocusOutline.width : 1))
+            .scaleEffect(focused ? 1.02 : 1)
+            .animation(.easeOut(duration: 0.14), value: focused)
         }
+        .buttonStyle(LiveTVInvisibleButtonStyle())
         .focused($focused)
-        .frame(width: 900)
+        .onAppear { store.wantLogo(league) }
+    }
+}
+
+/// A league's logo, else its short name on its colour.
+struct SportsLeagueLogo: View {
+    let league: League
+    let logo: String?
+    var size: CGFloat = 40
+
+    var body: some View {
+        Group {
+            if let url = logo.flatMap(URL.init(string:)) {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        badge
+                    }
+                }
+            } else {
+                badge
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private var badge: some View {
+        RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+            .fill(Color(sportsARGB: league.color))
+            .overlay(
+                Text(league.short)
+                    .font(.system(size: size * 0.3, weight: .heavy))
+                    .foregroundColor(.white)
+                    .minimumScaleFactor(0.4)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(3))
     }
 }
 

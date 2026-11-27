@@ -22719,15 +22719,21 @@ enum LiveTVSettingsRows {
             accentColor: accentColor, optionLabel: optionLabel)
     }
 
-    /// Every choice in a list that opens (for long lists).
+    /// Every choice in a list that opens (for long lists): Nuvio's picker
+    /// window (as its language picker).
     static func choice(
         title: String, subtitle: String, selection: Binding<String>, options: [String], accentColor: Color,
         optionLabel: (String) -> String
     ) -> some View {
-        SettingsChoiceRow(
+        LiveTVChoiceRow(
             title: title, subtitle: subtitle, selection: selection, options: options,
-            optionLabels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
+            labels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
             accentColor: accentColor)
+    }
+
+    /// Nuvio's settings glass for the fork's own panels.
+    static func glass<V: View, S: InsettableShape>(_ view: V, shape: S, prominent: Bool) -> some View {
+        view.settingsGlass(shape: shape, isProminent: prominent)
     }
 
     static func action(
@@ -22779,6 +22785,50 @@ enum LiveTVSettingsRows {
     /// The sheet shows its own background (as the server sheets).
     static func clearSheetBackground<Content: View>(_ content: Content) -> some View {
         content.modifier(ClearPresentationBackgroundIfAvailable())
+    }
+}
+
+/// Fork: a setting whose choices open in a picker window.
+private struct LiveTVChoiceRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var selection: String
+    let options: [String]
+    let labels: [String: String]
+    let accentColor: Color
+
+    @FocusState private var isFocused: Bool
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing = true } label: {
+            SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                SettingsRowText(title: title, subtitle: subtitle)
+                Spacer(minLength: 24)
+                HStack(spacing: 10) {
+                    Text(labels[selection] ?? selection)
+                        .font(.appFont(size: 19, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(accentColor)
+                }
+                .frame(maxWidth: 300, alignment: .trailing)
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+        .entryLockable()
+        .liveTVPicker(isPresented: $showing) {
+            LiveTVPickerWindow(
+                title: title, subtitle: subtitle, systemImage: "list.bullet",
+                options: options.map { LiveTVPickerOption(id: $0, title: labels[$0] ?? $0) },
+                selected: selection, accentColor: accentColor,
+                onPick: { selection = $0 }, onClose: { showing = false })
+        }
     }
 }
 

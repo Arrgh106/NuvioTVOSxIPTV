@@ -231,13 +231,16 @@ struct LiveTVCalendarView: View {
             if tab == .airing { store.loadAiring() }
         }
         .onChange(of: tab) { _, now in if now == .airing { store.loadAiring() } }
-        .confirmationDialog(liveChoice?.title ?? "", isPresented: Binding(
-            get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } }
-        ), titleVisibility: .visible, presenting: liveChoice) { entry in
-            liveOptions(entry)
-        } message: { entry in
-            if let onTV = store.onTV[entry.key] {
-                Text(onTV.channelName + " · " + Self.clock(onTV.start) + "–" + Self.clock(onTV.end))
+        // Nuvio's picker window (as its language picker), not the system's dialog.
+        .liveTVPicker(isPresented: Binding(get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } })) {
+            if let entry = liveChoice {
+                LiveTVPickerWindow(
+                    title: entry.title,
+                    subtitle: store.onTV[entry.key].map { $0.channelName + " · " + Self.clock($0.start) + "–" + Self.clock($0.end) },
+                    systemImage: "tv",
+                    options: liveOptions(entry),
+                    onPick: { pickLive($0, entry) },
+                    onClose: { liveChoice = nil })
             }
         }
     }
@@ -254,32 +257,51 @@ struct LiveTVCalendarView: View {
         }
     }
 
-    @ViewBuilder
-    private func liveOptions(_ entry: LiveTVCalendarEntry) -> some View {
+    /// Watch live (from 10 minutes before), remind me (before it starts),
+    /// or the page.
+    private func liveOptions(_ entry: LiveTVCalendarEntry) -> [LiveTVPickerOption] {
+        var options: [LiveTVPickerOption] = []
         if let onTV = store.onTV[entry.key], let channel = LiveTVStore.shared.channel(id: onTV.channelID) {
             let now = Date()
             if now >= onTV.start.addingTimeInterval(-10 * 60) {
-                Button(L10n.format("livetv_cal_watch_live_format", fallback: "Watch live on %@", channel.name)) {
-                    LiveTVWatch.shared.watch(LiveTVWatchRequest(channelID: channel.streamID))
-                }
+                options.append(LiveTVPickerOption(
+                    id: "watch", title: L10n.format("livetv_cal_watch_live_format", fallback: "Watch live on %@", channel.name),
+                    systemImage: "play.tv"))
             }
             if onTV.start > now {
                 let set = LiveTVReminders.shared.isSet(channelID: channel.streamID, start: onTV.start)
-                Button(set
-                       ? L10n.string("livetv_cal_remind_off", fallback: "Don't remind me")
-                       : L10n.format("livetv_cal_remind_format", fallback: "Remind me (%@, %@)",
-                                     channel.name, Self.clock(onTV.start))) {
-                    LiveTVReminders.shared.toggle(
-                        channel: channel,
-                        programme: XtreamProgram(title: onTV.title, description: nil, start: onTV.start, end: onTV.end))
-                }
+                options.append(LiveTVPickerOption(
+                    id: "remind",
+                    title: set ? L10n.string("livetv_cal_remind_off", fallback: "Don't remind me")
+                               : L10n.format("livetv_cal_remind_format", fallback: "Remind me (%@, %@)",
+                                             channel.name, Self.clock(onTV.start)),
+                    systemImage: set ? "bell.slash" : "alarm"))
             }
         }
-        Button(L10n.string(entry.kind == .movie ? "livetv_cal_open_film" : "livetv_cal_open_show",
-                           fallback: entry.kind == .movie ? "Open the film's page" : "Open the show's page")) {
-            onOpen(entry)
+        options.append(LiveTVPickerOption(
+            id: "open",
+            title: L10n.string(entry.kind == .movie ? "livetv_cal_open_film" : "livetv_cal_open_show",
+                               fallback: entry.kind == .movie ? "Open the film's page" : "Open the show's page"),
+            systemImage: entry.kind == .movie ? "film" : "rectangle.stack"))
+        return options
+    }
+
+    private func pickLive(_ id: String, _ entry: LiveTVCalendarEntry) {
+        // After the window has gone (a page or the player can't open over it).
+        guard id != "open" else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onOpen(entry) }
+            return
         }
-        Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
+        guard let onTV = store.onTV[entry.key], let channel = LiveTVStore.shared.channel(id: onTV.channelID) else { return }
+        if id == "watch" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                LiveTVWatch.shared.watch(LiveTVWatchRequest(channelID: channel.streamID))
+            }
+        } else if id == "remind" {
+            LiveTVReminders.shared.toggle(
+                channel: channel,
+                programme: XtreamProgram(title: onTV.title, description: nil, start: onTV.start, end: onTV.end))
+        }
     }
 
     // MARK: Airing today, Following, Hidden (16c)

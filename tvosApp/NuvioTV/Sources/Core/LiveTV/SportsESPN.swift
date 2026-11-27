@@ -207,6 +207,7 @@ enum SportsESPN {
             broadcasts.append(item.element.name)
         }
         let venue = str(dict(comp, "venue"), "fullName") ?? str(dict(ev, "circuit"), "fullName")
+        let city = str(dict(dict(comp, "venue"), "address"), "city") ?? str(dict(dict(ev, "circuit"), "address"), "city")
         let week = ((dict(ev, "week")?["number"] as? NSNumber)?.intValue).flatMap { $0 > 0 ? "Week \($0)" : nil }
         let headline = str(list(comp, "notes").first, "headline")
 
@@ -226,7 +227,8 @@ enum SportsESPN {
                 id: "espn:\(league.id):\(espnId)", leagueId: league.id, start: start, hasTime: !multiDay, state: shown,
                 title: str(ev, "name") ?? str(ev, "shortName") ?? league.name,
                 subtitle: [headline, venue].compactMap { $0 }.joined(separator: " · ").nilIfBlank,
-                status: status, away: nil, home: nil, broadcasts: broadcasts, espnId: espnId, note: note, end: end)
+                status: status, away: nil, home: nil, broadcasts: broadcasts, espnId: espnId, note: note, end: end,
+                venue: venue, city: city)
         }
 
         var home: SportsSide?
@@ -262,7 +264,7 @@ enum SportsESPN {
             id: "espn:\(league.id):\(espnId)", leagueId: league.id, start: start, hasTime: true, state: state,
             title: title, subtitle: [headline, week, venue].compactMap { $0 }.joined(separator: " · ").nilIfBlank,
             status: status, away: a, home: h, broadcasts: broadcasts, situation: situation, progress: progress,
-            espnId: espnId)
+            espnId: espnId, venue: venue, city: city)
     }
 
     /// "4:12 - 3rd" reads "3rd · 4:12".

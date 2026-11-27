@@ -166,6 +166,9 @@ struct SportsEvent: Codable, Identifiable, Hashable, Sendable {
     var note: String?
     var end: Date?
     var standings: [SportsStanding] = []
+    /// Where it's played ("WWK Arena") and the town.
+    var venue: String? = nil
+    var city: String? = nil
 
     var sides: [SportsSide] { [away, home].compactMap { $0 } }
 

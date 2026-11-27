@@ -346,6 +346,37 @@ final class SportsStore: ObservableObject {
         return await fetch(url)
     }
 
+    // MARK: League logos
+
+    private var logoAsking: Set<String> = []
+    private var logoQueue: [League] = []
+    private var logoRunning = 0
+
+    /// A league's logo, asked for when it isn't known yet (the Leagues
+    /// list: as rows come into view; ESPN's scoreboard of a day without
+    /// games, two kilobytes). Two at a time.
+    func wantLogo(_ league: League) {
+        guard league.onESPN, leagueLogos[league.id] == nil, logoAsking.insert(league.id).inserted else { return }
+        logoQueue.append(league)
+        pumpLogos()
+    }
+
+    private func pumpLogos() {
+        while logoRunning < 2, !logoQueue.isEmpty {
+            let league = logoQueue.removeFirst()
+            logoRunning += 1
+            Task {
+                if let url = SportsESPN.scoreboardURL(league, day: "20000101"), let data = await Self.fetch(url),
+                   let logo = SportsESPN.leagueLogo(data) {
+                    leagueLogos[league.id] = logo
+                    scheduleSave()
+                }
+                logoRunning -= 1
+                pumpLogos()
+            }
+        }
+    }
+
     // MARK: Teams you follow (17d)
 
     /// A team's schedule from ESPN (football: its results and its coming
@@ -443,6 +474,23 @@ final class SportsStore: ObservableObject {
         if league.onOpenLiga {
             var extras = SportsGameExtras()
             extras.plays = openLigaGoals[event.id] ?? []
+            // Form and meetings from the season's games (OpenLigaDB has no
+            // summary of its own).
+            let season = boards.values.flatMap(\.events).filter { $0.leagueId == league.id && $0.state == .post && $0.start < event.start }
+                .sorted { $0.start < $1.start }
+            for side in event.sides {
+                let results = season.filter { $0.sides.contains { $0.team.id == side.team.id } }.suffix(5).map { game -> String in
+                    let mine = game.sides.first { $0.team.id == side.team.id }
+                    let other = game.sides.first { $0.team.id != side.team.id }
+                    let us = Int(mine?.score ?? "") ?? 0, them = Int(other?.score ?? "") ?? 0
+                    return us > them ? "W" : (us < them ? "L" : "D")
+                }
+                if !results.isEmpty { extras.form.append(SportsFormRow(teamId: side.team.id, team: side.team.name, results: results)) }
+            }
+            let ids = Set(event.sides.map(\.team.id))
+            extras.meetings = season.filter { Set($0.sides.map(\.team.id)) == ids }.suffix(3).reversed().map { game in
+                SportsMeeting(date: game.start, text: "\(game.home?.team.name ?? "") \(game.home?.score ?? "")–\(game.away?.score ?? "") \(game.away?.team.name ?? "")")
+            }
             if let table = await loadStandings(league) {
                 let around = table.around(Set(event.sides.map(\.team.id)))
                 extras.tableTitle = around.title

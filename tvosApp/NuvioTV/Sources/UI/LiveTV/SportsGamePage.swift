@@ -48,7 +48,7 @@ struct SportsGamePage: View {
         if !spoilerFree, !extras.lineups.isEmpty { list.append(.lineups) }
         if !extras.table.isEmpty { list.append(.table) }
         if !extras.form.isEmpty || !extras.meetings.isEmpty { list.append(.form) }
-        if extras.hasInfo || !event.broadcasts.isEmpty { list.append(.info) }
+        list.append(.info)
         return list
     }
 
@@ -100,13 +100,8 @@ struct SportsGamePage: View {
         let list = tabs(event, extras)
         return VStack(alignment: .leading, spacing: 22) {
             HStack(spacing: 12) {
-                if let logo = store.leagueLogos[league.id].flatMap(URL.init(string:)) {
-                    AsyncImage(url: logo) { phase in
-                        if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fit) }
-                    }
-                    .frame(width: 40, height: 40)
-                }
-                Text([league.name, event.subtitle].compactMap { $0 }.joined(separator: " · "))
+                SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 40)
+                Text([league.name, Self.round(event)].compactMap { $0 }.joined(separator: " · "))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundColor(.white.opacity(0.85))
                     .lineLimit(1)
@@ -119,6 +114,11 @@ struct SportsGamePage: View {
                 Text(event.title).font(.system(size: 52, weight: .bold)).lineLimit(2)
             }
             VStack(spacing: 6) {
+                if let venue = extras?.venue ?? event.venue {
+                    Label([venue, extras?.city ?? event.city].compactMap { $0 }.joined(separator: ", "), systemImage: "mappin.and.ellipse")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundColor(.white.opacity(0.75))
+                }
                 Text(SportsView.whenLine(event, hideScores: settings.hides(event)))
                     .font(.system(size: 28, weight: .bold))
                     .foregroundColor(LiveTVTheme.accent)
@@ -179,6 +179,14 @@ struct SportsGamePage: View {
         .padding(.horizontal, 80)
         .padding(.vertical, 50)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The round or match day ("14. Spieltag", "Week 12", "Group A"), not
+    /// the venue (shown under the score).
+    static func round(_ event: SportsEvent) -> String? {
+        guard let subtitle = event.subtitle else { return nil }
+        let parts = subtitle.components(separatedBy: " · ").filter { $0 != event.venue }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// "Starts in 2 h 15 min".
@@ -428,27 +436,68 @@ struct SportsGamePage: View {
         }
     }
 
+    /// Everything known about the game, line by line on a glass panel:
+    /// kick-off, competition and round, venue, weather, referee, crowd, TV,
+    /// and where both teams stand.
     private func info(_ event: SportsEvent, extras: SportsGameExtras) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let venue = extras.venue {
-                Label([venue, extras.city].compactMap { $0 }.joined(separator: ", "), systemImage: "mappin.and.ellipse")
-            }
-            if let temp = extras.tempF {
-                let celsius = Int((Double(temp) - 32) * 5 / 9)
-                Label(["\(celsius) °C / \(temp) °F", extras.conditions].compactMap { $0 }.joined(separator: " · "),
-                      systemImage: "thermometer.medium")
-            }
-            if let referee = extras.referee {
-                Label(L10n.format("livetv_sports_referee", fallback: "Referee: %@", referee), systemImage: "person.badge.shield.checkmark")
-            }
-            if let attendance = extras.attendance {
-                Label(L10n.format("livetv_sports_attendance", fallback: "Attendance: %@", attendance.formatted()), systemImage: "person.3")
-            }
-            if !event.broadcasts.isEmpty {
-                Label(event.broadcasts.joined(separator: ", "), systemImage: "tv")
+        let league = SportsCatalog.league(event.leagueId)
+        let table = store.standings[event.leagueId]
+        var lines: [(icon: String, label: String, value: String)] = []
+        let kickoff = DateFormatter()
+        kickoff.setLocalizedDateFormatFromTemplate(event.hasTime ? "EEEE d MMMM yyyy jmm" : "EEEE d MMMM yyyy")
+        lines.append(("calendar", L10n.string("livetv_sports_kickoff", fallback: "Kick-off"), kickoff.string(from: event.start)))
+        lines.append(("trophy", L10n.string("livetv_sports_competition", fallback: "Competition"),
+                      [league?.name, Self.round(event)].compactMap { $0 }.joined(separator: " · ")))
+        if let venue = extras.venue ?? event.venue {
+            lines.append(("mappin.and.ellipse", L10n.string("livetv_sports_venue", fallback: "Venue"),
+                          [venue, extras.city ?? event.city].compactMap { $0 }.joined(separator: ", ")))
+        }
+        if let temp = extras.tempF {
+            let celsius = Int((Double(temp) - 32) * 5 / 9)
+            lines.append(("thermometer.medium", L10n.string("livetv_sports_weather", fallback: "Weather"),
+                          ["\(celsius) °C", extras.conditions].compactMap { $0 }.joined(separator: " · ")))
+        }
+        if let referee = extras.referee {
+            lines.append(("person.badge.shield.checkmark", L10n.string("livetv_sports_referee_title", fallback: "Referee"), referee))
+        }
+        if let attendance = extras.attendance {
+            lines.append(("person.3", L10n.string("livetv_sports_attendance_title", fallback: "Attendance"), attendance.formatted()))
+        }
+        if !event.broadcasts.isEmpty {
+            lines.append(("tv", L10n.string("livetv_sports_tv", fallback: "TV"), event.broadcasts.joined(separator: ", ")))
+        }
+        for side in event.ordered(league?.sport ?? .football) {
+            let parts = [side.record ?? side.team.record, table?.placeText(side.team.id)].compactMap { $0 }
+            if !parts.isEmpty {
+                lines.append(("shield", side.team.fullName.isEmpty ? side.team.name : side.team.fullName, parts.joined(separator: " · ")))
             }
         }
-        .font(.system(size: 23))
-        .frame(maxWidth: .infinity, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    Image(systemName: line.icon)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(LiveTVTheme.accent)
+                        .frame(width: 36)
+                    Text(line.label)
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 260, alignment: .leading)
+                    Text(line.value)
+                        .font(.system(size: 23, weight: .semibold))
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 12)
+                if index < lines.count - 1 {
+                    Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 12)
+        .frame(width: 1100)
+        .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 28, style: .continuous)))
+        .task(id: event.leagueId) { if let league { await store.loadStandings(league) } }
     }
 }
