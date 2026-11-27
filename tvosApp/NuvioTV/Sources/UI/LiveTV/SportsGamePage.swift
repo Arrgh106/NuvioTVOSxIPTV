@@ -15,6 +15,7 @@ struct SportsGamePage: View {
     @State private var extras: SportsGameExtras?
     @State private var tab: Tab = .overview
     @State private var now = Date()
+    @Namespace private var focusSpace
 
     enum Tab: String, CaseIterable, Identifiable {
         case overview, stats, leaders, lineups, table, form, info
@@ -150,6 +151,9 @@ struct SportsGamePage: View {
                         } label: {
                             Text(item.title).font(.system(size: 22, weight: tab == item ? .bold : .regular))
                         }
+                        // Focus starts on the tabs (the stars are up from
+                        // here).
+                        .prefersDefaultFocus(item == list.first, in: focusSpace)
                     }
                 }
                 .focusSection()
@@ -164,6 +168,7 @@ struct SportsGamePage: View {
         .padding(.horizontal, 80)
         .padding(.vertical, 50)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .focusScope(focusSpace)
     }
 
     /// The round or match day ("14. Spieltag", "Week 12", "Group A"), not
@@ -313,9 +318,7 @@ struct SportsGamePage: View {
                         Circle().fill(Color.white.opacity(0.12))
                         Image(systemName: "person.fill").font(.system(size: 26)).foregroundColor(.white.opacity(0.35))
                         if let url = person.photo.flatMap(URL.init(string:)) {
-                            AsyncImage(url: url) { phase in
-                                if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fill) }
-                            }
+                            SportsImage(url: url, fill: true) { Color.clear }
                         }
                     }
                     .frame(width: 70, height: 70)

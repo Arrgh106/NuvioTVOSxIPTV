@@ -10,6 +10,7 @@ struct SportsMyTeamsView: View {
 
     @ObservedObject private var store = SportsStore.shared
     @ObservedObject private var settings = SportsSettings.shared
+    @State private var editing = false
 
     var body: some View {
         Group {
@@ -19,16 +20,25 @@ struct SportsMyTeamsView: View {
                         .font(.system(size: 60))
                         .foregroundColor(.white.opacity(0.6))
                     Text(L10n.string("livetv_sports_my_teams_empty",
-                                     fallback: "Press the star by a team (on a game's page or in Tables): its games show up here, with its place in the table."))
+                                     fallback: "Choose your teams here, or press the star by a team on a game's page or in Tables: their games show up here, with their place in the table."))
                         .font(.system(size: 24))
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 800)
+                    Button { editing = true } label: {
+                        Label(L10n.string("livetv_sports_choose_teams", fallback: "Choose Teams"), systemImage: "star")
+                            .font(.system(size: 22, weight: .semibold))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 34) {
+                        Button { editing = true } label: {
+                            Label(L10n.string("livetv_sports_edit_teams", fallback: "Edit My Teams"), systemImage: "star")
+                                .font(.system(size: 20, weight: .semibold))
+                        }
+                        .padding(.horizontal, 60)
                         ForEach(settings.followed, id: \.key) { team in
                             teamRow(team)
                         }
@@ -37,6 +47,7 @@ struct SportsMyTeamsView: View {
                 }
             }
         }
+        .sheet(isPresented: $editing) { SportsTeamsPicker() }
         .task {
             store.loadFollowed()
             for league in Set(settings.followed.compactMap { SportsCatalog.league($0.leagueId) }) {
@@ -143,6 +154,9 @@ struct SportsTablesView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Every league's table side by side: switching is instant, and a cup
+        // without one is gone before it's chosen.
+        .task(id: list.map(\.id)) { await store.loadStandings(list) }
     }
 
     @ViewBuilder
@@ -206,8 +220,7 @@ struct SportsTablesView: View {
     }
 
     private func team(_ row: SportsStandingsRow, league: League) -> TeamInfo {
-        TeamInfo(leagueId: league.id, id: row.id, name: row.shortName, fullName: row.name, abbr: "",
-                 color: SportsESPN.clubColor(row.name), logo: row.logo)
+        row.team(in: league)
     }
 
     private func head(_ standings: SportsStandings) -> some View {
@@ -275,10 +288,31 @@ struct SportsTablesView: View {
                 if let next {
                     gameLine(L10n.string("livetv_sports_next_game", fallback: "Next"), next, team: info)
                 }
+                // Top scorer and top assists (other sports: their first two
+                // leaders), with a small picture.
+                ForEach(store.teamLeaders[info.key] ?? [], id: \.category) { leader in
+                    HStack(spacing: 14) {
+                        SportsPlayerPhoto(leader: leader, color: info.color.map { Color(sportsARGB: $0) } ?? .gray)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(leader.category.uppercased())
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundColor(.white.opacity(0.5))
+                            Text(leader.name).font(.system(size: 21, weight: .semibold)).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text(leader.value).font(.system(size: 26, weight: .heavy)).monospacedDigit()
+                    }
+                }
                 Spacer(minLength: 0)
             }
             .padding(28)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Its games and top players, once focus rests on it a moment.
+            .task(id: info.key) {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                await store.loadTeam(info)
+            }
             .modifier(LiveTVGlass(shape: RoundedRectangle(cornerRadius: 28, style: .continuous)))
             .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
         }
@@ -333,9 +367,7 @@ private struct SportsTableRowView: View {
                     .frame(width: 46, alignment: .leading)
                 ZStack {
                     if let url = SportsTeamLogo.url(row.logo, size: 38) {
-                        AsyncImage(url: url) { phase in
-                            if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fit) }
-                        }
+                        SportsImage(url: url) { Color.clear }
                     }
                 }
                 .frame(width: 38, height: 38)

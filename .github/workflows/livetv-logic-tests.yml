@@ -35,6 +35,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -66,6 +67,7 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -112,6 +114,7 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

@@ -7,6 +7,7 @@ struct SportsSettingsView: View {
     let accentColor: Color
     @ObservedObject private var settings = SportsSettings.shared
     @State private var showsLeagues = false
+    @State private var showsTeams = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -45,8 +46,16 @@ struct SportsSettingsView: View {
                     accentColor: accentColor,
                     action: { showsLeagues = true }
                 )
+                LiveTVSettingsRows.action(
+                    title: L10n.string("livetv_sports_my_teams_title", fallback: "My Teams"),
+                    subtitle: L10n.string("livetv_sports_my_teams_settings", fallback: "The teams you follow: add or remove them, by league."),
+                    value: L10n.format("livetv_sports_teams_format", fallback: "%d teams", settings.followed.count),
+                    accentColor: accentColor,
+                    action: { showsTeams = true }
+                )
             }
         }
         .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
+        .sheet(isPresented: $showsTeams) { SportsTeamsPicker() }
     }
 }

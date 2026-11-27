@@ -15,6 +15,7 @@ struct SportsView: View {
     @State private var focusedID: String?
     @State private var showsQuickMenu = false
     @State private var showsLeagues = false
+    @State private var showsTeams = false
     /// The game page open (17c).
     @State private var openGame: SportsGameID?
     /// Redrawn every 30 s (clocks, time bars, Today).
@@ -83,6 +84,7 @@ struct SportsView: View {
         .overlay(alignment: .topTrailing) {
             if showsQuickMenu {
                 SportsQuickMenu(onLeagues: { showsQuickMenu = false; showsLeagues = true },
+                                onTeams: { showsQuickMenu = false; showsTeams = true },
                                 onClose: { showsQuickMenu = false })
                     .padding(.top, 20)
                     .padding(.trailing, 40)
@@ -91,6 +93,7 @@ struct SportsView: View {
         }
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
         .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
+        .sheet(isPresented: $showsTeams) { SportsTeamsPicker() }
         .fullScreenCover(item: $openGame) { game in SportsGamePage(eventID: game.id) }
         .onAppear {
             settings.reload()
@@ -495,13 +498,8 @@ struct SportsTeamLogo: View {
         ZStack {
             Circle().fill(Color.white.opacity(0.92))
             if let url = SportsTeamLogo.url(team.logo, size: size) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().aspectRatio(contentMode: .fit).padding(size * 0.14)
-                    } else {
-                        initials
-                    }
-                }
+                SportsImage(url: url) { initials }
+                    .padding(size * 0.14)
             } else {
                 initials
             }
@@ -540,6 +538,7 @@ struct SportsLiveBadge: View {
 /// calendar's).
 private struct SportsQuickMenu: View {
     let onLeagues: () -> Void
+    let onTeams: () -> Void
     let onClose: () -> Void
     @ObservedObject private var settings = SportsSettings.shared
     @FocusState private var focused: Int?
@@ -567,6 +566,9 @@ private struct SportsQuickMenu: View {
             LiveTVQuickRow(title: L10n.string("livetv_sports_leagues", fallback: "Leagues…"),
                            value: "\(settings.shownLeagues.count)", isFocused: focused == 2, action: onLeagues)
                 .focused($focused, equals: 2)
+            LiveTVQuickRow(title: L10n.string("livetv_sports_my_teams_menu", fallback: "My Teams…"),
+                           value: "\(settings.followed.count)", isFocused: focused == 3, action: onTeams)
+                .focused($focused, equals: 3)
         }
         .padding(18)
         .frame(width: 720)
@@ -603,13 +605,15 @@ private struct SportsQuickMenu: View {
 /// Which leagues All Events shows, by sport (as Android's Leagues dialog),
 /// as Nuvio's settings sheets (as its AI Subtitles sheet): a row per sport that
 /// opens and closes (how many of its leagues are on), and under an open
-/// one each league with its logo and a switch. Only open sports' rows are
-/// made, so the list stays short and scrolls smoothly; logos are asked for
-/// as rows come into view.
+/// one each league with its logo and a switch; football by country first.
+/// Only open rows' leagues are made, so the list stays short and scrolls
+/// smoothly; logos are asked for as rows come into view, kept in the app's
+/// image cache.
 struct SportsLeaguesPicker: View {
     @ObservedObject private var settings = SportsSettings.shared
     @Environment(\.dismiss) private var dismiss
     @State private var open: Set<Sport> = []
+    @State private var openAreas: Set<String> = []
 
     var body: some View {
         let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
@@ -621,14 +625,34 @@ struct SportsLeaguesPicker: View {
         ) {
             ForEach(sports, id: \.self) { sport in
                 let list = leagues.filter { $0.sport == sport }
-                SportsSportRow(sport: sport, on: list.filter(settings.isShown).count, total: list.count,
-                               isOpen: open.contains(sport)) {
-                    if open.contains(sport) { open.remove(sport) } else { open.insert(sport) }
+                SportsGroupRow(title: sport.label, subtitle: count(list), isOpen: open.contains(sport),
+                               action: { if open.contains(sport) { open.remove(sport) } else { open.insert(sport) } }) {
+                    Text(sport.icon).font(.system(size: 30))
                 }
                 if open.contains(sport) {
-                    ForEach(list) { league in
-                        SportsLeagueRow(league: league)
+                    if sport == .football {
+                        // Football by country (yours first), then its leagues.
+                        ForEach(SportsTeams.orderedAreas(Set(list.map(SportsTeams.footballArea)), country: settings.footballCountry),
+                                id: \.self) { area in
+                            let inArea = list.filter { SportsTeams.footballArea($0) == area }
+                            let info = SportsTeams.areaName(area)
+                            SportsGroupRow(title: info.name, subtitle: count(inArea), isOpen: openAreas.contains(area),
+                                           action: { if openAreas.contains(area) { openAreas.remove(area) } else { openAreas.insert(area) } }) {
+                                Text(info.flag).font(.system(size: 30))
+                            }
                             .padding(.leading, 40)
+                            if openAreas.contains(area) {
+                                ForEach(inArea) { league in
+                                    SportsLeagueRow(league: league)
+                                        .padding(.leading, 80)
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(list) { league in
+                            SportsLeagueRow(league: league)
+                                .padding(.leading, 40)
+                        }
                     }
                 }
             }
@@ -638,36 +662,17 @@ struct SportsLeaguesPicker: View {
             if open.isEmpty, let first = sports.first(where: { sport in leagues.contains { $0.sport == sport && settings.isShown($0) } }) {
                 open = [first]
             }
+            // Your own country's football starts open.
+            if openAreas.isEmpty, let own = SportsCatalog.espnCountry[settings.footballCountry.uppercased()] {
+                openAreas = [own]
+            }
         }
         .onExitCommand { dismiss() }
     }
-}
 
-/// A sport's row: opens and closes its leagues.
-private struct SportsSportRow: View {
-    let sport: Sport
-    let on: Int
-    let total: Int
-    let isOpen: Bool
-    let action: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Button(action: action) {
-            LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
-                Text(sport.icon).font(.system(size: 30)).frame(width: 46)
-                LiveTVSettingsRows.rowText(
-                    title: sport.label,
-                    subtitle: L10n.format("livetv_sports_leagues_count_format", fallback: "%d of %d leagues on", on, total))
-                Spacer(minLength: 24)
-                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(LiveTVTheme.accent)
-            }
-        }
-        .buttonStyle(PosterCardButtonStyle())
-        .focused($focused)
-        .focusEffectDisabledIfAvailable()
+    /// "5 of 130 leagues on".
+    private func count(_ list: [League]) -> String {
+        L10n.format("livetv_sports_leagues_count_format", fallback: "%d of %d leagues on", list.filter(settings.isShown).count, list.count)
     }
 }
 
@@ -745,13 +750,7 @@ struct SportsLeagueLogo: View {
     var body: some View {
         Group {
             if let url = ((logo?.isEmpty == false ? logo : nil) ?? league.logo).flatMap(URL.init(string:)) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().aspectRatio(contentMode: .fit)
-                    } else {
-                        badge
-                    }
-                }
+                SportsImage(url: url) { badge }
             } else {
                 badge
             }
@@ -805,7 +804,7 @@ struct SportsMatchup: View {
     let hideScores: Bool
     let width: CGFloat
     var logoSize: CGFloat = 110
-    /// A star under each team, to follow it (the game's page).
+    /// A star on each team's logo, to follow it (the game's page).
     var follow = false
 
     var body: some View {
@@ -834,6 +833,12 @@ struct SportsMatchup: View {
     private func column(_ side: SportsSide, dim: Bool) -> some View {
         VStack(spacing: 10) {
             SportsTeamLogo(team: side.team, size: logoSize)
+                .overlay(alignment: .topTrailing) {
+                    if follow {
+                        SportsFollowStar(team: side.team, size: 50)
+                            .offset(x: 34, y: -8)
+                    }
+                }
             Text(side.team.fullName.isEmpty ? side.team.name : side.team.fullName)
                 .font(.system(size: 24 * max(1, logoSize / 110 * 0.9), weight: .bold))
                 .multilineTextAlignment(.center)
@@ -841,9 +846,6 @@ struct SportsMatchup: View {
                 .minimumScaleFactor(0.8)
             if let record = side.record ?? side.team.record {
                 Text(record).font(.system(size: 18)).foregroundColor(.white.opacity(0.6))
-            }
-            if follow {
-                SportsFollowStar(team: side.team)
             }
         }
         .frame(width: max((width - 200 * logoSize / 110) / 2, 100))

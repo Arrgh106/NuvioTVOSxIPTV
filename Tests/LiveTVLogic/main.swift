@@ -1043,5 +1043,38 @@ check(table?.kind == .table && table?.groups.first?.rows.first?.name == "Bayern 
 check(table?.find("124")?.row.zone?.color == 0xFF81D6AC && table?.columns.map(\.key).contains("points") == true, "standings: zone colour and columns")
 check(table?.around(["124"]).rows.last?.mine == true, "standings: mini table marks the game's team")
 
+// Teams: season, leaders, top scorers, football by country (17d)
+let schedSeason = SportsTeams.scheduleSeason(Data(#"{"season":{"year":2026,"type":14358}}"#.utf8))
+check(schedSeason?.year == 2026 && schedSeason?.type == 14358, "teams: the schedule's season")
+check(SportsTeams.leadersURL(bundesliga, teamID: "124", year: 2026, type: 14358)?.absoluteString
+      == "https://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/types/1/teams/124/leaders",
+      "teams: football's leaders are of type 1")
+let leadersJSON = """
+{"categories":[
+ {"name":"goalsLeaders","displayName":"Goals","leaders":[{"value":5.0,"athlete":{"$ref":"http://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/athletes/281122"}}]},
+ {"name":"assistsLeaders","displayName":"Assists","leaders":[{"value":2.0,"athlete":{"$ref":"http://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/athletes/324820"}}]},
+ {"name":"goals","displayName":"Goals","leaders":[{"value":5.0,"athlete":{"$ref":"http://x/1"}}]},
+ {"name":"saves","displayName":"Saves","leaders":[{"value":28.0,"athlete":{"$ref":"http://x/2"}}]}]}
+"""
+let picks = SportsTeams.parseLeaders(Data(leadersJSON.utf8))
+check(picks.map(\.category) == ["Goals", "Assists"] && picks.first?.value == "5", "teams: goals and assists, each once")
+check(picks.first?.athleteURL.absoluteString.hasPrefix("https://") == true, "teams: the player asked over https")
+let athleteJSON = #"{"displayName":"Felix Nmecha","jersey":"8","flag":{"href":"https://a.espncdn.com/i/teamlogos/countries/500/ger.png"}}"#
+let topScorer = picks.first.flatMap { SportsTeams.leader($0, athlete: Data(athleteJSON.utf8)) }
+check(topScorer?.name == "Felix Nmecha" && topScorer?.jersey == "8" && topScorer?.headshot == nil && topScorer?.flag != nil,
+      "teams: the player's name, number and flag")
+check(SportsTeams.format(27.25) == "27.2" || SportsTeams.format(27.25) == "27.3", "teams: one decimal")
+let seasonGoals: [[SportsScoringPlay]] = [
+    [SportsScoringPlay(clock: "10'", team: "MSV Duisburg", text: "Tim Müller", awayScore: nil, homeScore: nil),
+     SportsScoringPlay(clock: "50'", team: "MSV Duisburg", text: "Tim Müller (pen.)", awayScore: nil, homeScore: nil)],
+    [SportsScoringPlay(clock: "20'", team: "MSV Duisburg", text: "Jan Ober (o.g.)", awayScore: nil, homeScore: nil),
+     SportsScoringPlay(clock: "30'", team: "Rot-Weiss Essen", text: "Ahmet Arslan", awayScore: nil, homeScore: nil)],
+]
+let duisburgTop = SportsTeams.openLigaScorers(team: "MSV Duisburg", goals: seasonGoals)
+check(duisburgTop.first?.name == "Tim Müller" && duisburgTop.first?.value == "2", "teams: 3. Liga top scorer, penalties count, own goals don't")
+check(SportsTeams.footballArea(liga3) == "ger" && SportsTeams.footballArea(bundesliga) == "ger", "teams: the 3. Liga is Germany's")
+let areaOrder = SportsTeams.orderedAreas(["eng", "uefa", "ger", "fifa", "esp"], country: "DE")
+check(areaOrder == ["ger", "uefa", "fifa", "eng", "esp"], "teams: your country, the confederations, then A to Z")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -81,6 +81,10 @@ final class SportsSettings: ObservableObject {
 
     var effectiveRegion: String { region.isEmpty ? SportsCatalog.region(ofCountry: Self.country) : region }
 
+    /// Whose football comes first: the region when it's a country, else the
+    /// Apple TV's.
+    var footballCountry: String { SportsCatalog.isCountry(region) ? region : Self.country }
+
     func isShown(_ league: League) -> Bool {
         SportsCatalog.shown(league, region: effectiveRegion, country: Self.country, changed: changedLeagues)
     }
@@ -164,6 +168,11 @@ final class SportsStore: ObservableObject {
     @Published private(set) var noTable: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: SportsStore.noTableKey) ?? [])
     private static let noTableKey = "livetv.sports.noTable"
+    /// A team's top players (by team key): the Tables page's team panel.
+    @Published private(set) var teamLeaders: [String: [SportsTeamLeader]] = [:]
+    private var teamAt: [String: Date] = [:]
+    private var teamLoading: Set<String> = []
+    private var standingsLoading: Set<String> = []
 
     struct Board: Codable {
         var fetchedAt: Date
@@ -385,24 +394,73 @@ final class SportsStore: ObservableObject {
 
     // MARK: Teams you follow (17d)
 
-    /// A team's schedule from ESPN (football: its results and its coming
-    /// games, two requests), kept an hour (30 s with a game on).
+    /// The followed teams' schedules from ESPN, all at once (football:
+    /// its results and its coming games, two requests side by side), kept
+    /// an hour (30 s with a game on).
     private func refreshSchedules(now: Date) async {
-        for team in SportsSettings.shared.followed {
-            guard let league = SportsCatalog.league(team.leagueId), league.onESPN, let path = league.espnPath else { continue }
-            if let board = schedules[team.key],
-               now.timeIntervalSince(board.fetchedAt) < (Self.busy(board.events, now: now) ? 30 : 3600) { continue }
-            var events: [SportsEvent] = []
-            let variants = league.sport == .football ? ["", "?fixture=true"] : [""]
-            for variant in variants {
-                guard let url = URL(string: "https://site.api.espn.com/apis/site/v2/sports/\(path)/teams/\(team.id)/schedule\(variant)"),
-                      let data = await Self.fetch(url) else { continue }
-                events += SportsESPN.parseSchedule(league, data: data)
-            }
-            if !events.isEmpty || schedules[team.key] == nil {
-                schedules[team.key] = Board(fetchedAt: Date(), events: events)
+        let due = SportsSettings.shared.followed.filter { team in
+            guard let board = schedules[team.key] else { return true }
+            return now.timeIntervalSince(board.fetchedAt) >= (Self.busy(board.events, now: now) ? 30 : 3600)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for team in due {
+                group.addTask { _ = await self.refreshSchedule(team) }
             }
         }
+    }
+
+    /// One team's schedule; its season comes back too (for its leaders).
+    @discardableResult
+    private func refreshSchedule(_ team: TeamInfo) async -> (year: Int, type: Int)? {
+        guard let league = SportsCatalog.league(team.leagueId), league.onESPN, let path = league.espnPath else { return nil }
+        let variants = league.sport == .football ? ["", "?fixture=true"] : [""]
+        let urls = variants.compactMap {
+            URL(string: "https://site.api.espn.com/apis/site/v2/sports/\(path)/teams/\(team.id)/schedule\($0)")
+        }
+        var answers: [Data] = []
+        await withTaskGroup(of: Data?.self) { group in
+            for url in urls { group.addTask { await Self.fetch(url) } }
+            for await data in group { if let data { answers.append(data) } }
+        }
+        let events = answers.flatMap { SportsESPN.parseSchedule(league, data: $0) }
+        if !events.isEmpty || schedules[team.key] == nil {
+            schedules[team.key] = Board(fetchedAt: Date(), events: events)
+        }
+        return answers.lazy.compactMap { SportsTeams.scheduleSeason($0) }.first
+    }
+
+    /// A team shown in the Tables page's panel: its games (any team, not
+    /// only the ones you follow) and its top players with their pictures,
+    /// all asked side by side; kept an hour.
+    func loadTeam(_ team: TeamInfo) async {
+        guard let league = SportsCatalog.league(team.leagueId), !teamLoading.contains(team.key) else { return }
+        if let at = teamAt[team.key], Date().timeIntervalSince(at) < 3600 { return }
+        teamLoading.insert(team.key)
+        defer { teamLoading.remove(team.key) }
+        if league.onOpenLiga {
+            // The season in one request: games and goals.
+            let key = league.id + "|S\(SportsOpenLiga.season(Date()))"
+            if boards[key] == nil, let data = await Self.fetchBoard(league, key: key) { store(league, key: key, data: data) }
+            teamLeaders[team.key] = SportsTeams.openLigaScorers(team: team.name, goals: Array(openLigaGoals.values))
+            teamAt[team.key] = Date()
+            return
+        }
+        guard let season = await refreshSchedule(team) else { return }
+        teamAt[team.key] = Date()
+        guard let url = SportsTeams.leadersURL(league, teamID: team.id, year: season.year, type: season.type),
+              let data = await Self.fetch(url) else { return }
+        let picks = SportsTeams.parseLeaders(data)
+        var found: [Int: SportsTeamLeader] = [:]
+        await withTaskGroup(of: (Int, SportsTeamLeader?).self) { group in
+            for (index, pick) in picks.enumerated() {
+                group.addTask {
+                    guard let data = await Self.fetch(pick.athleteURL) else { return (index, nil) }
+                    return (index, SportsTeams.leader(pick, athlete: data))
+                }
+            }
+            for await (index, leader) in group { if let leader { found[index] = leader } }
+        }
+        teamLeaders[team.key] = found.keys.sorted().compactMap { found[$0] }
     }
 
     /// A followed team's games: the latest copy of each (a day's board
@@ -418,6 +476,14 @@ final class SportsStore: ObservableObject {
         return byID.values
             .map { SportsStale.fix($0, sport: SportsCatalog.league($0.leagueId)?.sport, now: now) }
             .sorted { $0.start < $1.start }
+    }
+
+    /// Several tables side by side (the Tables page: every league's at
+    /// once, so a cup without one is known before it's chosen).
+    func loadStandings(_ leagues: [League]) async {
+        await withTaskGroup(of: Void.self) { group in
+            for league in leagues { group.addTask { _ = await self.loadStandings(league) } }
+        }
     }
 
     /// The teams you follow: their schedules asked now.
@@ -439,6 +505,10 @@ final class SportsStore: ObservableObject {
     @discardableResult
     func loadStandings(_ league: League) async -> SportsStandings? {
         if let at = standingsAt[league.id], Date().timeIntervalSince(at) < 3600, let kept = standings[league.id] { return kept }
+        // Asked already: its answer lands in `standings`.
+        guard !standingsLoading.contains(league.id) else { return standings[league.id] }
+        standingsLoading.insert(league.id)
+        defer { standingsLoading.remove(league.id) }
         let table: SportsStandings?
         if league.onOpenLiga {
             guard let url = SportsOpenLiga.tableURL(league, season: SportsOpenLiga.season(Date())),
