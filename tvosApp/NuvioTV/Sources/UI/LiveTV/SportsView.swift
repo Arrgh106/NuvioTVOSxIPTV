@@ -13,6 +13,8 @@ struct SportsView: View {
     @State private var focusedID: String?
     @State private var showsQuickMenu = false
     @State private var showsLeagues = false
+    /// The game page open (17c).
+    @State private var openGame: SportsGameID?
     /// Redrawn every 30 s (clocks, time bars, Today).
     @State private var tick = Date()
 
@@ -73,6 +75,7 @@ struct SportsView: View {
         }
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
         .fullScreenCover(isPresented: $showsLeagues) { SportsLeaguesPicker() }
+        .fullScreenCover(item: $openGame) { game in SportsGamePage(eventID: game.id) }
         .onAppear {
             settings.reload()
             store.setVisible(true)
@@ -209,7 +212,8 @@ struct SportsView: View {
                                 ForEach(item.events) { event in
                                     SportsGameCard(event: event, league: item.league, width: Self.cardWidth,
                                                    hideScores: settings.hideScores, now: tick,
-                                                   onFocus: { focusedID = event.id })
+                                                   onFocus: { focusedID = event.id },
+                                                   onOpen: { openGame = SportsGameID(id: event.id) })
                                 }
                             }
                         }
@@ -285,7 +289,7 @@ struct SportsView: View {
                     if event.state == .live { SportsLiveBadge() }
                 }
                 if event.sides.count == 2 {
-                    matchup(event, league: league, width: width)
+                    SportsMatchup(event: event, league: league, hideScores: settings.hideScores, width: width)
                 } else {
                     Text(event.title)
                         .font(.system(size: 40, weight: .bold))
@@ -313,79 +317,10 @@ struct SportsView: View {
                         .lineLimit(2)
                 }
                 if !settings.hideScores, event.state != .pre {
-                    periodTable(event, league: league)
+                    SportsPeriodTable(event: event, league: league)
                 }
             }
             .frame(width: width, alignment: .topLeading)
-        }
-    }
-
-    /// The two teams big: logo, name, record, and the score between them.
-    private func matchup(_ event: SportsEvent, league: League, width: CGFloat) -> some View {
-        let sides = event.ordered(league.sport)
-        let showScore = event.hasScore && !settings.hideScores
-        return HStack(alignment: .center, spacing: 20) {
-            teamColumn(sides[0], width: (width - 200) / 2, dim: showScore && event.state == .post && !sides[0].winner && sides[1].winner)
-            VStack(spacing: 6) {
-                if showScore {
-                    Text("\(sides[0].score ?? "") – \(sides[1].score ?? "")")
-                        .font(.system(size: 56, weight: .heavy))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                } else {
-                    Text(event.state == .pre ? (event.hasTime ? Self.clock(event.start) : "VS") : "VS")
-                        .font(.system(size: 44, weight: .heavy))
-                }
-            }
-            .frame(width: 160)
-            teamColumn(sides[1], width: (width - 200) / 2, dim: showScore && event.state == .post && !sides[1].winner && sides[0].winner)
-        }
-        .frame(width: width)
-    }
-
-    private func teamColumn(_ side: SportsSide, width: CGFloat, dim: Bool) -> some View {
-        VStack(spacing: 10) {
-            SportsTeamLogo(team: side.team, size: 110)
-            Text(side.team.fullName.isEmpty ? side.team.name : side.team.fullName)
-                .font(.system(size: 24, weight: .bold))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.8)
-            if let record = side.record ?? side.team.record {
-                Text(record).font(.system(size: 18)).foregroundColor(.white.opacity(0.6))
-            }
-        }
-        .frame(width: max(width, 100))
-        .opacity(dim ? 0.55 : 1)
-    }
-
-    /// Score per period, when the feed has it.
-    @ViewBuilder
-    private func periodTable(_ event: SportsEvent, league: League) -> some View {
-        let sides = event.ordered(league.sport)
-        let count = sides.map(\.periods.count).max() ?? 0
-        if sides.count == 2, count > 1, count <= 12 {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
-                    HStack(spacing: 0) {
-                        Text(side.team.abbr.isEmpty ? side.team.name : side.team.abbr)
-                            .font(.system(size: 20, weight: .bold))
-                            .frame(width: 90, alignment: .leading)
-                        ForEach(0..<count, id: \.self) { index in
-                            Text(index < side.periods.count ? side.periods[index] : "")
-                                .font(.system(size: 20))
-                                .monospacedDigit()
-                                .frame(width: 44)
-                        }
-                        Text(side.score ?? "")
-                            .font(.system(size: 20, weight: .heavy))
-                            .monospacedDigit()
-                            .frame(width: 60)
-                    }
-                }
-            }
-            .padding(.top, 6)
         }
     }
 
@@ -418,11 +353,12 @@ private struct SportsGameCard: View {
     let hideScores: Bool
     let now: Date
     let onFocus: () -> Void
+    let onOpen: () -> Void
 
     @FocusState private var focused: Bool
 
     var body: some View {
-        Button(action: {}) {
+        Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     if event.state == .live { SportsLiveBadge() }
@@ -489,7 +425,8 @@ private struct SportsGameCard: View {
     }
 
     private func band(_ side: SportsSide) -> some View {
-        let color = Color(sportsARGB: side.team.color ?? side.team.altColor ?? 0xFF333A45)
+        let argb = side.team.color ?? side.team.altColor ?? 0xFF333A45
+        let color = Color(sportsARGB: argb)
         let showScore = event.hasScore && !hideScores
         let lost = showScore && event.state == .post && !side.winner && event.sides.contains { $0.winner }
         return HStack(spacing: 12) {
@@ -505,10 +442,11 @@ private struct SportsGameCard: View {
                     .monospacedDigit()
             }
         }
+        .foregroundColor(SportsColors.isLight(argb) ? .black : .white)
         .padding(.horizontal, 14)
         .frame(height: 56)
         .background(
-            LinearGradient(colors: [color.opacity(0.95), color.opacity(0.45)], startPoint: .leading, endPoint: .trailing))
+            LinearGradient(colors: [color, color.opacity(SportsColors.isLight(argb) ? 0.85 : 0.5)], startPoint: .leading, endPoint: .trailing))
         .opacity(lost ? 0.6 : 1)
     }
 }
@@ -553,7 +491,7 @@ struct SportsTeamLogo: View {
     }
 }
 
-private struct SportsLiveBadge: View {
+struct SportsLiveBadge: View {
     var body: some View {
         Text("LIVE")
             .font(.system(size: 14, weight: .heavy))
@@ -571,6 +509,7 @@ private struct SportsQuickMenu: View {
     let onClose: () -> Void
     @ObservedObject private var settings = SportsSettings.shared
     @FocusState private var focused: Int?
+    @State private var choosingRegion = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -587,11 +526,22 @@ private struct SportsQuickMenu: View {
                                              SportsCatalog.regionName(settings.effectiveRegion))
                                : SportsCatalog.regionName(settings.region),
                            isFocused: focused == 1) {
-                let codes = [""] + SportsCatalog.regions.map(\.code)
-                let index = codes.firstIndex(of: settings.region) ?? 0
-                settings.region = codes[(index + 1) % codes.count]
+                choosingRegion = true
             }
             .focused($focused, equals: 1)
+            .confirmationDialog(L10n.string("livetv_sports_region", fallback: "Your Region"), isPresented: $choosingRegion,
+                                titleVisibility: .visible) {
+                Button(L10n.format("livetv_settings_calendar_zone_device", fallback: "Apple TV: %@",
+                                   SportsCatalog.regionName(SportsCatalog.region(ofCountry: SportsSettings.country)))) {
+                    settings.region = ""
+                }
+                ForEach(SportsCatalog.regions, id: \.code) { region in
+                    Button(region.name) { settings.region = region.code }
+                }
+                Button(L10n.string("cancel", fallback: "Cancel"), role: .cancel) {}
+            } message: {
+                Text(L10n.string("livetv_sports_region_detail", fallback: "Which leagues are on at first (your own country's football is always on)."))
+            }
             LiveTVQuickRow(title: L10n.string("livetv_sports_leagues", fallback: "Leagues…"),
                            value: "\(settings.shownLeagues.count)", isFocused: focused == 2, action: onLeagues)
                 .focused($focused, equals: 2)
@@ -665,5 +615,100 @@ extension Color {
                   green: Double((argb >> 8) & 0xFF) / 255,
                   blue: Double(argb & 0xFF) / 255,
                   opacity: Double((argb >> 24) & 0xFF) / 255)
+    }
+}
+
+/// A game page to open (by the game's id).
+struct SportsGameID: Identifiable, Hashable {
+    let id: String
+}
+
+enum SportsColors {
+    /// Light enough for dark text on it (white, yellow, light blue).
+    static func isLight(_ argb: UInt32) -> Bool {
+        let r = Double((argb >> 16) & 0xFF), g = Double((argb >> 8) & 0xFF), b = Double(argb & 0xFF)
+        return 0.299 * r + 0.587 * g + 0.114 * b > 170
+    }
+}
+
+/// The two teams big: logo, name, record, and the score (or kick-off)
+/// between them.
+struct SportsMatchup: View {
+    let event: SportsEvent
+    let league: League
+    let hideScores: Bool
+    let width: CGFloat
+    var logoSize: CGFloat = 110
+
+    var body: some View {
+        let sides = event.ordered(league.sport)
+        let showScore = event.hasScore && !hideScores
+        HStack(alignment: .center, spacing: 20) {
+            column(sides[0], dim: showScore && event.state == .post && !sides[0].winner && sides[1].winner)
+            Group {
+                if showScore {
+                    Text("\(sides[0].score ?? "") – \(sides[1].score ?? "")")
+                        .font(.system(size: logoSize * 0.5, weight: .heavy))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                } else {
+                    Text(event.state == .pre && event.hasTime ? SportsView.clock(event.start) : "VS")
+                        .font(.system(size: logoSize * 0.4, weight: .heavy))
+                }
+            }
+            .frame(width: 160 * logoSize / 110)
+            column(sides[1], dim: showScore && event.state == .post && !sides[1].winner && sides[0].winner)
+        }
+        .frame(width: width)
+    }
+
+    private func column(_ side: SportsSide, dim: Bool) -> some View {
+        VStack(spacing: 10) {
+            SportsTeamLogo(team: side.team, size: logoSize)
+            Text(side.team.fullName.isEmpty ? side.team.name : side.team.fullName)
+                .font(.system(size: 24 * max(1, logoSize / 110 * 0.9), weight: .bold))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+            if let record = side.record ?? side.team.record {
+                Text(record).font(.system(size: 18)).foregroundColor(.white.opacity(0.6))
+            }
+        }
+        .frame(width: max((width - 200 * logoSize / 110) / 2, 100))
+        .opacity(dim ? 0.55 : 1)
+    }
+}
+
+/// Score per period, when the feed has it.
+struct SportsPeriodTable: View {
+    let event: SportsEvent
+    let league: League
+
+    var body: some View {
+        let sides = event.ordered(league.sport)
+        let count = sides.map(\.periods.count).max() ?? 0
+        if sides.count == 2, count > 1, count <= 12 {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
+                    HStack(spacing: 0) {
+                        Text(side.team.abbr.isEmpty ? side.team.name : side.team.abbr)
+                            .font(.system(size: 20, weight: .bold))
+                            .frame(width: 90, alignment: .leading)
+                        ForEach(0..<count, id: \.self) { index in
+                            Text(index < side.periods.count ? side.periods[index] : "")
+                                .font(.system(size: 20))
+                                .monospacedDigit()
+                                .frame(width: 44)
+                        }
+                        Text(side.score ?? "")
+                            .font(.system(size: 20, weight: .heavy))
+                            .monospacedDigit()
+                            .frame(width: 60)
+                    }
+                }
+            }
+            .padding(.top, 6)
+        }
     }
 }

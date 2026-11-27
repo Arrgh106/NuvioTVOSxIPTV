@@ -979,5 +979,26 @@ check(changed == ["soccer/ger.1"] && !SportsCatalog.shown(bundesliga, region: "O
 let stale = SportsStale.fix(games[0], sport: .football, now: games[0].start.addingTimeInterval(6 * 3600))
 check(stale.state == .post && stale.home?.score == nil, "sports: an old live copy is over")
 
+// MARK: Sports (step 17c): a game's summary
+
+let summaryJSON = """
+{"keyEvents":[{"type":{"text":"Goal"},"clock":{"displayValue":"12'"},"team":{"displayName":"Dortmund"},"text":"Goal! Dortmund 1, Bayern 0."},
+              {"type":{"text":"Yellow Card"},"clock":{"displayValue":"30'"}},
+              {"type":{"text":"Goal - Missed"},"clock":{"displayValue":"40'"}}],
+ "boxscore":{"teams":[{"homeAway":"away","team":{"id":"132"},"statistics":[{"name":"possessionPct","label":"Possession","displayValue":"58.1"},{"name":"totalShots","label":"Shots","displayValue":"12"}]},
+                      {"homeAway":"home","team":{"id":"124"},"statistics":[{"name":"possessionPct","label":"Possession","displayValue":"41.9"},{"name":"totalShots","label":"Shots","displayValue":"9"}]}]},
+ "lastFiveGames":[{"team":{"id":"124"},"events":[{"gameResult":"W"},{"gameResult":"D"},{"gameResult":"L"}]}],
+ "gameInfo":{"venue":{"fullName":"Signal Iduna Park","address":{"city":"Dortmund","country":"Germany"}},"attendance":81365,
+             "officials":[{"displayName":"Felix Zwayer","position":{"name":"Referee"}}]},
+ "predictor":{"homeTeam":{"gameProjection":"40.1"},"awayTeam":{"gameProjection":"35.2"}}}
+"""
+let extras = SportsSummary.parse(Data(summaryJSON.utf8), event: games[0], sport: .football)
+check(extras.plays.count == 1 && extras.plays.first?.clock == "12'", "summary: goals only (no cards, no misses)")
+check(extras.stats.first?.label == "POSSESSION" && extras.stats.first?.home == "41.9" && extras.stats.first?.awayValue == 58.1, "summary: stats home and away")
+check(extras.form.first?.results == ["L", "D", "W"] && extras.form.first?.team == "Dortmund", "summary: form newest last")
+check(extras.venue == "Signal Iduna Park" && extras.city == "Dortmund, Germany" && extras.referee == "Felix Zwayer" && extras.attendance == 81365, "summary: match info")
+check(extras.homeWin == 40.1 && extras.awayWin == 35.2 && abs((extras.draw ?? 0) - 24.7) < 0.01, "summary: chances with the draw")
+check(SportsSummary.number("24:12") == 1452 && SportsSummary.number("4-11") == 4 && SportsSummary.number("54.2%") == 54.2, "summary: numbers for the bars")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

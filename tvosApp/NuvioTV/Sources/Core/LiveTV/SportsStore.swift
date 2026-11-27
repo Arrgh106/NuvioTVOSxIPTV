@@ -234,6 +234,47 @@ final class SportsStore: ObservableObject {
 
     nonisolated private static func fetch(_ league: League, day: String) async -> Data? {
         guard let url = SportsESPN.scoreboardURL(league, day: day) else { return nil }
+        return await fetch(url)
+    }
+
+    // MARK: A game's page (17c)
+
+    private var summaries: [String: (at: Date, extras: SportsGameExtras)] = [:]
+
+    /// A game as the latest board has it.
+    func event(id: String) -> SportsEvent? {
+        for board in boards.values {
+            if let event = board.events.first(where: { $0.id == id }) {
+                return SportsStale.fix(event, sport: SportsCatalog.league(event.leagueId)?.sport, now: Date())
+            }
+        }
+        return nil
+    }
+
+    /// The summary of a game (scoring, stats, leaders, line-ups, table,
+    /// info, chances): kept 25 s while it's on, 30 minutes otherwise (as
+    /// Android's).
+    func extras(for event: SportsEvent) async -> SportsGameExtras? {
+        guard let espnId = event.espnId, let league = SportsCatalog.league(event.leagueId),
+              let url = SportsSummary.url(league, espnId: espnId) else { return nil }
+        let maxAge: TimeInterval = event.state == .live ? 25 : 30 * 60
+        if let kept = summaries[event.id], Date().timeIntervalSince(kept.at) < maxAge { return kept.extras }
+        guard let data = await Self.fetch(url) else { return summaries[event.id]?.extras }
+        let extras = SportsSummary.parse(data, event: event, sport: league.sport)
+        if summaries.count > 50 { summaries.removeAll() }
+        summaries[event.id] = (Date(), extras)
+        return extras
+    }
+
+    /// A game's league asked again now (its page, while it's on).
+    func refreshGame(_ event: SportsEvent) async {
+        guard let league = SportsCatalog.league(event.leagueId) else { return }
+        let day = SportsESPN.espnDay(event.start)
+        guard let data = await Self.fetch(league, day: day) else { return }
+        boards[league.id + "|" + day] = Board(fetchedAt: Date(), events: SportsESPN.parseScoreboard(league, data: data))
+    }
+
+    nonisolated private static func fetch(_ url: URL) async -> Data? {
         var request = URLRequest(url: url)
         // As Android: a desktop browser's name (ESPN answers it best).
         request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
