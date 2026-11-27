@@ -941,5 +941,265 @@ let guideHits = LiveTVCalendarGuideMatch.match(
     })
 check(guideHits["ep"]?.channelID == 2 && guideHits["ep"]?.others == 1, "guide: the network's channel first, not a rerun hours later")
 
+// MARK: Sports (step 17a): ESPN's scoreboard
+
+let espnJSON = """
+{"leagues":[{"logos":[{"href":"https://a.espncdn.com/l.png","rel":["full","default"]},{"href":"https://a.espncdn.com/d.png","rel":["full","dark"]}]}],
+ "events":[{"id":"401","date":"2026-11-27T19:30Z","name":"Bayern at Dortmund",
+  "competitions":[{"status":{"period":2,"clock":4020,"displayClock":"67'","type":{"state":"in","name":"STATUS_SECOND_HALF","shortDetail":"67'"}},
+   "venue":{"fullName":"Signal Iduna Park"},
+   "broadcasts":[{"market":"home","names":["Sky"]},{"market":"national","names":["DAZN","ESPN App"]}],
+   "competitors":[
+    {"homeAway":"home","score":"2","winner":false,"team":{"id":"124","displayName":"Borussia Dortmund","shortDisplayName":"Dortmund","abbreviation":"BVB","color":"fde100","logo":"https://a.espncdn.com/bvb.png"},
+     "linescores":[{"value":1},{"value":1}]},
+    {"homeAway":"away","score":"1","team":{"id":"132","displayName":"Bayern Munich","shortDisplayName":"Bayern","abbreviation":"FCB","color":"#dc052d"}}]}]},
+  {"id":"402","date":"2026-11-28T14:30Z","competitions":[{"status":{"type":{"state":"pre","name":"STATUS_SCHEDULED"}},
+   "competitors":[{"homeAway":"home","score":"0","team":{"id":"1","displayName":"A"}},{"homeAway":"away","score":"0","team":{"id":"2","displayName":"B"}}]}]},
+  {"id":"403","date":"2026-11-28T14:30Z","competitions":[{"status":{"type":{"state":"post","name":"STATUS_POSTPONED","description":"Postponed"}},
+   "competitors":[{"homeAway":"home","team":{"id":"1","displayName":"A"}},{"homeAway":"away","team":{"id":"2","displayName":"B"}}]}]}]}
+"""
+let bundesliga = SportsCatalog.league("soccer/ger.1")!
+let games = SportsESPN.parseScoreboard(bundesliga, data: Data(espnJSON.utf8))
+check(games.count == 3, "sports: three games")
+check(games.first?.state == .live && games.first?.status == "67'", "sports: live with its minute")
+check(games.first?.title == "Dortmund v Bayern", "sports: football says home v away")
+check(games.first?.broadcasts == ["DAZN", "ESPN App", "Sky"], "sports: national first (apps after its channels), then the home team's")
+check(games.first?.home?.team.color == 0xFFFDE100 && games.first?.away?.team.color == 0xFFDC052D, "sports: team colours")
+check(games.first?.home?.periods == ["1", "1"] && games.first?.hasScore == true, "sports: score and halves")
+check(abs((games.first?.progress ?? 0) - 67.0 / 90) < 0.01, "sports: time bar from the minute")
+check(games[1].state == .pre && games[1].home?.score == nil, "sports: no score before kick-off")
+check(games.first?.venue == "Signal Iduna Park", "sports: venue")
+check(games[2].state == .off && games[2].status == "Postponed", "sports: postponed")
+check(SportsESPN.leagueLogo(Data(espnJSON.utf8)) == "https://a.espncdn.com/d.png", "sports: league logo for dark")
+check(SportsESPN.clockLast("4:12 - 3rd") == "3rd · 4:12", "sports: clock last")
+check(SportsESPN.espnDay(Date(timeIntervalSince1970: 1_795_824_000)) == "20261127", "sports: ESPN day in New York")
+check(SportsCatalog.inRegion(SportsCatalog.league("soccer/ger.2")!, region: "OTHER", country: "DE"), "sports: your country's leagues")
+check(!SportsCatalog.inRegion(SportsCatalog.league("soccer/ger.2")!, region: "OTHER", country: "FR"), "sports: not another country's")
+check(SportsCatalog.league("racing/nascar-premier")?.logo?.hasPrefix("https://") == true, "sports: a league ESPN has no logo for gets Wikipedia's")
+check(SportsCatalog.league("soccer/ger.1")?.logo == nil, "sports: ESPN's leagues keep ESPN's logo")
+let changed = SportsCatalog.toggled(bundesliga, region: "OTHER", country: "DE", changed: [])
+check(changed == ["soccer/ger.1"] && !SportsCatalog.shown(bundesliga, region: "OTHER", country: "DE", changed: changed), "sports: league off")
+let stale = SportsStale.fix(games[0], sport: .football, now: games[0].start.addingTimeInterval(6 * 3600))
+check(stale.state == .post && stale.home?.score == nil, "sports: an old live copy is over")
+
+// MARK: Sports (step 17c): a game's summary
+
+let summaryJSON = """
+{"keyEvents":[{"type":{"text":"Goal"},"clock":{"displayValue":"12'"},"team":{"displayName":"Dortmund"},"text":"Goal! Dortmund 1, Bayern 0."},
+              {"type":{"text":"Yellow Card"},"clock":{"displayValue":"30'"}},
+              {"type":{"text":"Goal - Missed"},"clock":{"displayValue":"40'"}}],
+ "boxscore":{"teams":[{"homeAway":"away","team":{"id":"132"},"statistics":[{"name":"possessionPct","label":"Possession","displayValue":"58.1"},{"name":"totalShots","label":"Shots","displayValue":"12"}]},
+                      {"homeAway":"home","team":{"id":"124"},"statistics":[{"name":"possessionPct","label":"Possession","displayValue":"41.9"},{"name":"totalShots","label":"Shots","displayValue":"9"}]}]},
+ "lastFiveGames":[{"team":{"id":"124"},"events":[{"gameResult":"W"},{"gameResult":"D"},{"gameResult":"L"}]}],
+ "gameInfo":{"venue":{"fullName":"Signal Iduna Park","address":{"city":"Dortmund","country":"Germany"}},"attendance":81365,
+             "officials":[{"displayName":"Felix Zwayer","position":{"name":"Referee"}}]},
+ "predictor":{"homeTeam":{"gameProjection":"40.1"},"awayTeam":{"gameProjection":"35.2"}}}
+"""
+let extras = SportsSummary.parse(Data(summaryJSON.utf8), event: games[0], sport: .football)
+check(extras.plays.count == 1 && extras.plays.first?.clock == "12'", "summary: goals only (no cards, no misses)")
+check(extras.stats.first?.label == "POSSESSION" && extras.stats.first?.home == "41.9" && extras.stats.first?.awayValue == 58.1, "summary: stats home and away")
+check(extras.form.first?.results == ["L", "D", "W"] && extras.form.first?.team == "Dortmund", "summary: form newest last")
+check(extras.venue == "Signal Iduna Park" && extras.city == "Dortmund, Germany" && extras.referee == "Felix Zwayer" && extras.attendance == 81365, "summary: match info")
+check(extras.homeWin == 40.1 && extras.awayWin == 35.2 && abs((extras.draw ?? 0) - 24.7) < 0.01, "summary: chances with the draw")
+check(SportsSummary.number("24:12") == 1452 && SportsSummary.number("4-11") == 4 && SportsSummary.number("54.2%") == 54.2, "summary: numbers for the bars")
+
+// MARK: Sports (step 17d): 3. Liga, tables, regions
+
+let liga3 = SportsCatalog.league("openligadb/bl3")!
+check(SportsCatalog.inRegion(liga3, region: "DE", country: "US") && !SportsCatalog.inRegion(liga3, region: "OTHER", country: "FR"), "sports: the 3. Liga for Germany")
+check(SportsCatalog.region(ofCountry: "DE") == "DE" && SportsCatalog.region(ofCountry: "GB") == "UK", "sports: Germany is a region")
+check(SportsCatalog.inRegion(SportsCatalog.league("soccer/uefa.champions")!, region: "DE", country: "US"), "sports: a country gets what's on everywhere else")
+check(SportsCatalog.all.firstIndex { $0.id == "openligadb/bl3" } == (SportsCatalog.all.firstIndex { $0.id == "soccer/ger.2" } ?? -9) + 1, "sports: 3. Liga after the 2. Bundesliga")
+let ligaJSON = """
+[{"matchID":1,"matchDateTimeUTC":"2026-11-22T18:30:00Z","matchIsFinished":true,"group":{"groupName":"14. Spieltag"},
+  "team1":{"teamId":107,"teamName":"MSV Duisburg","shortName":"Duisburg","teamIconUrl":"https://upload.wikimedia.org/wikipedia/en/c/c8/Msv.svg"},
+  "team2":{"teamId":102,"teamName":"Hansa Rostock","shortName":"Rostock","teamIconUrl":"https://x/y.png"},
+  "matchResults":[{"resultTypeID":1,"pointsTeam1":0,"pointsTeam2":0},{"resultTypeID":2,"pointsTeam1":2,"pointsTeam2":0}],
+  "goals":[{"scoreTeam1":1,"scoreTeam2":0,"matchMinute":68,"goalGetterName":"D. Kother","scoringTeamId":107,"isPenalty":true}]},
+ {"matchID":2,"matchDateTimeUTC":"2026-11-27T18:00:00Z","matchIsFinished":false,
+  "team1":{"teamId":1,"teamName":"A"},"team2":{"teamId":2,"teamName":"B"},"matchResults":[],"goals":[]}]
+"""
+let liga = SportsOpenLiga.parseMatches(liga3, data: Data(ligaJSON.utf8), now: Date(timeIntervalSince1970: 1_795_806_000))
+check(liga.events.count == 2 && liga.events[0].state == .post && liga.events[0].home?.score == "2" && liga.events[0].home?.winner == true, "liga: final score")
+check(liga.events[0].subtitle == "14. Spieltag" && liga.events[0].title == "Duisburg v Rostock", "liga: round and names")
+check(liga.events[0].home?.team.logo == "https://upload.wikimedia.org/wikipedia/en/thumb/c/c8/Msv.svg/250px-Msv.svg.png", "liga: SVG logos as PNG")
+check(liga.goals[liga.events[0].id]?.first?.text == "D. Kother (pen.)" && liga.goals[liga.events[0].id]?.first?.team == "Duisburg", "liga: goals")
+check(liga.events[1].state == .live && liga.events[1].home?.score == "0", "liga: started and not over is live")
+check(SportsOpenLiga.season(Date(timeIntervalSince1970: 1_795_806_000)) == 2026, "liga: season 2026/27")
+let tableJSON = """
+[{"teamInfoId":2199,"teamName":"Viktoria Köln","shortName":"Viktoria Köln","points":32,"goals":42,"opponentGoals":19,"matches":14,"won":10,"lost":2,"draw":2,"goalDiff":23}]
+"""
+let ligaTable = SportsOpenLiga.parseTable(liga3, data: Data(tableJSON.utf8))
+check(ligaTable?.groups.first?.rows.first?.values["points"] == "32" && ligaTable?.groups.first?.rows.first?.values["pointDifferential"] == "+23", "liga: table")
+check(ligaTable?.placeText("2199") == "1st · 3. Liga", "liga: place in the table")
+let espnTable = """
+{"children":[{"name":"Bundesliga","standings":{"entries":[
+ {"team":{"id":"124","displayName":"Borussia Dortmund","logos":[{"href":"https://a.espncdn.com/bvb.png"}]},"note":{"description":"Champions League","color":"#81D6AC"},
+  "stats":[{"name":"rank","value":2,"displayValue":"2"},{"name":"gamesPlayed","displayValue":"11"},{"name":"points","displayValue":"24"},{"name":"ties","displayValue":"3"},{"name":"pointDifferential","displayValue":"+12"}]},
+ {"team":{"id":"132","displayName":"Bayern Munich"},"stats":[{"name":"rank","value":1,"displayValue":"1"},{"name":"gamesPlayed","displayValue":"11"},{"name":"points","displayValue":"31"}]}]}}]}
+"""
+let table = SportsStandings.parseESPN(bundesliga, data: Data(espnTable.utf8))
+check(table?.kind == .table && table?.groups.first?.rows.first?.name == "Bayern Munich", "standings: in rank order")
+check(table?.find("124")?.row.zone?.color == 0xFF81D6AC && table?.columns.map(\.key).contains("points") == true, "standings: zone colour and columns")
+check(table?.around(["124"]).rows.last?.mine == true, "standings: mini table marks the game's team")
+
+// Teams: season, leaders, top scorers, football by country (17d)
+let schedSeason = SportsTeams.scheduleSeason(Data(#"{"season":{"year":2026,"type":14358}}"#.utf8))
+check(schedSeason?.year == 2026 && schedSeason?.type == 14358, "teams: the schedule's season")
+check(SportsTeams.leadersURL(bundesliga, teamID: "124", year: 2026, type: 14358)?.absoluteString
+      == "https://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/types/1/teams/124/leaders",
+      "teams: football's leaders are of type 1")
+let leadersJSON = """
+{"categories":[
+ {"name":"goalsLeaders","displayName":"Goals","leaders":[{"value":5.0,"athlete":{"$ref":"http://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/athletes/281122"}}]},
+ {"name":"assistsLeaders","displayName":"Assists","leaders":[{"value":2.0,"athlete":{"$ref":"http://sports.core.api.espn.com/v2/sports/soccer/leagues/ger.1/seasons/2026/athletes/324820"}}]},
+ {"name":"goals","displayName":"Goals","leaders":[{"value":5.0,"athlete":{"$ref":"http://x/1"}}]},
+ {"name":"saves","displayName":"Saves","leaders":[{"value":28.0,"athlete":{"$ref":"http://x/2"}}]}]}
+"""
+let picks = SportsTeams.parseLeaders(Data(leadersJSON.utf8))
+check(picks.map(\.category) == ["Goals", "Assists"] && picks.first?.value == "5", "teams: goals and assists, each once")
+check(picks.first?.athleteURL.absoluteString.hasPrefix("https://") == true, "teams: the player asked over https")
+let athleteJSON = #"{"displayName":"Felix Nmecha","jersey":"8","flag":{"href":"https://a.espncdn.com/i/teamlogos/countries/500/ger.png"}}"#
+let topScorer = picks.first.flatMap { SportsTeams.leader($0, athlete: Data(athleteJSON.utf8)) }
+check(topScorer?.name == "Felix Nmecha" && topScorer?.jersey == "8" && topScorer?.headshot == nil && topScorer?.flag != nil,
+      "teams: the player's name, number and flag")
+check(SportsTeams.format(27.25) == "27.2" || SportsTeams.format(27.25) == "27.3", "teams: one decimal")
+let seasonGoals: [[SportsScoringPlay]] = [
+    [SportsScoringPlay(clock: "10'", team: "MSV Duisburg", text: "Tim Müller", awayScore: nil, homeScore: nil),
+     SportsScoringPlay(clock: "50'", team: "MSV Duisburg", text: "Tim Müller (pen.)", awayScore: nil, homeScore: nil)],
+    [SportsScoringPlay(clock: "20'", team: "MSV Duisburg", text: "Jan Ober (o.g.)", awayScore: nil, homeScore: nil),
+     SportsScoringPlay(clock: "30'", team: "Rot-Weiss Essen", text: "Ahmet Arslan", awayScore: nil, homeScore: nil)],
+]
+let duisburgTop = SportsTeams.openLigaScorers(team: "MSV Duisburg", goals: seasonGoals)
+check(duisburgTop.first?.name == "Tim Müller" && duisburgTop.first?.value == "2", "teams: 3. Liga top scorer, penalties count, own goals don't")
+check(SportsTeams.footballArea(liga3) == "ger" && SportsTeams.footballArea(bundesliga) == "ger", "teams: the 3. Liga is Germany's")
+let areaOrder = SportsTeams.orderedAreas(["eng", "uefa", "ger", "fifa", "esp"], country: "DE")
+check(areaOrder == ["ger", "uefa", "fifa", "eng", "esp"], "teams: your country, the confederations, then A to Z")
+
+// Round 8: scorers, sports order, cups, stadium pictures (17d)
+let messyGoals: [[SportsScoringPlay]] = [[
+    SportsScoringPlay(clock: "1'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "2'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "3'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "4'", team: "Rot-Weiss Essen", text: "Jaka Potocnik", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "5'", team: "Rot-Weiss Essen", text: "Jaka Cuber Potocnik", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "6'", team: "Rot-Weiss Essen", text: "S. Telalovic", awayScore: nil, homeScore: nil),
+]]
+let essenTop = SportsTeams.openLigaScorers(team: "Rot-Weiss Essen", goals: messyGoals)
+check(essenTop.first?.name == "Jaka Cuber Potocnik" && essenTop.first?.value == "2",
+      "scorers: goals without a name left out, one player's spellings counted once")
+check(SportsTeams.openLigaScorers(team: "Rot-Weiss Essen", goals: [[messyGoals[0][5]]]).isEmpty, "scorers: one goal is not enough")
+check(SportsTeams.scorerKey("J. Potocnik") == SportsTeams.scorerKey("Jaka Cuber Potocnik") && SportsTeams.scorerKey(" ") == nil,
+      "scorers: initial and surname")
+let customOrder = SportsCatalog.sportsOrder(custom: ["tennis", "nonsense", "football"], region: "OTHER")
+check(Array(customOrder.prefix(3)) == [.tennis, .football, .racing] && customOrder.count == Sport.allCases.count,
+      "sports: yours first, then the region's, each once")
+let movedOrder = SportsCatalog.moving(.racing, by: -1, among: [.football, .racing, .tennis], order: SportsCatalog.sportsOrder(region: "OTHER"))
+check(Array(movedOrder.prefix(3)) == ["racing", "football", "tennis"], "sports: moved up among the ones listed")
+check(SportsCatalog.withoutTable.contains("soccer/ger.dfb_pokal") && !SportsCatalog.withoutTable.contains("soccer/ger.1")
+      && SportsCatalog.withoutTable.allSatisfy { SportsCatalog.league($0) != nil }, "tables: cups known without a table, all in the catalogue")
+let wikiPage = #"{"query":{"pages":[{"title":"Weserstadion","pageprops":{"wikibase_item":"Q154475"},"extract":"The Weserstadion is a football stadium in Bremen, Germany.","thumbnail":{"source":"https://upload.wikimedia.org/x.jpg"}}]}}"#
+let weser = SportsVenues.parsePage(Data(wikiPage.utf8))
+let weserItem = #"{"entities":{"Q154475":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q1154710"}}}}],"P1083":[{"mainsnak":{"datavalue":{"value":{"amount":"+42100"}}}}]}}}}"#
+check(weser?.item == "Q154475" && weser?.image == "https://upload.wikimedia.org/x.jpg", "venues: the article's item and picture")
+check(weser.map { SportsVenues.isVenue($0, item: Data(weserItem.utf8), city: "Bremen") } == true, "venues: a stadium in the city given")
+check(weser.map { SportsVenues.isVenue($0, item: Data(weserItem.utf8), city: "Minden") } == false, "venues: another city's is not taken")
+let oldGround = #"{"entities":{"Q154475":{"claims":{"P1083":[{"mainsnak":{"datavalue":{"value":{"amount":"+20000"}}}}],"P576":[{"mainsnak":{"datavalue":{"value":{"time":"+2012"}}}}]}}}}"#
+check(weser.map { SportsVenues.isVenue($0, item: Data(oldGround.utf8), city: "Bremen") } == false, "venues: a demolished ground is not taken")
+let district = #"{"entities":{"Q154475":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q1739536"}}}}]}}}}"#
+check(weser.map { SportsVenues.isVenue($0, item: Data(district.utf8), city: "Bremen") } == false, "venues: a district of the same name is not taken")
+let disambiguation = #"{"query":{"pages":[{"title":"Arsenal","pageprops":{"disambiguation":"","wikibase_item":"Q1"},"extract":"Arsenal may refer to"}]}}"#
+check(SportsVenues.parsePage(Data(disambiguation.utf8))?.disambiguation == true
+      && SportsVenues.parsePage(Data(#"{"query":{"pages":[{"title":"X","missing":true}]}}"#.utf8)) == nil, "venues: no disambiguation, no missing page")
+let clubItem = #"{"entities":{"Q1":{"claims":{"P115":[{"mainsnak":{"datavalue":{"value":{"id":"Q571520"}}},"qualifiers":{"P582":[{}]}},{"mainsnak":{"datavalue":{"value":{"id":"Q1656716"}}}}]}}}}"#
+check(SportsVenues.homeGround(team: Data(clubItem.utf8), item: "Q1") == "Q1656716", "venues: the team's current ground, not its old one")
+let groundItem = #"{"entities":{"Q1656716":{"claims":{"P18":[{"mainsnak":{"datavalue":{"value":"Stadion essen.jpg"}}}]}}}}"#
+check(SportsVenues.groundImage(Data(groundItem.utf8), item: "Q1656716") == "https://commons.wikimedia.org/wiki/Special:FilePath/Stadion_essen.jpg?width=1920",
+      "venues: the ground's Commons picture")
+check(SportsVenueQuery(venue: "Stadion an der Hafenstraße", city: "Essen").key == "v:stadion an der hafenstrasse|essen"
+      && SportsVenueQuery(team: "Rot-Weiss Essen").key == "t:rot weiss essen" && SportsVenueQuery().key == nil, "venues: the cache key")
+
+// Round 9: timeline, line-ups, odds, player photos (17d)
+let keyEventsJSON = """
+{"keyEvents":[
+ {"type":{"type":"kickoff"},"clock":{"displayValue":"0'"},"period":{"number":1}},
+ {"type":{"type":"penalty---scored"},"clock":{"displayValue":"27'"},"period":{"number":1},"team":{"id":"268"},"participants":[{"athlete":{"displayName":"Kevin Diks"}}]},
+ {"type":{"type":"yellow-card"},"clock":{"displayValue":"36'"},"period":{"number":1},"team":{"id":"268"},"participants":[{"athlete":{"displayName":"Jens Castrop"}}]},
+ {"type":{"type":"goal"},"clock":{"displayValue":"38'"},"period":{"number":1},"team":{"id":"137"},"participants":[{"athlete":{"displayName":"Eren Dinkci"}}]},
+ {"type":{"type":"substitution"},"clock":{"displayValue":"45'"},"period":{"number":2},"team":{"id":"137"},"participants":[{"athlete":{"displayName":"Mick Schmetgens"}},{"athlete":{"displayName":"Paul Erevbenagie"}}]},
+ {"type":{"type":"goal---volley"},"clock":{"displayValue":"90'+2'"},"period":{"number":2},"team":{"id":"137"},"participants":[{"athlete":{"displayName":"Niclas Füllkrug"}},{"athlete":{"displayName":"Romano Schmid"}}]}
+]}
+"""
+let timeline = SportsMoments.parse(Data(keyEventsJSON.utf8), sport: .football, homeId: "137", finalHome: "2", finalAway: "1")
+check(timeline.map(\.kind) == [.penaltyGoal, .yellow, .goal, .sub, .goal], "timeline: penalty, card, goal, substitution, goal; no kick-off")
+check(timeline.map(\.score) == ["0–1", nil, "1–1", nil, "2–1"], "timeline: the score after each goal, home first")
+check(timeline[3].player == "Mick Schmetgens" && timeline[3].detail == "Paul Erevbenagie" && timeline[3].home == true,
+      "timeline: who came on, who went off, whose")
+check(timeline[4].detail == "Romano Schmid" && timeline[1].detail == nil, "timeline: the assist; a card has none")
+let wrongCount = SportsMoments.parse(Data(keyEventsJSON.utf8), sport: .football, homeId: "137", finalHome: "3", finalAway: "1")
+check(wrongCount.allSatisfy { $0.score == nil }, "timeline: no scores when the count misses the final score")
+let nflPlays = #"{"scoringPlays":[{"period":{"number":2},"clock":{"displayValue":"4:12"},"team":{"id":"4"},"scoringType":{"abbreviation":"TD"},"text":"Chase 12 Yd pass","homeScore":7,"awayScore":3}]}"#
+let nflMoments = SportsMoments.parse(Data(nflPlays.utf8), sport: .americanFootball, homeId: "4", finalHome: nil, finalAway: nil)
+check(nflMoments.first?.kind == .score && nflMoments.first?.detail == "TD" && nflMoments.first?.score == "7–3"
+      && nflMoments.first?.period == 2 && nflMoments.first?.home == true, "timeline: other sports' scoring plays with their kind")
+let olMoments = SportsOpenLiga.moments([SportsScoringPlay(clock: "12'", team: "MSV Duisburg", text: "Tim Müller (pen.)", awayScore: "0", homeScore: "1")],
+                                       home: "MSV Duisburg")
+check(olMoments.first?.kind == .penaltyGoal && olMoments.first?.player == "Tim Müller" && olMoments.first?.score == "1–0"
+      && olMoments.first?.home == true, "timeline: the 3. Liga's goals")
+
+func starter(_ position: String, _ place: Int, _ jersey: String) -> SportsLineupPlayer {
+    SportsLineupPlayer(name: "P" + jersey, shortName: "P" + jersey, jersey: jersey, position: position, formationPlace: place, starter: true)
+}
+let bremen = [starter("G", 1, "1"), starter("CD-L", 6, "32"), starter("CD-R", 5, "5"), starter("LB", 3, "2"), starter("RB", 2, "13"),
+              starter("AM", 10, "20"), starter("LM", 4, "44"), starter("RM", 8, "15"), starter("F", 9, "10"),
+              starter("AM-L", 11, "38"), starter("AM-R", 7, "18")]
+let bremenRows = SportsMoments.pitchRows(bremen, formation: "4-2-3-1")
+check(bremenRows?.map(\.count) == [1, 4, 2, 3, 1], "line-ups: 4-2-3-1 from the goalkeeper forward")
+check(bremenRows?[1].map(\.jersey) == ["2", "32", "5", "13"] && bremenRows?[3].map(\.jersey) == ["38", "20", "18"],
+      "line-ups: each row left to right")
+let gladbach = [starter("G", 1, "33"), starter("CD-L", 6, "16"), starter("CD", 5, "2"), starter("CD-R", 4, "4"),
+                starter("LWB", 3, "29"), starter("RWB", 2, "17"), starter("CM-L", 8, "10"), starter("CM-R", 7, "47"),
+                starter("AM-L", 11, "36"), starter("AM-R", 10, "9"), starter("F", 9, "18")]
+check(SportsMoments.pitchRows(gladbach, formation: "3-4-2-1")?.map(\.count) == [1, 3, 4, 2, 1], "line-ups: 3-4-2-1 with wing-backs in midfield")
+check(SportsMoments.pitchRows(gladbach, formation: nil)?.first?.first?.jersey == "33", "line-ups: rows from positions without a formation")
+check(SportsMoments.pitchRows(bremen.map { starter($0.jersey == "1" ? "G" : "XYZ", 0, $0.jersey ?? "") }, formation: "4-4-2") == nil,
+      "line-ups: unknown positions make no picture")
+let fives = [starter("PG", 0, "1"), starter("SG", 0, "2"), starter("SF", 0, "3"), starter("PF", 0, "4"), starter("C", 0, "5")]
+check(SportsMoments.groupRows(fives, sport: .basketball).map(\.count) == [2, 2, 1], "line-ups: basketball guards, forwards, centre")
+let rosterJSON = """
+{"rosters":[{"team":{"id":"137"},"formation":"4-2-3-1","roster":[
+ {"starter":true,"formationPlace":"9","jersey":"10","position":{"abbreviation":"F"},"athlete":{"displayName":"Niclas Füllkrug","shortName":"N. Füllkrug"},
+  "plays":[{"clock":{"displayValue":"44'"},"yellowCard":true},{"clock":{"displayValue":"90'+2'"},"didScore":true}]},
+ {"starter":false,"subbedIn":true,"jersey":"14","position":{"abbreviation":"SUB"},"athlete":{"displayName":"Senne Lynen","shortName":"S. Lynen"},
+  "plays":[{"clock":{"displayValue":"86'"},"substitution":true}]}]}]}
+"""
+let parsedRoster = (try? JSONSerialization.jsonObject(with: Data(rosterJSON.utf8))) as? [String: Any] ?? [:]
+let rosterPlayers = SportsMoments.lineups(parsedRoster)["137"]?.players ?? []
+check(rosterPlayers.first?.goals == 1 && rosterPlayers.first?.yellow == true && rosterPlayers.first?.formationPlace == 9,
+      "line-ups: a starter's goal and card")
+check(rosterPlayers.last?.subbedOn == "86'" && rosterPlayers.last?.starter == false, "line-ups: when a substitute came on")
+
+let betOdds = SportsOdds.parse([["provider": ["name": "Bet 365"], "homeTeamOdds": ["value": 8.0], "awayTeamOdds": ["value": 1.286],
+                                 "drawOdds": ["value": 6.5]]])
+check(betOdds?.home == 8.0 && betOdds?.draw == 6.5 && betOdds?.provider == "Bet 365", "odds: decimals as given")
+let dkOdds = SportsOdds.parse([["provider": ["displayName": "DraftKings"], "overUnder": 2.5,
+                                "moneyline": ["home": ["close": ["odds": "+150"]], "away": ["close": ["odds": "-200"]],
+                                              "draw": ["open": ["odds": "+265"]]]]])
+check(dkOdds?.home == 2.5 && dkOdds?.away == 1.5 && abs((dkOdds?.draw ?? 0) - 3.65) < 0.001 && dkOdds?.overUnder == 2.5,
+      "odds: money lines as decimals")
+check(SportsOdds.american(2.5) == "+150" && SportsOdds.american(1.5) == "-200" && SportsOdds.text(nil, us: false) == "–",
+      "odds: back to money lines for the US")
+check(SportsOdds.parse([["provider": ["name": "X"]]]) == nil, "odds: none without numbers")
+
+let players = #"{"entities":{"Q1":{"claims":{"P106":[{"mainsnak":{"datavalue":{"value":{"id":"Q937857"}}}}],"P54":[{"mainsnak":{"datavalue":{"value":{"id":"Q41420"}}}}],"P18":[{"mainsnak":{"datavalue":{"value":"Jobe Bellingham May 2022.jpg"}}}]}},"Q2":{"claims":{"P106":[{"mainsnak":{"datavalue":{"value":{"id":"Q937857"}}}}],"P54":[{"mainsnak":{"datavalue":{"value":{"id":"Q41420"}}},"qualifiers":{"P582":[{}]}}],"P18":[{"mainsnak":{"datavalue":{"value":"Old.jpg"}}}]}}}}"#
+check(SportsVenues.playerImage(Data(players.utf8), ids: ["Q2", "Q1"], team: "Q41420")?.hasSuffix("Jobe_Bellingham_May_2022.jpg?width=1920") == true,
+      "photos: the player of the team now, not a former one")
+check(SportsVenues.playerImage(Data(players.utf8), ids: ["Q1"], team: "Q9") == nil, "photos: a namesake at another team is not taken")
+check(SportsVenueQuery(team: "Borussia Dortmund", player: "Jobe Bellingham").key == "p:jobe bellingham|borussia dortmund", "photos: the cache key")
+let twoGroups = SportsStandings(leagueId: "x", kind: .table, columns: [], groups: [
+    SportsStandingsGroup(name: "A", rows: [SportsStandingsRow(id: "1", name: "One", shortName: "One", logo: nil, pos: 1, values: [:])]),
+    SportsStandingsGroup(name: "B", rows: [SportsStandingsRow(id: "2", name: "Two", shortName: "Two", logo: nil, pos: 1, values: [:])])])
+check(twoGroups.groups(of: ["2"]).groups.map(\.name) == ["B"], "tables: a game's page shows its teams' group")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

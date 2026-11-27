@@ -28,6 +28,16 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsVenues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsMoments.swift'
       - 'Tests/LiveTVLogic/**'
       - '.github/workflows/livetv-logic-tests.yml'
   pull_request:
@@ -52,6 +62,16 @@ on:
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift'
       - 'tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsVenues.swift'
+      - 'tvosApp/NuvioTV/Sources/Core/LiveTV/SportsMoments.swift'
       - 'Tests/LiveTVLogic/**'
 
 concurrency:
@@ -91,6 +111,16 @@ jobs:
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVMultiviewLayout.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVBackupNames.swift \
             tvosApp/NuvioTV/Sources/Core/LiveTV/LiveTVCalendarLogic.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsModels.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsCatalog.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsLeagues.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsESPN.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsSummary.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsOpenLiga.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsStandings.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsTeams.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsVenues.swift \
+            tvosApp/NuvioTV/Sources/Core/LiveTV/SportsMoments.swift \
             Tests/LiveTVLogic/main.swift \
             -o livetv-tests
           ./livetv-tests

@@ -25,6 +25,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     // Fork: the calendar (UI/LiveTV/LiveTVCalendarSettingsView.swift), for
     // everything you follow, not only Live TV.
     case calendar = "Calendar"
+    // Fork: the Sports page (UI/LiveTV/SportsSettingsView.swift).
+    case sports = "Sports"
     // Fork: Live TV options (UI/LiveTV/LiveTVSettingsViews.swift).
     case liveTV = "Live TV"
     case subtitles = "Subtitle Style"
@@ -48,6 +50,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
             return L10n.string("settings_playback", fallback: "Playback")
         case .calendar:
             return L10n.string("nav_calendar", fallback: "Calendar")
+        case .sports:
+            return L10n.string("nav_sports", fallback: "Sports")
         case .liveTV:
             return L10n.string("settings_livetv_vod", fallback: "Live TV / VOD")
         case .subtitles:
@@ -91,6 +95,11 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
                 "livetv_settings_calendar_category_subtitle",
                 fallback: "Time zone, spoilers and film dates"
             )
+        case .sports:
+            return L10n.string(
+                "livetv_settings_sports_category_subtitle",
+                fallback: "Region, scores and leagues"
+            )
         case .liveTV:
             return L10n.string(
                 "livetv_settings_subtitle",
@@ -122,6 +131,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .integrations: return "link"
         case .playback: return "play.circle"
         case .calendar: return "calendar"
+        case .sports: return "sportscourt"
         case .liveTV: return "tv"
         case .subtitles: return "captions.bubble"
         case .advanced: return "wrench.and.screwdriver"
@@ -216,6 +226,8 @@ enum SettingsKey {
     /// Fork (Live TV step 12b): the VOD and Jellyfin pages in the
     /// sidebar, and the VOD row on Home.
     static let showOnDemandTab = "nuvio.tv.settings.layout.showOnDemandTab"
+    /// Fork (Live TV step 17): the Sports page in the sidebar.
+    static let showSportsTab = "nuvio.tv.settings.layout.showSportsTab"
     static let showJellyfinTab = "nuvio.tv.settings.layout.showJellyfinTab"
     static let onDemandHomeRow = "nuvio.tv.settings.layout.onDemandHomeRow"
     static let showSurpriseMeTab = "nuvio.tv.settings.layout.showSurpriseMeTab"
@@ -481,7 +493,7 @@ enum SettingsKey {
         homeLayout, sidebarClockFormat, gridRows, gridItemsPerRow, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, homeHeroRatingSource, homeHeroRatingsEnabled, posterLabels, continueWatchingLabels, catalogAddonNames, landscapePosters, customPosterURLPattern, customPosterEnabledScreens, discoverLocation,
         searchStyle, preferAddonArtworkInSearch,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp, continueWatchingEpisodeRatings, continueWatchingBlurNextUp,
-        showCalendarTab, showSurpriseMeTab, surpriseMeUseTMDB, surpriseMeUseTrackers, surpriseMeAIProvider, surpriseMeAIModel, showWatchPartyTab, showOnDemandTab, showJellyfinTab, onDemandHomeRow, useTopNavigation, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes, calendarAniList, calendarAniListPlanning,
+        showCalendarTab, showSurpriseMeTab, surpriseMeUseTMDB, surpriseMeUseTrackers, surpriseMeAIProvider, surpriseMeAIModel, showWatchPartyTab, showOnDemandTab, showSportsTab, showJellyfinTab, onDemandHomeRow, useTopNavigation, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes, calendarAniList, calendarAniListPlanning,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates, detailsActionsBelowInfo,
         detailsSectionOrder, detailsSectionDisabled,
@@ -2140,6 +2152,8 @@ struct SettingsView: View {
             )
         case .calendar:
             LiveTVCalendarSettingsView(accentColor: accentColor)
+        case .sports:
+            SportsSettingsView(accentColor: accentColor)
         case .liveTV:
             LiveTVSettingsView(accentColor: accentColor)
         case .subtitles:
@@ -2841,6 +2855,7 @@ private struct AppearanceSettingsView: View {
     @AppStorage(SettingsKey.showWatchPartyTab) private var showWatchPartyTab = true
     // Fork (Live TV step 12b): the provider's and Jellyfin's pages and rows.
     @AppStorage(SettingsKey.showOnDemandTab) private var showOnDemandTab = true
+    @AppStorage(SettingsKey.showSportsTab) private var showSportsTab = true
     @AppStorage(SettingsKey.showJellyfinTab) private var showJellyfinTab = true
     @AppStorage(SettingsKey.onDemandHomeRow) private var onDemandHomeRow = true
     @AppStorage(SettingsKey.jellyfinLocalRowEnabled) private var jellyfinHomeRows = true
@@ -2956,6 +2971,16 @@ private struct AppearanceSettingsView: View {
                         fallback: "Show Watch Party in the sidebar"
                     ),
                     isOn: $showWatchPartyTab,
+                    accentColor: accentColor
+                )
+                // Fork (Live TV step 17): the Sports page.
+                SettingsToggleRow(
+                    title: L10n.string("nav_sports", fallback: "Sports"),
+                    subtitle: L10n.string(
+                        "settings_show_sports_tab_subtitle",
+                        fallback: "Today's games and the days around, live scores in your leagues (from ESPN)."
+                    ),
+                    isOn: $showSportsTab,
                     accentColor: accentColor
                 )
                 // Fork (Live TV step 12b): the VOD and Jellyfin pages.
@@ -14566,6 +14591,49 @@ private struct SideloadUpdatesSheet: View {
     }
 }
 
+/// Fork: a licence entry that can take focus (the list scrolls with it).
+private struct LicenseEntryCard: View {
+    let title: String
+    let license: String
+    let entryBody: String
+    let accentColor: Color
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Button(action: {}) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
+                    Spacer(minLength: 16)
+                    Text(license)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(accentColor)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text(entryBody)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .settingsGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isProminent: isFocused)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(isFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
+                                  lineWidth: isFocused ? AppFocusOutline.width : 1)
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
 private struct LicensesAttributionsSheet: View {
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
@@ -14659,6 +14727,31 @@ private struct LicensesAttributionsSheet: View {
             title: "TVmaze",
             body: "Broadcast times of series episodes in the calendar, when Exact air times is on. Data from tvmaze.com.",
             license: "CC BY-SA 4.0"
+        ),
+        // Fork (Live TV step 17): the Sports page.
+        LicenseEntry(
+            id: "espn",
+            title: "ESPN",
+            body: "Scores, schedules, tables and game details on the Sports page, from ESPN's public site API. Not endorsed by ESPN; logos belong to their clubs and leagues.",
+            license: "ESPN Terms of Use"
+        ),
+        LicenseEntry(
+            id: "openligadb",
+            title: "OpenLigaDB",
+            body: "German football ESPN doesn't carry (the 3. Liga): matches, goals and tables. Data from api.openligadb.de.",
+            license: "OpenLigaDB (free, community data)"
+        ),
+        LicenseEntry(
+            id: "wikimedia",
+            title: "Wikimedia Commons",
+            body: "Club logos of the 3. Liga, as OpenLigaDB links them, the logos of the leagues ESPN has none for, and the stadium photos behind the Sports pages (Wikipedia / Wikidata / Wikimedia Commons). Logos belong to their clubs and competitions; photos to their authors, under the license on each file's Commons page (mostly CC BY-SA).",
+            license: "Per file on commons.wikimedia.org"
+        ),
+        LicenseEntry(
+            id: "football-logos",
+            title: "football-logos.cc",
+            body: "The 3. Liga's logo. Logos: football-logos.cc. Logos belong to their clubs, leagues and associations; used for a non-commercial fan app.",
+            license: "football-logos.cc usage terms (credit required)"
         )
     ]
 
@@ -14755,30 +14848,9 @@ private struct LicensesAttributionsSheet: View {
                 .foregroundColor(.white.opacity(0.9))
 
             ForEach(entries) { entry in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(entry.title)
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(.white)
-                        Spacer(minLength: 16)
-                        Text(entry.license)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(accentColor)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    Text(entry.body)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white.opacity(0.68))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .settingsGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isProminent: false)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-                )
+                // Fork: each entry takes focus, so the remote scrolls
+                // through the whole list.
+                LicenseEntryCard(title: entry.title, license: entry.license, entryBody: entry.body, accentColor: accentColor)
             }
         }
     }
@@ -22706,15 +22778,31 @@ enum LiveTVSettingsRows {
             accentColor: accentColor, optionLabel: optionLabel)
     }
 
-    /// Every choice in a list that opens (for long lists).
+    /// Every choice in a list that opens (for long lists): Nuvio's picker
+    /// window (as its language picker).
     static func choice(
         title: String, subtitle: String, selection: Binding<String>, options: [String], accentColor: Color,
         optionLabel: (String) -> String
     ) -> some View {
-        SettingsChoiceRow(
+        LiveTVChoiceRow(
             title: title, subtitle: subtitle, selection: selection, options: options,
-            optionLabels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
+            labels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
             accentColor: accentColor)
+    }
+
+    /// Nuvio's settings glass for the fork's own panels.
+    static func glass<V: View, S: InsettableShape>(_ view: V, shape: S, prominent: Bool) -> some View {
+        view.settingsGlass(shape: shape, isProminent: prominent)
+    }
+
+    /// Nuvio's settings row (as the Add-ons rows): glass, focus outline.
+    static func rowShell<Content: View>(isFocused: Bool, accentColor: Color, @ViewBuilder content: () -> Content) -> some View {
+        SettingsRowShell(isFocused: isFocused, accentColor: accentColor, content: content)
+    }
+
+    /// A settings row's title and subtitle.
+    static func rowText(title: String, subtitle: String) -> some View {
+        SettingsRowText(title: title, subtitle: subtitle)
     }
 
     static func action(
@@ -22766,6 +22854,50 @@ enum LiveTVSettingsRows {
     /// The sheet shows its own background (as the server sheets).
     static func clearSheetBackground<Content: View>(_ content: Content) -> some View {
         content.modifier(ClearPresentationBackgroundIfAvailable())
+    }
+}
+
+/// Fork: a setting whose choices open in a picker window.
+private struct LiveTVChoiceRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var selection: String
+    let options: [String]
+    let labels: [String: String]
+    let accentColor: Color
+
+    @FocusState private var isFocused: Bool
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing = true } label: {
+            SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                SettingsRowText(title: title, subtitle: subtitle)
+                Spacer(minLength: 24)
+                HStack(spacing: 10) {
+                    Text(labels[selection] ?? selection)
+                        .font(.appFont(size: 19, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(accentColor)
+                }
+                .frame(maxWidth: 300, alignment: .trailing)
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+        .entryLockable()
+        .liveTVPicker(isPresented: $showing) {
+            LiveTVPickerWindow(
+                title: title, subtitle: subtitle, systemImage: "list.bullet",
+                options: options.map { LiveTVPickerOption(id: $0, title: labels[$0] ?? $0) },
+                selected: selection, accentColor: accentColor,
+                onPick: { selection = $0 }, onClose: { showing = false })
+        }
     }
 }
 

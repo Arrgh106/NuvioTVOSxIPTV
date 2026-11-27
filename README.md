@@ -143,7 +143,7 @@ What is done and what is planned, compared with Nuvio + IPTV:
 | VOD (provider movies & series, matched to Nuvio details) | ✅ Done |
 | Several sources: Xtream logins, M3U playlists, Stalker portals | 🧪 Built; Stalker and M3U catch-up not tested on a device yet |
 | Live TV in search, "Find & stream" through your add-ons | 🗓 Planned |
-| Sports hub (scores, schedules, channels showing a game) | 🗓 Planned |
+| Sports hub (scores, schedules, tables, My Teams, game pages) | 🧪 Built, being tested; channels showing a game planned |
 | Calendar extensions | 🗓 Planned |
 | Setup sync between devices | 🗓 Planned |
 | Recordings | ⚠️ Limited by tvOS, see below |
