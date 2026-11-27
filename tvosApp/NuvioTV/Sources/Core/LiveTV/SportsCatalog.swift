@@ -162,6 +162,43 @@ enum SportsCatalog {
         return set
     }
 
+    /// Your order of the sports (Settings → Sports): the ones you moved
+    /// first, as you left them, then the rest in the region's order.
+    static func sportsOrder(custom: [String], region: String) -> [Sport] {
+        let mine = custom.compactMap(Sport.init(rawValue:))
+        var seen: Set<Sport> = []
+        return (mine + sportsOrder(region: region)).filter { seen.insert($0).inserted }
+    }
+
+    /// The order with `sport` moved `offset` places among `shown` (the
+    /// sports listed), saved as the whole list.
+    static func moving(_ sport: Sport, by offset: Int, among shown: [Sport], order: [Sport]) -> [String] {
+        guard let from = shown.firstIndex(of: sport) else { return order.map(\.rawValue) }
+        let to = min(max(from + offset, 0), shown.count - 1)
+        var list = shown
+        list.remove(at: from)
+        list.insert(sport, at: to)
+        return (list + order.filter { !list.contains($0) }).map(\.rawValue)
+    }
+
+    /// Competitions ESPN keeps no table for (cups, friendlies, some
+    /// college and winter leagues), checked November 2026: left out of
+    /// Tables and the team picker from the start (a table found later
+    /// still counts).
+    static let withoutTable: Set<String> = [
+        "soccer/eng.fa", "soccer/eng.league_cup", "soccer/fifa.friendly", "rugby/289234", "rugby/244293", "rugby/270563",
+        "rugby/270555", "cricket/8048", "soccer/eng.w.fa", "soccer/sco.tennents", "soccer/esp.copa_del_rey",
+        "soccer/ger.dfb_pokal", "soccer/ita.coppa_italia", "soccer/fra.coupe_de_france", "soccer/ned.cup",
+        "soccer/por.taca.portugal", "soccer/uefa.super_cup", "soccer/eng.charity", "soccer/usa.open",
+        "soccer/concacaf.champions", "soccer/fifa.friendly.w", "soccer/bra.camp.gaucho", "soccer/fifa.worldq.ofc",
+        "soccer/club.friendly", "soccer/eng.fa_qual", "soccer/esp.copa_de_la_reina", "soccer/uefa.w.europa",
+        "soccer/bra.copa_do_brazil", "soccer/arg.copa", "soccer/par.1.supercopa", "soccer/ksa.kings.cup",
+        "soccer/usa.ncaa.m.1", "soccer/usa.ncaa.w.1", "football/cfl", "lacrosse/mens-college-lacrosse",
+        "lacrosse/womens-college-lacrosse", "baseball/dominican-winter-league", "baseball/puerto-rican-winter-league",
+        "baseball/venezuelan-winter-league", "baseball/mexican-winter-league", "field-hockey/womens-college-field-hockey",
+        "baseball/llb",
+    ]
+
     /// The sports in the order the region cares about them.
     static func sportsOrder(region: String) -> [Sport] {
         let first: [Sport]

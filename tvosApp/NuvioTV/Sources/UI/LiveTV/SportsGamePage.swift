@@ -85,16 +85,15 @@ struct SportsGamePage: View {
         }
     }
 
+    /// The stadium (the summary names it too), else the teams' colours:
+    /// the Sports page's backdrop.
     private func backdrop(_ event: SportsEvent) -> some View {
-        let colors = event.sides.compactMap { $0.team.color }.map { Color(sportsARGB: $0) }
-        return ZStack {
-            Color.black
-            if colors.count == 2 {
-                LinearGradient(colors: [colors[0].opacity(0.6), colors[1].opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
-            LinearGradient(colors: [.black.opacity(0.3), .black.opacity(0.92)], startPoint: .top, endPoint: .center)
+        var scene = SportsScene(event: event)
+        if scene.venue?.venue == nil, let venue = extras?.venue {
+            scene.venue?.venue = venue
+            scene.venue?.city = extras?.city
         }
-        .ignoresSafeArea()
+        return SportsBackdrop(scene: scene)
     }
 
     private func page(_ event: SportsEvent, league: League) -> some View {
@@ -109,10 +108,9 @@ struct SportsGamePage: View {
                 if event.state == .live { SportsLiveBadge() }
             }
             if event.sides.count == 2 {
-                // A star under either team follows it (its games in My Teams).
+                // A small star on a team you follow (only shown).
                 SportsMatchup(event: event, league: league, hideScores: settings.hides(event), width: 1100, logoSize: 150,
                               follow: true)
-                    .focusSection()
                     .frame(maxWidth: .infinity)
             } else {
                 Text(event.title).font(.system(size: 52, weight: .bold)).lineLimit(2)
@@ -146,14 +144,8 @@ struct SportsGamePage: View {
             } else {
                 HStack(spacing: 14) {
                     ForEach(list) { item in
-                        Button {
-                            tab = item
-                        } label: {
-                            Text(item.title).font(.system(size: 22, weight: tab == item ? .bold : .regular))
-                        }
-                        // Focus starts on the tabs (the stars are up from
-                        // here).
-                        .prefersDefaultFocus(item == list.first, in: focusSpace)
+                        SportsChip(title: item.title, selected: tab == item) { tab = item }
+                            .prefersDefaultFocus(item == list.first, in: focusSpace)
                     }
                 }
                 .focusSection()
@@ -451,7 +443,7 @@ struct SportsGamePage: View {
         if let attendance = extras.attendance {
             lines.append(("person.3", L10n.string("livetv_sports_attendance_title", fallback: "Attendance"), attendance.formatted()))
         }
-        if !event.broadcasts.isEmpty {
+        if settings.showsBroadcasts, !event.broadcasts.isEmpty {
             lines.append(("tv", L10n.string("livetv_sports_tv", fallback: "TV"), event.broadcasts.joined(separator: ", ")))
         }
         for side in event.ordered(league?.sport ?? .football) {

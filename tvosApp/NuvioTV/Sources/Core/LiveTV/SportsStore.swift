@@ -12,6 +12,8 @@ final class SportsSettings: ObservableObject {
         static let scores = "livetv.sports.scores"
         static let changedLeagues = "livetv.sports.changedLeagues"
         static let followed = "livetv.sports.followed"
+        static let sportOrder = "livetv.sports.sportOrder"
+        static let hiddenSports = "livetv.sports.hiddenSports"
     }
 
     /// Which scores show (17d): all, all but the live ones (results
@@ -40,12 +42,21 @@ final class SportsSettings: ObservableObject {
         didSet { ProfileSettings.current.set(try? JSONEncoder().encode(followed), forKey: Key.followed) }
     }
 
+    /// Your order of the sports (Settings → Sports); empty: the region's.
+    @Published var sportOrder: [String] { didSet { ProfileSettings.current.set(sportOrder, forKey: Key.sportOrder) } }
+    /// Sports turned off: gone from the whole Sports page.
+    @Published var hiddenSports: Set<String> {
+        didSet { ProfileSettings.current.set(Array(hiddenSports).sorted(), forKey: Key.hiddenSports) }
+    }
+
     private init() {
         let store = ProfileSettings.current
         region = store.string(forKey: Key.region) ?? ""
         scoreMode = Self.scoreMode(store)
         changedLeagues = Set(store.stringArray(forKey: Key.changedLeagues) ?? [])
         followed = Self.followed(store)
+        sportOrder = store.stringArray(forKey: Key.sportOrder) ?? []
+        hiddenSports = Set(store.stringArray(forKey: Key.hiddenSports) ?? [])
     }
 
     /// The profile changed: its own settings.
@@ -55,7 +66,31 @@ final class SportsSettings: ObservableObject {
         scoreMode = Self.scoreMode(store)
         changedLeagues = Set(store.stringArray(forKey: Key.changedLeagues) ?? [])
         followed = Self.followed(store)
+        sportOrder = store.stringArray(forKey: Key.sportOrder) ?? []
+        hiddenSports = Set(store.stringArray(forKey: Key.hiddenSports) ?? [])
     }
+
+    // MARK: Sports shown (Settings → Sports)
+
+    /// Every sport in your order.
+    var orderedSports: [Sport] { SportsCatalog.sportsOrder(custom: sportOrder, region: effectiveRegion) }
+
+    /// The sports turned on, in your order.
+    var visibleSports: [Sport] { orderedSports.filter(isSportShown) }
+
+    func isSportShown(_ sport: Sport) -> Bool { !hiddenSports.contains(sport.rawValue) }
+
+    func toggleSport(_ sport: Sport) {
+        if hiddenSports.contains(sport.rawValue) { hiddenSports.remove(sport.rawValue) } else { hiddenSports.insert(sport.rawValue) }
+    }
+
+    func moveSport(_ sport: Sport, by offset: Int, among shown: [Sport]) {
+        sportOrder = SportsCatalog.moving(sport, by: offset, among: shown, order: orderedSports)
+    }
+
+    /// ESPN's TV channels are the US and Canada's: shown only there (other
+    /// countries' come from your own guide).
+    var showsBroadcasts: Bool { ["US", "CA"].contains(effectiveRegion) }
 
     private static func scoreMode(_ store: UserDefaults) -> ScoreMode {
         if let raw = store.string(forKey: Key.scores), let mode = ScoreMode(rawValue: raw) { return mode }
@@ -96,13 +131,13 @@ final class SportsSettings: ObservableObject {
     /// The leagues All Events shows, in the region's order (your own
     /// country's football first among football).
     var shownLeagues: [League] {
-        let order = SportsCatalog.sportsOrder(region: effectiveRegion)
+        let order = orderedSports
         let region = effectiveRegion
         let country = SportsCatalog.isCountry(region) ? region : Self.country
         func home(_ league: League) -> Int {
             league.sport == .football && SportsCatalog.inRegion(league, region: "", country: country) ? 0 : 1
         }
-        return SportsCatalog.all.filter { $0.hasFeed && isShown($0) }
+        return SportsCatalog.all.filter { $0.hasFeed && isShown($0) && isSportShown($0.sport) }
             .enumerated()
             .sorted {
                 (order.firstIndex(of: $0.element.sport) ?? 99, home($0.element), $0.offset)
@@ -165,8 +200,9 @@ final class SportsStore: ObservableObject {
     /// League tables (by league id).
     @Published private(set) var standings: [String: SportsStandings] = [:]
     /// Competitions the feed has no table for (cups): left out of Tables.
+    /// Known from the start (`SportsCatalog.withoutTable`) and learnt.
     @Published private(set) var noTable: Set<String> =
-        Set(UserDefaults.standard.stringArray(forKey: SportsStore.noTableKey) ?? [])
+        Set(UserDefaults.standard.stringArray(forKey: SportsStore.noTableKey) ?? []).union(SportsCatalog.withoutTable)
     private static let noTableKey = "livetv.sports.noTable"
     /// A team's top players (by team key): the Tables page's team panel.
     @Published private(set) var teamLeaders: [String: [SportsTeamLeader]] = [:]
@@ -199,6 +235,9 @@ final class SportsStore: ObservableObject {
             DispatchQueue.main.async { self?.poke() }
         }.store(in: &cancellables)
         SportsSettings.shared.$region.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.poke() }
+        }.store(in: &cancellables)
+        SportsSettings.shared.$hiddenSports.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.poke() }
         }.store(in: &cancellables)
     }

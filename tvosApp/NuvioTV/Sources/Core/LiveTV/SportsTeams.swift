@@ -90,15 +90,33 @@ enum SportsTeams {
     // MARK: Top scorers (OpenLigaDB)
 
     /// A team's top scorer from the season's goals (OpenLigaDB has no
-    /// assists): own goals don't count, penalties do.
+    /// assists): own goals don't count, penalties do. Volunteers type the
+    /// names: goals without one are left out, one player's spellings
+    /// ("J. Potocnik", "Jaka Cuber Potocnik") count as one (same initial and
+    /// surname, the longest name shown), and with so many names missing a
+    /// lone goal tells nothing: two at least.
     static func openLigaScorers(team: String, goals: [[SportsScoringPlay]]) -> [SportsTeamLeader] {
         var count: [String: Int] = [:]
+        var names: [String: String] = [:]
         for play in goals.joined() where play.team == team && !play.text.contains("(o.g.)") {
-            let name = play.text.replacingOccurrences(of: " (pen.)", with: "")
-            count[name, default: 0] += 1
+            let name = play.text.replacingOccurrences(of: " (pen.)", with: "").trimmingCharacters(in: .whitespaces)
+            guard let key = scorerKey(name) else { continue }
+            count[key, default: 0] += 1
+            if name.count > (names[key]?.count ?? 0) { names[key] = name }
         }
-        guard let best = count.max(by: { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }) else { return [] }
-        return [SportsTeamLeader(category: "Goals", name: best.key, value: String(best.value))]
+        guard let best = count.max(by: { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }),
+              best.value >= 2, let name = names[best.key] else { return [] }
+        return [SportsTeamLeader(category: "Goals", name: name, value: String(best.value))]
+    }
+
+    /// "j|potocnik" for "Jaka Cuber Potocnik", "J. Potocnik" and "Jaka
+    /// Potocnik"; a single name stands for itself; no letters, nil.
+    static func scorerKey(_ name: String) -> String? {
+        let words = name.split { $0 == " " || $0 == "." }.map(String.init).filter { !$0.isEmpty }
+        guard let last = words.last, last.contains(where: \.isLetter) else { return nil }
+        let surname = last.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        guard words.count > 1, let initial = words.first?.first else { return surname }
+        return String(initial).lowercased() + "|" + surname
     }
 
     // MARK: Football by country

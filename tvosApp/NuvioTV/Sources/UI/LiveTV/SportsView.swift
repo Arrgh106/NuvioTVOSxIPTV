@@ -16,6 +16,10 @@ struct SportsView: View {
     @State private var showsQuickMenu = false
     @State private var showsLeagues = false
     @State private var showsTeams = false
+    @State private var showsSports = false
+    /// What's behind every page: the game (or team) in focus, kept while
+    /// nothing is.
+    @State private var scene: SportsScene?
     /// The game page open (17c).
     @State private var openGame: SportsGameID?
     /// Redrawn every 30 s (clocks, time bars, Today).
@@ -48,10 +52,11 @@ struct SportsView: View {
                 .focusSection()
             switch page {
             case .myTeams:
-                SportsMyTeamsView(now: tick, onOpen: { openGame = SportsGameID(id: $0.id) })
+                SportsMyTeamsView(now: tick, onOpen: { openGame = SportsGameID(id: $0.id) },
+                                  onFocus: { scene = SportsScene(event: $0) })
                     .focusSection()
             case .tables:
-                SportsTablesView()
+                SportsTablesView(onFocus: { scene = SportsScene(team: $0) })
                     .focusSection()
             case .events:
             dayStrip
@@ -79,12 +84,16 @@ struct SportsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .disabled(showsQuickMenu)
-        .background(alignment: .top) { backdrop(page == .events ? focused : nil) }
-        .background(Color.black.ignoresSafeArea())
+        // The same backdrop on every page (the stadium, the teams' colours).
+        .background { SportsBackdrop(scene: scene) }
+        .task(id: page == .events ? focused?.id : nil) {
+            if page == .events, let focused { scene = SportsScene(event: focused) }
+        }
         .overlay(alignment: .topTrailing) {
             if showsQuickMenu {
                 SportsQuickMenu(onLeagues: { showsQuickMenu = false; showsLeagues = true },
                                 onTeams: { showsQuickMenu = false; showsTeams = true },
+                                onSports: { showsQuickMenu = false; showsSports = true },
                                 onClose: { showsQuickMenu = false })
                     .padding(.top, 20)
                     .padding(.trailing, 40)
@@ -94,6 +103,7 @@ struct SportsView: View {
         .animation(.easeOut(duration: 0.2), value: showsQuickMenu)
         .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
         .sheet(isPresented: $showsTeams) { SportsTeamsPicker() }
+        .sheet(isPresented: $showsSports) { SportsSportsPicker() }
         .fullScreenCover(item: $openGame) { game in SportsGamePage(eventID: game.id) }
         .onAppear {
             settings.reload()
@@ -109,60 +119,49 @@ struct SportsView: View {
     /// Refresh.
     private var header: some View {
         let games = allGames
-        let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
         let sports = Set(games.map(\.league.sport))
         let liveCount = games.reduce(0) { $0 + $1.events.filter { $0.state == .live }.count }
         return HStack(spacing: 14) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
-                    chip("★ " + L10n.string("livetv_sports_my_teams", fallback: "My Teams"), selected: page == .myTeams) {
+                    SportsChip(title: L10n.string("livetv_sports_my_teams", fallback: "My Teams"), systemImage: "star.fill",
+                               selected: page == .myTeams) {
                         page = .myTeams
                         store.loadFollowed()
                     }
-                    chip(L10n.string("livetv_sports_all", fallback: "All Events"), selected: page == .events && sport == nil && !liveOnly) {
+                    SportsChip(title: L10n.string("livetv_sports_all", fallback: "All Events"),
+                               selected: page == .events && sport == nil && !liveOnly) {
                         page = .events
                         sport = nil
                         liveOnly = false
                     }
-                    chip(liveCount > 0 ? L10n.format("livetv_sports_live_count", fallback: "Live (%d)", liveCount)
-                                       : L10n.string("livetv_sports_live", fallback: "Live"), selected: page == .events && liveOnly) {
+                    SportsChip(title: liveCount > 0 ? L10n.format("livetv_sports_live_count", fallback: "Live (%d)", liveCount)
+                                                    : L10n.string("livetv_sports_live", fallback: "Live"),
+                               selected: page == .events && liveOnly) {
                         page = .events
                         liveOnly.toggle()
                     }
-                    chip("🏆 " + L10n.string("livetv_sports_tables", fallback: "Tables"), selected: page == .tables) {
+                    SportsChip(title: "🏆 " + L10n.string("livetv_sports_tables", fallback: "Tables"), selected: page == .tables) {
                         page = .tables
                     }
-                    ForEach(order.filter { sports.contains($0) }, id: \.self) { item in
-                        chip(item.icon + " " + item.label, selected: page == .events && sport == item) {
+                    // Your sports, in your order (Settings → Sports).
+                    ForEach(settings.visibleSports.filter { sports.contains($0) }, id: \.self) { item in
+                        SportsChip(title: item.icon + " " + item.label, selected: page == .events && sport == item) {
                             page = .events
                             sport = sport == item ? nil : item
                         }
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 14)
+                .padding(.horizontal, 8)
             }
+            .scrollClipDisabledIfAvailable()
             Spacer(minLength: 12)
             if store.pending > 0 { ProgressView() }
-            Button {
-                store.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 22, weight: .semibold))
-                    .accessibilityLabel(L10n.string("livetv_refresh", fallback: "Refresh"))
-            }
-            Button {
-                showsQuickMenu = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 22, weight: .semibold))
-                    .accessibilityLabel(L10n.string("livetv_sports_quick_menu", fallback: "Sports options"))
-            }
-        }
-    }
-
-    private func chip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.system(size: 22, weight: selected ? .bold : .regular))
+            SportsChip(systemImage: "arrow.clockwise", selected: false) { store.refresh() }
+                .accessibilityLabel(L10n.string("livetv_refresh", fallback: "Refresh"))
+            SportsChip(systemImage: "gearshape", selected: false) { showsQuickMenu = true }
+                .accessibilityLabel(L10n.string("livetv_sports_quick_menu", fallback: "Sports options"))
         }
     }
 
@@ -172,20 +171,17 @@ struct SportsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(-SportsStore.daysBack...SportsStore.daysAhead, id: \.self) { offset in
-                        Button {
+                        SportsChip(title: Self.dayTitle(offset), selected: store.dayOffset == offset, small: true) {
                             store.dayOffset = offset
                             focusedID = nil
-                        } label: {
-                            Text(Self.dayTitle(offset))
-                                .font(.system(size: 20, weight: store.dayOffset == offset ? .bold : .regular))
-                                .foregroundColor(store.dayOffset == offset ? LiveTVTheme.accent : nil)
                         }
                         .id(offset)
                     }
                 }
                 .padding(.horizontal, 60)
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
             }
+            .scrollClipDisabledIfAvailable()
             .onAppear { proxy.scrollTo(store.dayOffset, anchor: .center) }
         }
     }
@@ -275,22 +271,6 @@ struct SportsView: View {
     // MARK: The game in focus
 
     @ViewBuilder
-    private func backdrop(_ event: SportsEvent?) -> some View {
-        // The two teams' colours, washed out to the dark.
-        let colors = (event?.sides ?? []).compactMap { $0.team.color }.map { Color(sportsARGB: $0) }
-        ZStack {
-            if colors.count == 2 {
-                LinearGradient(colors: [colors[0].opacity(0.55), colors[1].opacity(0.55)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.9)], startPoint: .top, endPoint: .bottom)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.3), value: event?.id)
-    }
-
-    @ViewBuilder
     private func details(_ event: SportsEvent?, width: CGFloat) -> some View {
         if let event, let league = SportsCatalog.league(event.leagueId) {
             VStack(alignment: .leading, spacing: 16) {
@@ -323,7 +303,7 @@ struct SportsView: View {
                         .foregroundColor(.white.opacity(0.7))
                         .lineLimit(2)
                 }
-                if !event.broadcasts.isEmpty {
+                if settings.showsBroadcasts, !event.broadcasts.isEmpty {
                     Label(event.broadcasts.prefix(5).joined(separator: ", "), systemImage: "tv")
                         .font(.system(size: 20))
                         .foregroundColor(.white.opacity(0.7))
@@ -394,7 +374,8 @@ struct SportsGameCard: View {
                         .font(.system(size: 18, weight: .semibold))
                         .lineLimit(1)
                     Spacer()
-                    if let tv = event.broadcasts.first {
+                    // ESPN's channels are the US and Canada's.
+                    if SportsSettings.shared.showsBroadcasts, let tv = event.broadcasts.first {
                         Text(tv)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundColor(.white.opacity(0.7))
@@ -539,6 +520,7 @@ struct SportsLiveBadge: View {
 private struct SportsQuickMenu: View {
     let onLeagues: () -> Void
     let onTeams: () -> Void
+    let onSports: () -> Void
     let onClose: () -> Void
     @ObservedObject private var settings = SportsSettings.shared
     @FocusState private var focused: Int?
@@ -569,6 +551,9 @@ private struct SportsQuickMenu: View {
             LiveTVQuickRow(title: L10n.string("livetv_sports_my_teams_menu", fallback: "My Teams…"),
                            value: "\(settings.followed.count)", isFocused: focused == 3, action: onTeams)
                 .focused($focused, equals: 3)
+            LiveTVQuickRow(title: L10n.string("livetv_sports_sports_menu", fallback: "Sports…"),
+                           value: "\(settings.visibleSports.count)", isFocused: focused == 4, action: onSports)
+                .focused($focused, equals: 4)
         }
         .padding(18)
         .frame(width: 720)
@@ -616,9 +601,8 @@ struct SportsLeaguesPicker: View {
     @State private var openAreas: Set<String> = []
 
     var body: some View {
-        let order = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
         let leagues = SportsCatalog.all.filter(\.hasFeed)
-        let sports = order.filter { sport in leagues.contains { $0.sport == sport } }
+        let sports = settings.visibleSports.filter { sport in leagues.contains { $0.sport == sport } }
         LiveTVSheetPage(
             title: L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"),
             subtitle: L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off.")
@@ -676,8 +660,7 @@ struct SportsLeaguesPicker: View {
     }
 }
 
-/// One league: its logo, name and short name, and a switch (Nuvio's row
-/// look).
+/// One league: its logo, name and a switch (Nuvio's row look).
 private struct SportsLeagueRow: View {
     let league: League
     @ObservedObject private var settings = SportsSettings.shared
@@ -691,7 +674,7 @@ private struct SportsLeagueRow: View {
         } label: {
             LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
                 SportsLeagueLogo(league: league, logo: store.leagueLogos[league.id], size: 46)
-                LiveTVSettingsRows.rowText(title: league.name, subtitle: league.short)
+                SportsRowTitle(title: league.name)
                 Spacer(minLength: 24)
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(on ? LiveTVTheme.accent : Color.white.opacity(0.24))
@@ -711,33 +694,119 @@ private struct SportsLeagueRow: View {
     }
 }
 
-/// Follow a team (its games in My Teams): a star by its name, filled when
-/// followed.
-struct SportsFollowStar: View {
+/// A small star on a team you follow: only shown, never focused (teams are
+/// chosen in one place, My Teams).
+struct SportsFollowBadge: View {
     let team: TeamInfo
-    var size: CGFloat = 52
+    var size: CGFloat = 30
     @ObservedObject private var settings = SportsSettings.shared
+
+    var body: some View {
+        if settings.isFollowed(team) {
+            Image(systemName: "star.fill")
+                .font(.system(size: size * 0.5, weight: .bold))
+                .foregroundColor(LiveTVTheme.isWhiteAccent ? .black : .white)
+                .frame(width: size, height: size)
+                .background(Circle().fill(LiveTVTheme.accent))
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
+                .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                .accessibilityLabel(L10n.format("livetv_sports_following_format", fallback: "Following %@", team.name))
+        }
+    }
+}
+
+/// A Sports page chip (a page, a sport, a day, Refresh): Nuvio's pill,
+/// glass when idle, white when focused, no system lift (its square
+/// shadow).
+struct SportsChip: View {
+    var title: String? = nil
+    var systemImage: String? = nil
+    let selected: Bool
+    var small = false
+    let action: () -> Void
     @FocusState private var focused: Bool
 
     var body: some View {
-        let on = settings.isFollowed(team)
-        Button {
-            settings.toggleFollow(team)
-        } label: {
-            Image(systemName: on ? "star.fill" : "star")
-                .font(.system(size: size * 0.46, weight: .bold))
-                .foregroundColor(focused ? .black : (on ? LiveTVTheme.accent : .white.opacity(0.85)))
-                .frame(width: size, height: size)
-                .background(Circle().fill(focused ? Color.white : Color.white.opacity(0.1)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(focused ? 0 : 0.16), lineWidth: 1))
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let systemImage { Image(systemName: systemImage).font(.system(size: small ? 18 : 20, weight: .semibold)) }
+                if let title { Text(title).font(.system(size: small ? 20 : 22, weight: selected ? .bold : .semibold)) }
+            }
+            .lineLimit(1)
+            .foregroundColor(focused ? .black : (selected ? LiveTVTheme.accent : .white.opacity(0.9)))
+            .padding(.horizontal, title == nil ? 18 : 24)
+            .frame(height: small ? 48 : 56)
+            .background(
+                Capsule().fill(focused ? Color.white : (selected ? Color.white.opacity(0.24) : Color.white.opacity(0.1))))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(focused ? 0 : 0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(focused ? 0.35 : 0), radius: 10, y: 4)
         }
         .buttonStyle(PosterCardButtonStyle())
         .focused($focused)
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(focused ? 1.1 : 1)
+        .scaleEffect(focused ? 1.06 : 1)
         .animation(.easeOut(duration: 0.14), value: focused)
-        .accessibilityLabel(on ? L10n.format("livetv_sports_following_format", fallback: "Following %@", team.name)
-                               : L10n.format("livetv_sports_follow_format", fallback: "Follow %@", team.name))
+    }
+}
+
+/// What's behind the Sports pages: the game's (or team's) stadium when
+/// Wikipedia has it, else the teams' colours; darkened so the page reads.
+struct SportsScene: Equatable {
+    var colors: [UInt32]
+    var venue: SportsVenueQuery?
+
+    init(event: SportsEvent) {
+        colors = event.sides.compactMap { $0.team.color }
+        venue = event.venueQuery
+    }
+
+    init(team: TeamInfo) {
+        colors = [team.color, team.altColor].compactMap { $0 }
+        venue = SportsVenueQuery(team: team.fullName.isEmpty ? team.name : team.fullName)
+    }
+}
+
+extension SportsEvent {
+    /// Its venue (and city), else its home team's ground.
+    var venueQuery: SportsVenueQuery {
+        SportsVenueQuery(venue: venue, city: city,
+                         team: home.map { $0.team.fullName.isEmpty ? $0.team.name : $0.team.fullName })
+    }
+}
+
+struct SportsBackdrop: View {
+    let scene: SportsScene?
+    @ObservedObject private var venues = SportsVenueStore.shared
+
+    var body: some View {
+        let colors = (scene?.colors ?? []).map { Color(sportsARGB: $0) }
+        let image = venues.image(scene?.venue)
+        ZStack {
+            Color.black
+            if let image {
+                Color.clear
+                    .overlay { SportsImage(url: image, fill: true) { Color.clear } }
+                    .clipped()
+                    .opacity(0.6)
+                    .transition(.opacity)
+            }
+            if colors.count >= 2 {
+                LinearGradient(colors: [colors[0].opacity(image == nil ? 0.55 : 0.3), colors[1].opacity(image == nil ? 0.55 : 0.3)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            } else if let color = colors.first {
+                LinearGradient(colors: [color.opacity(image == nil ? 0.55 : 0.3), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.9)], startPoint: .top, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.4), value: scene)
+        .animation(.easeInOut(duration: 0.4), value: image)
+        // Looked up once focus rests on it a moment.
+        .task(id: scene?.venue) {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            venues.want(scene?.venue)
+        }
     }
 }
 
@@ -804,7 +873,7 @@ struct SportsMatchup: View {
     let hideScores: Bool
     let width: CGFloat
     var logoSize: CGFloat = 110
-    /// A star on each team's logo, to follow it (the game's page).
+    /// A small star on the logo of a team you follow (the game's page).
     var follow = false
 
     var body: some View {
@@ -835,8 +904,8 @@ struct SportsMatchup: View {
             SportsTeamLogo(team: side.team, size: logoSize)
                 .overlay(alignment: .topTrailing) {
                     if follow {
-                        SportsFollowStar(team: side.team, size: 50)
-                            .offset(x: 34, y: -8)
+                        SportsFollowBadge(team: side.team, size: logoSize * 0.24)
+                            .offset(x: 4, y: -2)
                     }
                 }
             Text(side.team.fullName.isEmpty ? side.team.name : side.team.fullName)

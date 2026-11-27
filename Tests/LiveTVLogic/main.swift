@@ -1076,5 +1076,48 @@ check(SportsTeams.footballArea(liga3) == "ger" && SportsTeams.footballArea(bunde
 let areaOrder = SportsTeams.orderedAreas(["eng", "uefa", "ger", "fifa", "esp"], country: "DE")
 check(areaOrder == ["ger", "uefa", "fifa", "eng", "esp"], "teams: your country, the confederations, then A to Z")
 
+// Round 8: scorers, sports order, cups, stadium pictures (17d)
+let messyGoals: [[SportsScoringPlay]] = [[
+    SportsScoringPlay(clock: "1'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "2'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "3'", team: "Rot-Weiss Essen", text: "", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "4'", team: "Rot-Weiss Essen", text: "Jaka Potocnik", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "5'", team: "Rot-Weiss Essen", text: "Jaka Cuber Potocnik", awayScore: nil, homeScore: nil),
+    SportsScoringPlay(clock: "6'", team: "Rot-Weiss Essen", text: "S. Telalovic", awayScore: nil, homeScore: nil),
+]]
+let essenTop = SportsTeams.openLigaScorers(team: "Rot-Weiss Essen", goals: messyGoals)
+check(essenTop.first?.name == "Jaka Cuber Potocnik" && essenTop.first?.value == "2",
+      "scorers: goals without a name left out, one player's spellings counted once")
+check(SportsTeams.openLigaScorers(team: "Rot-Weiss Essen", goals: [[messyGoals[0][5]]]).isEmpty, "scorers: one goal is not enough")
+check(SportsTeams.scorerKey("J. Potocnik") == SportsTeams.scorerKey("Jaka Cuber Potocnik") && SportsTeams.scorerKey(" ") == nil,
+      "scorers: initial and surname")
+let customOrder = SportsCatalog.sportsOrder(custom: ["tennis", "nonsense", "football"], region: "OTHER")
+check(Array(customOrder.prefix(3)) == [.tennis, .football, .racing] && customOrder.count == Sport.allCases.count,
+      "sports: yours first, then the region's, each once")
+let movedOrder = SportsCatalog.moving(.racing, by: -1, among: [.football, .racing, .tennis], order: SportsCatalog.sportsOrder(region: "OTHER"))
+check(Array(movedOrder.prefix(3)) == ["racing", "football", "tennis"], "sports: moved up among the ones listed")
+check(SportsCatalog.withoutTable.contains("soccer/ger.dfb_pokal") && !SportsCatalog.withoutTable.contains("soccer/ger.1")
+      && SportsCatalog.withoutTable.allSatisfy { SportsCatalog.league($0) != nil }, "tables: cups known without a table, all in the catalogue")
+let wikiPage = #"{"query":{"pages":[{"title":"Weserstadion","pageprops":{"wikibase_item":"Q154475"},"extract":"The Weserstadion is a football stadium in Bremen, Germany.","thumbnail":{"source":"https://upload.wikimedia.org/x.jpg"}}]}}"#
+let weser = SportsVenues.parsePage(Data(wikiPage.utf8))
+let weserItem = #"{"entities":{"Q154475":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q1154710"}}}}],"P1083":[{"mainsnak":{"datavalue":{"value":{"amount":"+42100"}}}}]}}}}"#
+check(weser?.item == "Q154475" && weser?.image == "https://upload.wikimedia.org/x.jpg", "venues: the article's item and picture")
+check(weser.map { SportsVenues.isVenue($0, item: Data(weserItem.utf8), city: "Bremen") } == true, "venues: a stadium in the city given")
+check(weser.map { SportsVenues.isVenue($0, item: Data(weserItem.utf8), city: "Minden") } == false, "venues: another city's is not taken")
+let oldGround = #"{"entities":{"Q154475":{"claims":{"P1083":[{"mainsnak":{"datavalue":{"value":{"amount":"+20000"}}}}],"P576":[{"mainsnak":{"datavalue":{"value":{"time":"+2012"}}}}]}}}}"#
+check(weser.map { SportsVenues.isVenue($0, item: Data(oldGround.utf8), city: "Bremen") } == false, "venues: a demolished ground is not taken")
+let district = #"{"entities":{"Q154475":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q1739536"}}}}]}}}}"#
+check(weser.map { SportsVenues.isVenue($0, item: Data(district.utf8), city: "Bremen") } == false, "venues: a district of the same name is not taken")
+let disambiguation = #"{"query":{"pages":[{"title":"Arsenal","pageprops":{"disambiguation":"","wikibase_item":"Q1"},"extract":"Arsenal may refer to"}]}}"#
+check(SportsVenues.parsePage(Data(disambiguation.utf8))?.disambiguation == true
+      && SportsVenues.parsePage(Data(#"{"query":{"pages":[{"title":"X","missing":true}]}}"#.utf8)) == nil, "venues: no disambiguation, no missing page")
+let clubItem = #"{"entities":{"Q1":{"claims":{"P115":[{"mainsnak":{"datavalue":{"value":{"id":"Q571520"}}},"qualifiers":{"P582":[{}]}},{"mainsnak":{"datavalue":{"value":{"id":"Q1656716"}}}}]}}}}"#
+check(SportsVenues.homeGround(team: Data(clubItem.utf8), item: "Q1") == "Q1656716", "venues: the team's current ground, not its old one")
+let groundItem = #"{"entities":{"Q1656716":{"claims":{"P18":[{"mainsnak":{"datavalue":{"value":"Stadion essen.jpg"}}}]}}}}"#
+check(SportsVenues.groundImage(Data(groundItem.utf8), item: "Q1656716") == "https://commons.wikimedia.org/wiki/Special:FilePath/Stadion_essen.jpg?width=1920",
+      "venues: the ground's Commons picture")
+check(SportsVenueQuery(venue: "Stadion an der Hafenstraße", city: "Essen").key == "v:stadion an der hafenstrasse|essen"
+      && SportsVenueQuery(team: "Rot-Weiss Essen").key == "t:rot weiss essen" && SportsVenueQuery().key == nil, "venues: the cache key")
+
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

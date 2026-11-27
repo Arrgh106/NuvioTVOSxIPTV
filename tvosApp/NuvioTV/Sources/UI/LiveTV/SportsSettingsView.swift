@@ -8,6 +8,7 @@ struct SportsSettingsView: View {
     @ObservedObject private var settings = SportsSettings.shared
     @State private var showsLeagues = false
     @State private var showsTeams = false
+    @State private var showsSports = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -40,6 +41,13 @@ struct SportsSettingsView: View {
                     optionLabel: { SportsSettings.ScoreMode(rawValue: $0)?.title ?? $0 }
                 )
                 LiveTVSettingsRows.action(
+                    title: L10n.string("livetv_sports_sports_title", fallback: "Sports"),
+                    subtitle: L10n.string("livetv_sports_sports_settings", fallback: "Which sports the Sports page shows, and in which order."),
+                    value: L10n.format("livetv_sports_sports_on_format", fallback: "%d on", settings.visibleSports.count),
+                    accentColor: accentColor,
+                    action: { showsSports = true }
+                )
+                LiveTVSettingsRows.action(
                     title: L10n.string("livetv_sports_leagues_title", fallback: "Leagues in All Events"),
                     subtitle: L10n.string("livetv_sports_leagues_detail", fallback: "Your region's leagues are on; turn any on or off."),
                     value: L10n.format("livetv_sports_leagues_on_format", fallback: "%d on", settings.shownLeagues.count),
@@ -57,5 +65,6 @@ struct SportsSettingsView: View {
         }
         .sheet(isPresented: $showsLeagues) { SportsLeaguesPicker() }
         .sheet(isPresented: $showsTeams) { SportsTeamsPicker() }
+        .sheet(isPresented: $showsSports) { SportsSportsPicker() }
     }
 }

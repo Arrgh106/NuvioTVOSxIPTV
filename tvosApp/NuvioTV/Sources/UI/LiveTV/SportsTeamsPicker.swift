@@ -16,9 +16,10 @@ struct SportsTeamsPicker: View {
     @State private var openLeagues: Set<String> = []
 
     var body: some View {
+        // Only competitions with a table (cups have none: known before
+        // anything is asked, so nothing vanishes once opened).
         let leagues = SportsCatalog.all.filter { $0.hasFeed && $0.kind == .teams && !store.noTable.contains($0.id) }
-        let sports = SportsCatalog.sportsOrder(region: settings.effectiveRegion)
-            .filter { sport in leagues.contains { $0.sport == sport } }
+        let sports = settings.visibleSports.filter { sport in leagues.contains { $0.sport == sport } }
         LiveTVSheetPage(
             title: L10n.string("livetv_sports_my_teams_title", fallback: "My Teams"),
             subtitle: L10n.string("livetv_sports_my_teams_detail",
@@ -86,7 +87,7 @@ struct SportsTeamsPicker: View {
         ForEach(list) { league in
             SportsGroupRow(
                 title: league.name,
-                subtitle: league.short,
+                subtitle: nil,
                 isOpen: openLeagues.contains(league.id),
                 action: {
                     toggle(&openLeagues, league.id)
@@ -162,7 +163,7 @@ struct SportsTeamRow: View {
 /// league), in Nuvio's settings-row look.
 struct SportsGroupRow<Leading: View>: View {
     let title: String
-    let subtitle: String
+    let subtitle: String?
     let isOpen: Bool
     let action: () -> Void
     @ViewBuilder let leading: Leading
@@ -172,7 +173,7 @@ struct SportsGroupRow<Leading: View>: View {
         Button(action: action) {
             LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
                 leading.frame(width: 46, height: 46)
-                LiveTVSettingsRows.rowText(title: title, subtitle: subtitle)
+                SportsRowTitle(title: title, subtitle: subtitle)
                 Spacer(minLength: 24)
                 Image(systemName: isOpen ? "chevron.up" : "chevron.down")
                     .font(.system(size: 20, weight: .bold))
@@ -182,6 +183,99 @@ struct SportsGroupRow<Leading: View>: View {
         .buttonStyle(PosterCardButtonStyle())
         .focused($focused)
         .focusEffectDisabledIfAvailable()
+    }
+}
+
+/// A row's title (and subtitle when there is one) in Nuvio's settings type.
+struct SportsRowTitle: View {
+    let title: String
+    var subtitle: String? = nil
+
+    var body: some View {
+        if let subtitle, !subtitle.isEmpty {
+            LiveTVSettingsRows.rowText(title: title, subtitle: subtitle)
+        } else {
+            Text(title)
+                .font(.appFont(size: 22, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+    }
+}
+
+/// Settings → Sports → Sports: which sports the Sports page shows (its
+/// chips, All Events, Tables, the pickers) and in which order. A sport
+/// turned off keeps its leagues and teams for when it's turned on again.
+struct SportsSportsPicker: View {
+    @ObservedObject private var settings = SportsSettings.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let sports = settings.orderedSports.filter { sport in SportsCatalog.all.contains { $0.sport == sport && $0.hasFeed } }
+        LiveTVSheetPage(
+            title: L10n.string("livetv_sports_sports_title", fallback: "Sports"),
+            subtitle: L10n.string("livetv_sports_sports_detail",
+                                  fallback: "Press a sport to show or hide it; the arrows move it up or down the Sports page.")
+        ) {
+            ForEach(Array(sports.enumerated()), id: \.element) { index, sport in
+                HStack(spacing: 12) {
+                    SportsSportRow(sport: sport)
+                    SportsMoveButton(systemImage: "chevron.up", enabled: index > 0) { settings.moveSport(sport, by: -1, among: sports) }
+                    SportsMoveButton(systemImage: "chevron.down", enabled: index < sports.count - 1) { settings.moveSport(sport, by: 1, among: sports) }
+                }
+                .focusSection()
+            }
+        }
+        .onExitCommand { dismiss() }
+    }
+}
+
+private struct SportsSportRow: View {
+    let sport: Sport
+    @ObservedObject private var settings = SportsSettings.shared
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let on = settings.isSportShown(sport)
+        Button {
+            settings.toggleSport(sport)
+        } label: {
+            LiveTVSettingsRows.rowShell(isFocused: focused, accentColor: LiveTVTheme.accent) {
+                Text(sport.icon).font(.system(size: 30)).frame(width: 46, height: 46)
+                SportsRowTitle(title: sport.label)
+                Spacer(minLength: 24)
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(on ? LiveTVTheme.accent : .white.opacity(0.4))
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
+private struct SportsMoveButton: View {
+    let systemImage: String
+    let enabled: Bool
+    let action: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundColor(focused ? .black : .white.opacity(enabled ? 0.85 : 0.25))
+                .frame(width: 64, height: 64)
+                .background(Circle().fill(focused ? Color.white : Color.white.opacity(0.1)))
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+        .disabled(!enabled)
+        .scaleEffect(focused ? 1.08 : 1)
+        .animation(.easeOut(duration: 0.14), value: focused)
     }
 }
 

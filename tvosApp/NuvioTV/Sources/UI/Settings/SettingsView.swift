@@ -14744,7 +14744,7 @@ private struct LicensesAttributionsSheet: View {
         LicenseEntry(
             id: "wikimedia",
             title: "Wikimedia Commons",
-            body: "Club logos of the 3. Liga, as OpenLigaDB links them, and the logos of the leagues ESPN has none for (Wikipedia / Wikimedia Commons). Logos belong to their clubs and competitions.",
+            body: "Club logos of the 3. Liga, as OpenLigaDB links them, the logos of the leagues ESPN has none for, and the stadium photos behind the Sports pages (Wikipedia / Wikidata / Wikimedia Commons). Logos belong to their clubs and competitions; photos to their authors, under the license on each file's Commons page (mostly CC BY-SA).",
             license: "Per file on commons.wikimedia.org"
         ),
         LicenseEntry(

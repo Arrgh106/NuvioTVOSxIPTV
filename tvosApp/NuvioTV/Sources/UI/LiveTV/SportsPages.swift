@@ -2,25 +2,32 @@ import SwiftUI
 
 /// Fork (Live TV step 17d): My Teams, as Android's My Sports: a row per
 /// team you follow (its badge, name and place in its table), its last
-/// results and coming games, opening on the next one. Follow a team on a
-/// game's page.
+/// results and coming games, opening on the next one. Teams are chosen in
+/// one place (Edit My Teams, Settings → Sports).
 struct SportsMyTeamsView: View {
     let now: Date
     let onOpen: (SportsEvent) -> Void
+    /// The game in focus (the page's backdrop).
+    var onFocus: (SportsEvent) -> Void = { _ in }
 
     @ObservedObject private var store = SportsStore.shared
     @ObservedObject private var settings = SportsSettings.shared
     @State private var editing = false
 
+    /// Your teams, but not of sports you turned off.
+    private var teams: [TeamInfo] {
+        settings.followed.filter { team in SportsCatalog.league(team.leagueId).map { settings.isSportShown($0.sport) } ?? true }
+    }
+
     var body: some View {
         Group {
-            if settings.followed.isEmpty {
+            if teams.isEmpty {
                 VStack(spacing: 16) {
                     Image(systemName: "star")
                         .font(.system(size: 60))
                         .foregroundColor(.white.opacity(0.6))
                     Text(L10n.string("livetv_sports_my_teams_empty",
-                                     fallback: "Choose your teams here, or press the star by a team on a game's page or in Tables: their games show up here, with their place in the table."))
+                                     fallback: "Choose your teams: their games show up here, with their place in the table."))
                         .font(.system(size: 24))
                         .foregroundColor(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
@@ -39,7 +46,7 @@ struct SportsMyTeamsView: View {
                                 .font(.system(size: 20, weight: .semibold))
                         }
                         .padding(.horizontal, 60)
-                        ForEach(settings.followed, id: \.key) { team in
+                        ForEach(teams, id: \.key) { team in
                             teamRow(team)
                         }
                     }
@@ -88,7 +95,7 @@ struct SportsMyTeamsView: View {
                             ForEach(shown) { event in
                                 if let league = SportsCatalog.league(event.leagueId) {
                                     SportsGameCard(event: event, league: league, width: 380, hideScores: settings.hides(event),
-                                                   now: now, withDate: true, onFocus: {}, onOpen: { onOpen(event) })
+                                                   now: now, withDate: true, onFocus: { onFocus(event) }, onOpen: { onOpen(event) })
                                         .id(event.id)
                                 }
                             }
@@ -108,45 +115,46 @@ struct SportsMyTeamsView: View {
 /// group, zones as a coloured edge with their names below, the teams you
 /// follow marked, every other row shaded) and on the right the team in
 /// focus: its badge, place, points, record, goals, last result and next
-/// game, and Follow.
+/// game, top players; a star by the teams you follow.
 struct SportsTablesView: View {
+    /// The team in focus (the page's backdrop).
+    var onFocus: (TeamInfo) -> Void = { _ in }
     @ObservedObject private var store = SportsStore.shared
     @ObservedObject private var settings = SportsSettings.shared
     @State private var leagueID: String?
     @State private var focusedRow: SportsStandingsRow?
 
-    /// Leagues with tables: the ones shown and the ones of your teams (not
-    /// cups, which have none).
-    private var leagues: [League] {
+    /// Leagues that may have tables: the ones shown and the ones of your
+    /// teams (sports you turned off left out).
+    private var candidates: [League] {
         var list = settings.shownLeagues.filter { $0.kind == .teams }
         for team in settings.followed {
-            if let league = SportsCatalog.league(team.leagueId), !list.contains(league) { list.insert(league, at: 0) }
+            if let league = SportsCatalog.league(team.leagueId), settings.isSportShown(league.sport), !list.contains(league) {
+                list.insert(league, at: 0)
+            }
         }
-        return list.filter { !store.noTable.contains($0.id) }
+        return list
     }
 
     var body: some View {
-        let list = leagues
+        // Cups have no table.
+        let list = candidates.filter { !store.noTable.contains($0.id) }
         let league = list.first { $0.id == leagueID } ?? list.first
         VStack(alignment: .leading, spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
                     ForEach(list) { item in
-                        Button {
+                        SportsLeagueChip(league: item, logo: store.leagueLogos[item.id], selected: item.id == league?.id) {
                             leagueID = item.id
                             focusedRow = nil
-                        } label: {
-                            HStack(spacing: 10) {
-                                SportsLeagueLogo(league: item, logo: store.leagueLogos[item.id], size: 28)
-                                Text(item.name).font(.system(size: 20, weight: item.id == league?.id ? .bold : .regular))
-                            }
                         }
                         .onAppear { store.wantLogo(item) }
                     }
                 }
                 .padding(.horizontal, 60)
-                .padding(.vertical, 12)
+                .padding(.vertical, 14)
             }
+            .scrollClipDisabledIfAvailable()
             .focusSection()
             if let league {
                 content(league)
@@ -154,9 +162,9 @@ struct SportsTablesView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Every league's table side by side: switching is instant, and a cup
-        // without one is gone before it's chosen.
-        .task(id: list.map(\.id)) { await store.loadStandings(list) }
+        // Every league's table side by side: switching is instant (a
+        // competition without one is asked too, in case it has one now).
+        .task(id: candidates.map(\.id)) { await store.loadStandings(candidates) }
     }
 
     @ViewBuilder
@@ -190,10 +198,11 @@ struct SportsTablesView: View {
                     }
                     head(standings)
                     ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
-                        // Select a line: follow the team (its star).
                         SportsTableRowView(row: row, columns: standings.columns, mine: isMine(row, league: league),
-                                           shaded: index % 2 == 1, onFocus: { focusedRow = row },
-                                           onSelect: { settings.toggleFollow(team(row, league: league)) })
+                                           shaded: index % 2 == 1, onFocus: {
+                                               focusedRow = row
+                                               onFocus(team(row, league: league))
+                                           })
                     }
                 }
                 if !zones.isEmpty {
@@ -255,7 +264,7 @@ struct SportsTablesView: View {
                             .foregroundColor(LiveTVTheme.accent)
                     }
                     Spacer(minLength: 12)
-                    SportsFollowStar(team: info, size: 60)
+                    SportsFollowBadge(team: info, size: 40)
                 }
                 if let zone = row.zone {
                     Label(zone.label, systemImage: "flag.fill")
@@ -342,7 +351,6 @@ private struct SportsTableRowView: View {
     let mine: Bool
     var shaded = false
     var onFocus: () -> Void = {}
-    var onSelect: () -> Void = {}
     @FocusState private var focused: Bool
 
     /// Wider columns for the goals ("42:19") and the points.
@@ -356,7 +364,7 @@ private struct SportsTableRowView: View {
     }
 
     var body: some View {
-        Button(action: onSelect) {
+        Button(action: {}) {
             HStack(spacing: 0) {
                 Rectangle()
                     .fill(row.zone.map { Color(sportsARGB: $0.color) } ?? .clear)
@@ -401,5 +409,34 @@ private struct SportsTableRowView: View {
         .buttonStyle(LiveTVInvisibleButtonStyle())
         .focused($focused)
         .onChange(of: focused) { _, now in if now { onFocus() } }
+    }
+}
+
+/// A league to pick on the Tables page: its logo and name on Nuvio's pill.
+private struct SportsLeagueChip: View {
+    let league: League
+    let logo: String?
+    let selected: Bool
+    let action: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                SportsLeagueLogo(league: league, logo: logo, size: 28)
+                Text(league.name).font(.system(size: 20, weight: selected ? .bold : .semibold)).lineLimit(1)
+            }
+            .foregroundColor(focused ? .black : (selected ? LiveTVTheme.accent : .white.opacity(0.9)))
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+            .background(Capsule().fill(focused ? Color.white : (selected ? Color.white.opacity(0.24) : Color.white.opacity(0.1))))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(focused ? 0 : 0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(focused ? 0.35 : 0), radius: 10, y: 4)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+        .scaleEffect(focused ? 1.06 : 1)
+        .animation(.easeOut(duration: 0.14), value: focused)
     }
 }
