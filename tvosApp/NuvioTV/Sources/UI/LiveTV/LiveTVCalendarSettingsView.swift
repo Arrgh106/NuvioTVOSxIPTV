@@ -13,7 +13,7 @@ struct LiveTVCalendarSettingsView: View {
                 title: L10n.string("nav_calendar", fallback: "Calendar"),
                 subtitle: L10n.string("livetv_settings_calendar_subtitle", fallback: "The days and times of your shows and films")
             ) {
-                LiveTVSettingsRows.option(
+                LiveTVSettingsRows.choice(
                     title: L10n.string("livetv_settings_calendar_zone", fallback: "Time Zone"),
                     subtitle: L10n.string("livetv_settings_calendar_zone_detail", fallback: "The calendar shows days and air times in this time zone"),
                     selection: $settings.calendarTimeZone,
@@ -29,7 +29,7 @@ struct LiveTVCalendarSettingsView: View {
                     isOn: $settings.calendarHideSpoilers,
                     accentColor: accentColor
                 )
-                LiveTVSettingsRows.option(
+                LiveTVSettingsRows.choice(
                     title: L10n.string("livetv_settings_calendar_country", fallback: "Country for Film Dates"),
                     subtitle: L10n.string("livetv_settings_calendar_country_detail", fallback: "Cinema, home and disc releases of films in this country (US when a film has none there). Needs TMDB"),
                     selection: $settings.calendarCountry,
@@ -63,51 +63,29 @@ struct LiveTVCalendarSettingsView: View {
                     isOn: $settings.calendarSkipNewsTalk,
                     accentColor: accentColor
                 )
-                LiveTVSettingsRows.option(
+                LiveTVSettingsRows.choice(
                     title: L10n.string("livetv_settings_calendar_languages", fallback: "Airing Today: Streaming Languages"),
-                    subtitle: L10n.string("livetv_settings_calendar_languages_detail", fallback: "TV in your country is always shown. Streaming from elsewhere only in these languages"),
+                    subtitle: L10n.string("livetv_settings_calendar_languages_detail", fallback: "TV in your country is always shown. Streaming from elsewhere only in these languages (dubbed shows are mostly English ones)"),
                     selection: $settings.calendarAiringLanguages,
-                    options: LiveTVSettings.calendarAiringLanguageChoices,
+                    options: Self.languageChoices,
                     accentColor: accentColor,
-                    optionLabel: { Self.languagesLabel($0) }
+                    optionLabel: { LiveTVCalendarSettings.languagesLabel($0) }
                 )
             }
-            LiveTVSettingsRows.group(
-                title: L10n.string("livetv_settings_calendar_ratings", fallback: "Ratings"),
-                subtitle: L10n.string("livetv_settings_calendar_ratings_detail", fallback: "Shown for the card in focus, always in the same places, in the order of Settings → Rating Providers & Order")
-            ) {
-                ForEach(TvRatingVisual.all, id: \.source) { visual in
-                    LiveTVSettingsRows.toggle(
-                        title: visual.displayName,
-                        subtitle: "",
-                        isOn: rating(visual.source),
-                        accentColor: accentColor
-                    )
-                }
-            }
+            // The ratings are the app's: Settings → Rating Providers & Order.
         }
     }
 
-    /// One rating on or off.
-    private func rating(_ source: String) -> Binding<Bool> {
-        Binding(
-            get: { settings.calendarRatings.split(separator: ",").contains { $0 == source } },
-            set: { on in
-                var list = settings.calendarRatings.split(separator: ",").map(String.init).filter { $0 != source }
-                if on { list.append(source) }
-                settings.calendarRatings = list.joined(separator: ",")
-            })
-    }
-
-    /// "German", "German and English", "All languages".
-    @MainActor static func languagesLabel(_ choice: String) -> String {
-        let code = LiveTVCalendarSettings.mainLanguageCode
-        let main = Locale.current.localizedString(forLanguageCode: code) ?? code
-        switch choice {
-        case "all": return L10n.string("livetv_settings_calendar_lang_all", fallback: "All languages")
-        case "local": return main
-        default: return L10n.format("livetv_cal_lang_and_english_format", fallback: "%@ and English", main)
+    /// The country's language with English, alone, all; then any other
+    /// language, alone and with English.
+    @MainActor static var languageChoices: [String] {
+        let main = LiveTVCalendarSettings.mainLanguageCode
+        var result = main == "en" ? ["local", "all"] : ["localEnglish", "local", "all"]
+        for code in LiveTVCalendarSettings.pickableLanguages where code != main {
+            result.append(code)
+            if code != "en" { result.append(code + "+en") }
         }
+        return result
     }
 
     /// "Apple TV: Berlin (GMT+1)", "New York (GMT-5)".

@@ -267,12 +267,18 @@ struct LiveTVCalendarView: View {
             left()
                 .frame(width: Self.paneWidth)
             // On a dark glass: the big picture shows through, the text reads.
-            details(focused, compact: false)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(Color.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .padding(.top, 30)
-                .padding(.trailing, 60)
+            // One box of the same size and place for every card, so going
+            // through the cards moves nothing; what doesn't fit is cut.
+            GeometryReader { box in
+                details(focused, compact: false, width: max(box.size.width - 56, 200))
+                    .padding(28)
+                    .frame(width: box.size.width, height: box.size.height, alignment: .topLeading)
+                    .background(Color.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+            .padding(.top, 30)
+            .padding(.bottom, 40)
+            .padding(.trailing, 60)
         }
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -301,15 +307,6 @@ struct LiveTVCalendarView: View {
             .padding(.horizontal, 60)
             .focusSection()
             .padding(.top, 14)
-            // Not your calendar: everything new on TV today.
-            Text(L10n.format("livetv_cal_airing_detail_format",
-                             fallback: "Everything with a new episode today on TV in %@, and streaming in %@, not only your shows. Following shows only the ones you follow.",
-                             Self.countryName(LiveTVCalendarSettings.country),
-                             LiveTVCalendarSettings.airingLanguagesLabel))
-                .font(.system(size: 19))
-                .foregroundColor(.white.opacity(0.6))
-                .lineLimit(2)
-                .padding(.horizontal, 60)
             twoPane(focused) {
                 grid(airingShown, empty: store.airingLoading
                      ? L10n.string("livetv_cal_loading", fallback: "Getting the dates of your shows and films…")
@@ -466,7 +463,7 @@ struct LiveTVCalendarView: View {
 
     /// The card in focus: its logo (or title), episode, when and where, and
     /// what it's about. `compact`: one short block above the Week.
-    private func details(_ entry: LiveTVCalendarEntry?, compact: Bool) -> some View {
+    private func details(_ entry: LiveTVCalendarEntry?, compact: Bool, width: CGFloat? = nil) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 12) {
             if let entry {
                 // The show's own logo when TMDB has one, else its title.
@@ -515,23 +512,24 @@ struct LiveTVCalendarView: View {
                             .frame(maxWidth: 1100, alignment: .leading)
                     }
                 } else {
-                    aboutBlock(entry)
+                    aboutBlock(entry, width: width ?? 900)
                 }
             }
         }
+        .frame(width: width, alignment: .topLeading)
     }
 
     /// Below the dates: tags, ratings, year and genres, the episode's text
     /// (the show's when the episode has none), then who's in it.
     @ViewBuilder
-    private func aboutBlock(_ entry: LiveTVCalendarEntry) -> some View {
+    private func aboutBlock(_ entry: LiveTVCalendarEntry, width: CGFloat) -> some View {
         let meta = about.meta(entry)
         if !entry.tags.isEmpty {
             Text(entry.tags.map(Self.tagTitle).joined(separator: "  ·  "))
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundColor(.white.opacity(0.75))
         }
-        ratingsRow(entry)
+        ratingsRow(entry, width: width)
         if let facts = meta.flatMap(Self.facts) {
             Text(facts)
                 .font(.system(size: 20))
@@ -563,7 +561,7 @@ struct LiveTVCalendarView: View {
             .padding(.top, 4)
         }
         if let people = about.people[entry.contentID], !people.isEmpty {
-            castRow(people)
+            castRow(people, width: width)
         } else if let cast = meta?.cast?.filter({ !$0.isEmpty }), !cast.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n.string("livetv_cal_cast", fallback: "Cast"))
@@ -610,11 +608,13 @@ struct LiveTVCalendarView: View {
         }
     }
 
-    /// The ratings chosen in Settings → Calendar, in the app's rating
-    /// order; one not known (yet) shows "–", so none ever moves.
+    /// The ratings on in Settings → Rating Providers & Order, in that
+    /// order (as many as fit); one not known (yet) shows "–", so none ever
+    /// moves.
     @ViewBuilder
-    private func ratingsRow(_ entry: LiveTVCalendarEntry) -> some View {
-        let chosen = LiveTVCalendarSettings.ratingVisuals
+    private func ratingsRow(_ entry: LiveTVCalendarEntry, width: CGFloat) -> some View {
+        let fit = max(1, Int((width + 20) / (26 + 7 + 62 + 20)))
+        let chosen = Array(LiveTVCalendarSettings.ratingVisuals.prefix(fit))
         if !chosen.isEmpty, about.meta(entry) != nil || entry.contentID.hasPrefix("tt") {
             let values = about.ratingValues(entry)
             HStack(spacing: 20) {
@@ -634,13 +634,13 @@ struct LiveTVCalendarView: View {
     }
 
     /// Who's in it: a picture and a name each.
-    private func castRow(_ people: [TmdbPersonMetadata]) -> some View {
+    private func castRow(_ people: [TmdbPersonMetadata], width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.string("livetv_cal_cast", fallback: "Cast"))
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.white.opacity(0.5))
             HStack(alignment: .top, spacing: 16) {
-                ForEach(people.prefix(7)) { person in
+                ForEach(people.prefix(max(1, min(7, Int((width + 16) / (96 + 16)))))) { person in
                     VStack(spacing: 6) {
                         ZStack {
                             Circle().fill(Color.white.opacity(0.12))

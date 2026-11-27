@@ -22706,6 +22706,17 @@ enum LiveTVSettingsRows {
             accentColor: accentColor, optionLabel: optionLabel)
     }
 
+    /// Every choice in a list that opens (for long lists).
+    static func choice(
+        title: String, subtitle: String, selection: Binding<String>, options: [String], accentColor: Color,
+        optionLabel: (String) -> String
+    ) -> some View {
+        SettingsChoiceRow(
+            title: title, subtitle: subtitle, selection: selection, options: options,
+            optionLabels: Dictionary(options.map { ($0, optionLabel($0)) }, uniquingKeysWith: { first, _ in first }),
+            accentColor: accentColor)
+    }
+
     static func action(
         title: String, subtitle: String, value: String, accentColor: Color, action: @escaping () -> Void
     ) -> some View {

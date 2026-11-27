@@ -55,16 +55,11 @@ final class LiveTVSettings: ObservableObject {
     @Published var calendarCountry = "" {
         didSet { if !loading { ProfileSettings.current.set(calendarCountry, forKey: Key.calendarCountry) } }
     }
-    /// The ratings the calendar shows (sources, comma separated).
-    @Published var calendarRatings = "imdb,tmdb,tomatoes,metacritic" {
-        didSet { if !loading { ProfileSettings.current.set(calendarRatings, forKey: Key.calendarRatings) } }
-    }
-    /// Airing today's streaming: "local" (the country's languages),
-    /// "localEnglish" (and English), "all".
+    /// Airing today's streaming: "localEnglish" (the country's language
+    /// and English), "local", "all", or language codes such as "fr+en".
     @Published var calendarAiringLanguages = "localEnglish" {
         didSet { if !loading { ProfileSettings.current.set(calendarAiringLanguages, forKey: Key.calendarAiringLanguages) } }
     }
-    static let calendarAiringLanguageChoices = ["local", "localEnglish", "all"]
     /// OK on an episode in your Live TV guide: "live" (its Live TV options)
     /// or "page" (the show's page), as Android's calendarOkAction.
     @Published var calendarOkAction = "live" {
@@ -124,7 +119,6 @@ final class LiveTVSettings: ObservableObject {
         static let calendarTimeZone = prefix + "calendarTimeZone"
         static let calendarHideSpoilers = prefix + "calendarHideSpoilers"
         static let calendarCountry = prefix + "calendarCountry"
-        static let calendarRatings = prefix + "calendarRatings"
         static let calendarAiringLanguages = prefix + "calendarAiringLanguages"
         static let calendarOkAction = prefix + "calendarOkAction"
         static let calendarSkipNewsTalk = prefix + "calendarSkipNewsTalk"
@@ -182,8 +176,6 @@ final class LiveTVSettings: ObservableObject {
         assign(\.calendarHideSpoilers, bool(Key.calendarHideSpoilers, true))
         let country = store.string(forKey: Key.calendarCountry) ?? ""
         if country != calendarCountry { calendarCountry = country }
-        let ratings = store.string(forKey: Key.calendarRatings) ?? "imdb,tmdb,tomatoes,metacritic"
-        if ratings != calendarRatings { calendarRatings = ratings }
         let languages = store.string(forKey: Key.calendarAiringLanguages) ?? "localEnglish"
         if languages != calendarAiringLanguages { calendarAiringLanguages = languages }
         let okAction = store.string(forKey: Key.calendarOkAction) ?? "live"

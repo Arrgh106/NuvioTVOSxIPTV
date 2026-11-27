@@ -700,57 +700,60 @@ enum LiveTVCalendarSettings {
         return chosen.isEmpty ? Locale.current.region?.identifier ?? "US" : chosen
     }
 
-    /// The ratings shown on the card in focus, in the app's rating order.
+    /// The ratings shown on the card in focus: the ones on in Settings →
+    /// Rating Providers & Order (the app's own choice, not a second one), in
+    /// that order.
     @MainActor static var ratingVisuals: [TvRatingVisual] {
-        let chosen = Set(LiveTVSettings.shared.calendarRatings.split(separator: ",").map(String.init))
-        return AddonRatingsService.sortRatings(TvRatingVisual.all.filter { chosen.contains($0.source) }, by: { $0.source })
+        AddonRatingsService.sortRatings(
+            TvRatingVisual.all.filter { AddonRatingsService.isHeroRatingSourceEnabled($0.source) }, by: { $0.source })
     }
 
-    /// The languages a country's people speak, in TVmaze's words
-    /// ("German"); English for none known.
-    static func languages(of country: String) -> Set<String> {
-        let english = Locale(identifier: "en")
-        var result = Set<String>()
-        for id in Locale.availableIdentifiers {
-            let locale = Locale(identifier: id)
-            guard locale.region?.identifier == country, let code = locale.language.languageCode?.identifier,
-                  let name = english.localizedString(forLanguageCode: code) else { continue }
-            result.insert(name)
-        }
-        return result.isEmpty ? ["English"] : result
+    /// The languages Settings → Calendar → Airing Today: Streaming
+    /// Languages offers besides the country's own.
+    static let pickableLanguages = [
+        "en", "de", "fr", "es", "it", "nl", "pt", "pl", "tr", "sv", "da", "no", "fi", "cs", "el", "hu", "ru",
+        "uk", "ja", "ko", "zh", "hi", "ar", "he",
+    ]
+
+    /// A language's name as TVmaze writes it ("German").
+    static func tvmazeName(_ code: String) -> String {
+        Locale(identifier: "en").localizedString(forLanguageCode: code) ?? code
     }
 
-    /// Airing today's streaming in these languages (nil: all).
-    @MainActor static var airingLanguages: Set<String>? {
-        switch LiveTVSettings.shared.calendarAiringLanguages {
+    /// The languages of a setting: "localEnglish" (the country's and
+    /// English), "local", "all" (nil) or codes such as "fr+en".
+    @MainActor static func languageCodes(_ choice: String) -> [String]? {
+        switch choice {
         case "all": return nil
-        case "local": return languages(of: country)
-        default: return languages(of: country).union(["English"])
+        case "local": return [mainLanguageCode]
+        case "", "localEnglish": return mainLanguageCode == "en" ? ["en"] : [mainLanguageCode, "en"]
+        default: return choice.split(separator: "+").map(String.init)
         }
     }
 
-    /// "German", "German and English", "all languages", in the app's language.
-    @MainActor static var airingLanguagesLabel: String {
-        let main = Locale.current.localizedString(forLanguageCode: mainLanguageCode) ?? mainLanguageCode
-        switch LiveTVSettings.shared.calendarAiringLanguages {
-        case "all": return L10n.string("livetv_cal_lang_all", fallback: "all languages")
-        case "local": return main
-        default:
-            return L10n.format("livetv_cal_lang_and_english_format", fallback: "%@ and English", main)
-        }
+    /// Airing today's streaming in these languages, in TVmaze's words
+    /// (nil: all).
+    @MainActor static var airingLanguages: Set<String>? {
+        languageCodes(LiveTVSettings.shared.calendarAiringLanguages).map { Set($0.map(tvmazeName)) }
     }
 
-    /// The country's first language ("de" for DE).
+    /// "German", "German and English", "All languages", in the app's language.
+    @MainActor static func languagesLabel(_ choice: String) -> String {
+        guard let codes = languageCodes(choice) else {
+            return L10n.string("livetv_settings_calendar_lang_all", fallback: "All languages")
+        }
+        let names = codes.map { Locale.current.localizedString(forLanguageCode: $0)?.capitalized ?? $0 }
+        guard let last = names.last else { return "" }
+        return names.count == 1 ? last
+            : L10n.format("livetv_cal_lang_and_format", fallback: "%@ and %@", names.dropLast().joined(separator: ", "), last)
+    }
+
+    /// The country's own language ("de" for DE, "en" for US), whatever
+    /// language the Apple TV is in.
     @MainActor static var mainLanguageCode: String {
-        let country = country
-        if Locale.current.region?.identifier == country, let code = Locale.current.language.languageCode?.identifier {
-            return code
-        }
-        for id in Locale.availableIdentifiers.sorted() {
-            let locale = Locale(identifier: id)
-            if locale.region?.identifier == country, let code = locale.language.languageCode?.identifier { return code }
-        }
-        return "en"
+        let likely = Locale.Language(identifier: "und-" + country).maximalIdentifier
+        let code = String(likely.split(whereSeparator: { $0 == "-" || $0 == "_" }).first ?? "")
+        return code.isEmpty || code == "und" ? "en" : code
     }
 
     /// What the cards depend on in Settings: a change makes them again.
